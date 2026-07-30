@@ -1,0 +1,12 @@
+numpy>=1.26
+scipy>=1.11
+scikit-image>=0.22
+pydicom>=2.4
+pylibjpeg>=2.0
+pylibjpeg-libjpeg>=2.0
+pillow>=10.0
+matplotlib>=3.8
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9
+pytest>=8.0

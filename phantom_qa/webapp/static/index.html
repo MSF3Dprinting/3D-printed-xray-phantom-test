@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MSF Phantom QA</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>MSF Phantom QA</h1>
+  <nav>
+    <button id="tab-analyze" class="tab active">Analyze</button>
+    <button id="tab-history" class="tab">History &amp; Trends</button>
+  </nav>
+  <span id="app-status"></span>
+</header>
+
+<main id="view-analyze">
+  <section id="viewer-pane">
+    <div id="viewer-toolbar">
+      <label>W <input type="range" id="wl-width" min="16" max="4096" value="4096"></label>
+      <label>C <input type="range" id="wl-center" min="0" max="4096" value="2048"></label>
+      <button id="wl-reset" title="auto window">auto</button>
+      <button id="zoom-fit">fit</button>
+      <span id="cursor-mm" class="mono"></span>
+    </div>
+    <div id="viewer-wrap"><canvas id="viewer"></canvas></div>
+    <div id="overlay-toggles"></div>
+  </section>
+
+  <aside id="wizard-pane">
+    <ol id="stage-nav">
+      <li data-stage="U">Upload</li>
+      <li data-stage="A">A&nbsp;Registration</li>
+      <li data-stage="B">B&nbsp;Patterns</li>
+      <li data-stage="C">C&nbsp;Measuring&nbsp;points</li>
+      <li data-stage="D">D&nbsp;Dimensions</li>
+      <li data-stage="E">E&nbsp;Analysis</li>
+      <li data-stage="F">F&nbsp;Save&nbsp;&amp;&nbsp;export</li>
+    </ol>
+    <div id="stage-content"></div>
+  </aside>
+</main>
+
+<main id="view-history" class="hidden">
+  <section class="history-block">
+    <h2>Analyses</h2>
+    <div id="history-actions">
+      <button id="btn-export-selected">Export selected as CSV</button>
+    </div>
+    <table id="history-table"><thead>
+      <tr><th></th><th>created</th><th>source</th><th>signature</th>
+          <th>stage</th><th>status</th><th>baseline</th><th></th></tr>
+    </thead><tbody></tbody></table>
+  </section>
+  <section class="history-block">
+    <h2>Trends</h2>
+    <div>
+      <select id="trend-signature"></select>
+      <select id="trend-metric"></select>
+    </div>
+    <canvas id="trend-chart" width="900" height="360"></canvas>
+    <p class="hint">Points in acquisition order; star = baseline. Dashed band =
+    ±20 % of baseline (constancy default).</p>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
