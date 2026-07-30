@@ -1,0 +1,56 @@
+# ---------------------------------------------------------------- scan data
+# Never commit image exports. They are large, they are the measurement input
+# rather than source, and they may carry site/patient-identifying DICOM tags.
+/20260727 MSF/
+Export_*/
+# Future scan drops are dated folders (YYYYMMDD ...) — ignored by pattern.
+# If you ever add a NON-scan folder whose name starts with 8 digits, rename it
+# or force-add it (git add -f), otherwise it is silently ignored.
+[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*/
+*.dcm
+*.dicom
+DICOMDIR
+
+# Uploaded scans + analysis database created at runtime by the web app.
+# (data/phantom_definitions/ IS tracked — it is the phantom geometry config.)
+/data/uploads/
+/data/*.sqlite3
+/data/*.sqlite3-journal
+
+# Headless CLI output
+qa_output*/
+
+# ---------------------------------------------------------------- reference docs
+# Source manual — distributed separately, not part of the code base.
+*.docx
+~$*.docx
+
+# ---------------------------------------------------------------- Claude Code
+.claude/
+CLAUDE.md
+.claude.json
+.claude.json.backup
+
+# ---------------------------------------------------------------- Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# ---------------------------------------------------------------- editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
