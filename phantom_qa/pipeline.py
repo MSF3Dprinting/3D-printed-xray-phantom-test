@@ -143,13 +143,17 @@ def render_overlay(scan: ScanData, ctx: Ctx, geometry_all: dict,
         elif t == "circle":
             axp.add_patch(MplCircle(roi["center_px"], roi["radius_px"],
                                     fill=False, edgecolor=color, lw=1.0))
+        elif t == "annulus":
+            for r in (roi["inner_radius_px"], roi["outer_radius_px"]):
+                axp.add_patch(MplCircle(roi["center_px"], r, fill=False,
+                                        edgecolor=color, lw=0.6, ls=":"))
         elif t == "segment":
             p0, p1 = np.asarray(roi["p0_px"]), np.asarray(roi["p1_px"])
             axp.plot([p0[0], p1[0]], [p0[1], p1[1]], color=color, lw=0.8)
 
     def walk(node, color):
         if isinstance(node, dict):
-            if node.get("type") in ("rect", "circle", "segment"):
+            if node.get("type") in ("rect", "circle", "segment", "annulus"):
                 draw_roi(node, color)
             else:
                 for v in node.values():

@@ -1,11 +1,36 @@
 # MSF X-ray Phantom Analysis App — Work Plan
 
-Status: **implemented, rev. 3** (2026-07-30).
+Status: **implemented, rev. 4** (2026-07-31).
 Rev. 2 restructured the workflow into user-gated verification stages.
-Rev. 3 records the *no-material-assumptions* correction and marks the plan as
-built — see [README.md](README.md) for the user guide and
-[docs/ALGORITHMS.md](docs/ALGORITHMS.md) for the computation and validation
-detail.
+Rev. 3 recorded the *no-material-assumptions* correction.
+Rev. 4 covers the four scans added on 2026-07-30 and the fixes they enabled.
+See [README.md](README.md) for the user guide,
+[docs/ALGORITHMS.md](docs/ALGORITHMS.md) for computation and validation, and
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the server/security model.
+
+### Rev. 4 changes
+
+- **Six reference scans, three orientations** (0°, 90°, 180°) instead of two.
+  They revealed that the set contains **two physically different phantom units**
+  whose internal features sit up to ~12 mm apart.
+- **Line-pair blocks are now measured per scan**, not read from stored
+  coordinates — band-limited periodicity map, impostor rejection by shared
+  modulation direction and collinearity, isotropic sub-window centring. This
+  fixed the misaligned/mis-rotated ROIs. A sign error that mirrored every
+  measured angle about the x axis (invisible at exactly 45°) was found and
+  fixed by the new tests.
+- **Low-contrast background** moved from a disc on the block midline — which
+  overlapped into four unexplained blobs in the middle of the object — to a
+  ring concentric with each circle.
+- **Wedge criteria widened**: the response is reproducibly S-shaped because the
+  printed steps are not equal attenuation increments, so monotonicity and
+  saturation decide pass/fail and R² became a soft shape descriptor.
+- **Report reorganised** into one section per pattern, each with its own table,
+  chart, baseline deltas and status.
+- **Security added** for server deployment: login, hashed passwords, signed
+  sessions, CSRF, throttling, host allow-list, upload cap, hardening headers,
+  secrets in `.env`.
+- Test suite grown from 31 to **73 tests**.
 
 ---
 

@@ -33,6 +33,23 @@ python -m phantom_qa.cli "path\to\DICOMFILE" --out qa_output --sid 1000
 
 Everything runs locally; no internet connection is used or required.
 
+**Deploying on a server?** Read [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) first —
+it covers the password, secrets in `.env`, TLS via a reverse proxy, and the
+systemd unit. Short version:
+
+```bash
+cp .env.example .env
+python -m phantom_qa.manage gen-secret     # -> PHANTOMQA_SECRET_KEY
+python -m phantom_qa.manage set-password   # -> PHANTOMQA_PASSWORD_HASH
+# set PHANTOMQA_ENV=production and PHANTOMQA_ALLOWED_HOSTS in .env
+python -m phantom_qa.manage check          # must pass before going live
+```
+
+With `PHANTOMQA_ENV=production` the app refuses to start without a secret key
+or with a plain-text password, and it requires a login for every page and API
+call. Never commit `.env` — it is git-ignored, and `.env.example` is the
+template.
+
 ## What to upload
 
 | Input | Support |
@@ -71,8 +88,8 @@ window/level with the W/C sliders):
    - **Line patterns**: SD per group (guide metric) **and** the intensity
      profile across each group with the fitted line grid — measured pitch vs
      nominal frequency, per-line residuals in µm.
-   - **Wedge**: mean per step S1…S7, linear fit vs step index, R², monotonicity,
-     saturation flags.
+   - **Wedge**: mean per step S1…S7, monotonicity, dynamic-range ratio,
+     saturation flags, plus the linear fit R² as a shape descriptor.
    - **Low contrast**: CNR per circle L1…L8 (design order), ordering sanity
      check.
    - **Uniformity**: SNR per square, ΔSNR vs mean (tolerance 20 %).
@@ -81,6 +98,22 @@ window/level with the W/C sliders):
      1000 mm).
 6. **F — Save & export.** Optionally mark the analysis as **baseline** for its
    protocol signature; download the printable report, CSV, or full JSON.
+
+### Reading the overlays
+
+| Marking | Meaning |
+|---|---|
+| Red dashed square | Detected phantom outline (registration) |
+| Yellow squares on the diagonal strip | Line-pair group ROIs, aligned to the measured strip axis |
+| Pink dashed circle | Low-contrast object outline (10 mm, the printed disc) |
+| Pink solid circle | Low-contrast **measurement** ROI (7 mm) |
+| Pink dotted ring | Local **background** ring for that same circle |
+| Green squares | Uniformity ROIs, centred in the printed squares |
+| Orange rectangles | Wedge step ROIs (S1 top → S7 bottom) |
+| Blue lines from each side | Ruler probes and field-edge probes |
+
+Drag any ROI centre dot in Stage C to adjust it; the low-contrast ring and
+outline follow their circle automatically.
 
 ## Comparison & trending
 
@@ -108,25 +141,42 @@ phantom_qa/                 the Python package
   analysis/                 one module per test (propose/compute split)
   pipeline.py               stage orchestration + overlay rendering
   store.py                  SQLite persistence + CSV flattening
-  report.py                 printable HTML report
+  report.py                 printable HTML report, one section per pattern
+  config.py                 .env loading, production safety checks
+  security.py               password hashing, signed sessions, CSRF, throttling
+  manage.py                 admin CLI (gen-secret, set-password, check)
   cli.py                    headless batch analysis
   webapp/                   FastAPI backend + no-build JS frontend
 data/phantom_definitions/msf_v1.json   calibrated phantom geometry (see below)
 data/phantom_qa.sqlite3     analysis database (created on first run)
 data/uploads/               original uploaded files (traceability)
-tests/                      pytest suite (synthetic ground truth + sample scans)
+tests/                      pytest suite (73 tests)
 docs/ALGORITHMS.md          how every number is computed + validation results
+docs/DEPLOYMENT.md          server deployment, TLS, and the security model
+.env.example                configuration template (copy to .env)
 ```
 
 ## The phantom definition
 
 `data/phantom_definitions/msf_v1.json` holds every object's position in the
-phantom's own mm coordinate system. It was **calibrated from the two reference
-scans of 2026-07-27** (see its `provenance` section), with the absolute scale
-anchored to the printed 5 mm tape pitch. If a phantom drawing/CAD becomes
-available, update the nominal values there — especially `nominal_side_mm`
-(currently the assumed 300.0; measured ≈ 299.4–299.9 mm). New phantom versions
-get new definition files.
+phantom's own mm coordinate system, calibrated from **six reference scans**
+covering three orientations (see its `provenance` section), with the absolute
+scale anchored to the printed 5 mm tape pitch.
+
+Two things matter about how it is used:
+
+- **The line-pair blocks are measured in every scan, not read from the file.**
+  The stored positions are only search seeds. This is what makes the ROIs land
+  correctly even when a phantom differs from the reference.
+- **The reference scans contain two different phantom units.** The scans split
+  cleanly into two groups (detector labels `HmmEi` and `A8Tgg`) whose internal
+  features sit up to ~12 mm apart, with strip angles of 45.2° and 43.0°. The
+  stored values are the mean of the two; per-scan measurement absorbs the
+  difference. Do **not** read the stored coordinates as design intent.
+
+If a phantom drawing/CAD becomes available, update the nominal values —
+especially `nominal_side_mm` (currently the assumed 300.0; measured
+≈ 299.3–300.4 mm). New phantom versions get new definition files.
 
 ## Notes & limitations
 
@@ -141,7 +191,17 @@ get new definition files.
   collimation edge to find. To make this test usable, acquire with the field
   visibly collimated inside the detector.
 - `AcquisitionDeviceProcessingDescription` is part of the stored metadata; the
-  two reference scans already differ in processing (`FB d:1.42` vs `FB d:1`),
-  which visibly changes wedge R² and CNR values — compare like with like.
-- Single-user local app. Concurrent multi-user deployment would need auth and
-  a served database (see WORKPLAN.md, open question 5).
+  reference scans differ in processing (`FB d:1.42` vs `FB d:1`), which visibly
+  changes wedge R² and CNR values — compare like with like.
+- **The wedge is not linear, by design of the phantom.** Its response is
+  reproducibly S-shaped (linear R² ≈ 0.92 with the same residual pattern in all
+  six reference scans), because the printed steps are not equal attenuation
+  increments. Pass/fail is therefore decided by monotonicity and saturation;
+  R² is reported as a shape descriptor with a soft 0.85 warning threshold.
+  Judging the detector by the linearity of that curve would fail a perfectly
+  good detector.
+- One shared login, not per-user accounts. The audit trail records what was
+  changed and when, not who. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+- `data/uploads/` keeps the original DICOM files. They are phantom scans, but
+  the headers still carry institution and device fields — treat that folder as
+  sensitive.

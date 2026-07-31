@@ -114,6 +114,11 @@ def _field_edge(ctx: Ctx, side: str, start_mm: float = 8.0):
             tmax = min(tmax, (lim - comp) / dcomp)
         elif dcomp < -1e-9:
             tmax = min(tmax, (3 - comp) / dcomp)
+    # Stop short of the image border: the border itself is a large, sharp,
+    # perfectly "step-like" intensity change and would otherwise be reported as
+    # a collimation edge.
+    if np.isfinite(tmax):
+        tmax = max(tmax - 12.0 * T.px_per_mm, 0.0)
     probe_mm = float(tmax) * T.mm_per_px if np.isfinite(tmax) else 0.0
     if not np.isfinite(tmax) or probe_mm < 25.0:
         return {"side": side, "detected": False,

@@ -42,37 +42,40 @@
     ]
   },
   "linepairs": {
-    "strip_angle_deg": 49.3,
+    "strip_angle_deg": 44.1,
     "roi_size_mm": 12.6,
+    "search_pad_mm": 28.0,
     "groups": [
-      { "id": "G2.0", "freq_lp_mm": 2.0, "center_mm": [-75.43, -5.92] },
-      { "id": "G1.6", "freq_lp_mm": 1.6, "center_mm": [-54.23, 19.67] },
-      { "id": "G1.4", "freq_lp_mm": 1.4, "center_mm": [-34.3, 41.43] },
-      { "id": "G1.2", "freq_lp_mm": 1.2, "center_mm": [-21.03, 61.19] },
-      { "id": "G1.1", "freq_lp_mm": 1.1, "center_mm": [2.45, 84.52] }
+      { "id": "G2.0", "freq_lp_mm": 2.0, "center_mm": [-84.64, -1.31] },
+      { "id": "G1.6", "freq_lp_mm": 1.6, "center_mm": [-63.34, 19.56] },
+      { "id": "G1.4", "freq_lp_mm": 1.4, "center_mm": [-41.77, 40.31] },
+      { "id": "G1.2", "freq_lp_mm": 1.2, "center_mm": [-20.39, 61.30] },
+      { "id": "G1.1", "freq_lp_mm": 1.1, "center_mm": [0.92, 81.67] }
     ]
   },
   "lowcontrast": {
-    "center_mm": [-46.0, -48.0],
-    "angle_deg": -45.0,
-    "size_mm": [90.0, 50.0],
+    "center_mm": [-45.86, -48.62],
+    "angle_deg": -45.1,
+    "size_mm": [84.5, 44.45],
     "circle_dia_mm": 10.0,
     "roi_dia_mm": 7.0,
+    "bg_inner_dia_mm": 12.0,
+    "bg_outer_dia_mm": 16.0,
     "circles": [
-      { "id": "L1", "level": 1, "u_mm": 30.0, "v_mm": 10.0 },
-      { "id": "L2", "level": 2, "u_mm": 10.0, "v_mm": 10.0 },
-      { "id": "L3", "level": 3, "u_mm": -10.0, "v_mm": 10.0 },
-      { "id": "L4", "level": 4, "u_mm": -30.0, "v_mm": 10.0 },
-      { "id": "L5", "level": 5, "u_mm": -30.0, "v_mm": -10.0 },
-      { "id": "L6", "level": 6, "u_mm": -10.0, "v_mm": -10.0 },
-      { "id": "L7", "level": 7, "u_mm": 10.0, "v_mm": -10.0 },
-      { "id": "L8", "level": 8, "u_mm": 30.0, "v_mm": -10.0 }
+      { "id": "L1", "level": 1, "u_mm": 30.0, "v_mm": 9.4 },
+      { "id": "L2", "level": 2, "u_mm": 10.0, "v_mm": 9.4 },
+      { "id": "L3", "level": 3, "u_mm": -10.0, "v_mm": 9.4 },
+      { "id": "L4", "level": 4, "u_mm": -30.0, "v_mm": 9.4 },
+      { "id": "L5", "level": 5, "u_mm": -30.0, "v_mm": -10.2 },
+      { "id": "L6", "level": 6, "u_mm": -10.0, "v_mm": -10.2 },
+      { "id": "L7", "level": 7, "u_mm": 10.0, "v_mm": -10.2 },
+      { "id": "L8", "level": 8, "u_mm": 30.0, "v_mm": -10.2 }
     ]
   },
   "wedge": {
-    "center_x_mm": 49.9,
-    "y_top_mm": 69.8,
-    "y_bottom_mm": -70.6,
+    "center_x_mm": 49.8,
+    "y_top_mm": 69.4,
+    "y_bottom_mm": -70.2,
     "nominal_boundaries_y_mm": [50.5, 31.5, 12.5, -6.4, -25.3, -44.4],
     "roi_w_mm": 10.0,
     "roi_margin_mm": 3.0,
@@ -84,23 +87,25 @@
   "tolerances": {
     "field_pct_sid": 2.0,
     "uniformity_dsnr_pct": 20.0,
-    "wedge_r2_min": 0.95,
+    "wedge_r2_min": 0.85,
     "dim_dev_pct": 1.0,
     "linepair_pitch_dev_pct": 10.0,
     "constancy_pct": 20.0
   },
   "provenance": {
     "calibrated_from": [
-      "Philips DigitalDiagnost C50 scans of 2026-07-27 (Export_2026-07-27_10-00-05_1, SOP instances 10000003 and 10000005)"
+      "Philips DigitalDiagnost C50, 6 scans: Export_2026-07-27_10-00-05_1 (2 images) and Export_2026-07-30_14-23-58_1 (4 images), covering 3 phantom orientations (0 deg, 90 deg, 180 deg)."
     ],
     "notes": [
       "Canonical frame: origin at phantom-face center, +x right / +y up in the guide-figure orientation; units mm.",
       "Absolute scale anchored to the tape-measure pitch (5.0 mm nominal); side_mm=299.5 makes the measured pitch read 5.000 mm.",
-      "nominal_side_mm=300.0 is ASSUMED design intent (no drawing available); measured mean side 299.35/299.88 mm on the two reference scans.",
+      "nominal_side_mm=300.0 is ASSUMED design intent (no drawing available); measured mean side 299.3-299.9 mm.",
       "Wedge steps are labeled S1 (top, most attenuating) .. S7 (bottom) BY POSITION; no material or thickness values are assumed.",
-      "Low-contrast circles are labeled L1..L8 in design order of increasing measured contrast (boustrophedon layout starting top-right); no nominal contrast values are assumed.",
-      "Line-pair group frequencies were measured directly from the reference scans (grid fit + 2-D FFT agree with 1.1/1.2/1.4/1.6/2.0 lp/mm; strip runs bottom-left=2.0 to top-right=1.1).",
-      "Wedge step boundaries measured (steps are ~19 mm, bottom step ~26 mm; not uniform)."
+      "Low-contrast circles are labeled L1..L8 in design order of increasing measured contrast (boustrophedon starting top-right). Grid measured at u = +/-10, +/-30 mm and v = +9.4 / -10.2 mm in block coordinates; measured contrasts run ~0.33 % (L1) to ~1.37 % (L8) at 77 kV. No nominal contrast values are assumed.",
+      "Line-pair group positions/frequencies are MEASURED per scan at runtime (band-limited periodicity map); the values here are nominal search seeds only.",
+      "Wedge step boundaries measured (steps are ~19 mm, bottom step ~26 mm; not uniform).",
+      "IMPORTANT - two phantom variants observed. The scans split into two groups (detector labels HmmEi and A8Tgg) whose internal features sit up to ~12 mm apart and whose strip angle differs by ~3 deg (44.9 vs 48.2). Positions stored here are the mean of the two; per-scan measurement absorbs the difference. Do not treat these nominals as design intent.",
+      "Wedge response is reproducibly S-shaped (linear R^2 ~0.92 in all six scans with a near-identical residual pattern). R^2 is therefore a shape descriptor with a soft 0.85 warn threshold; the hard criteria are monotonicity and non-saturation."
     ]
   }
 }

@@ -200,6 +200,11 @@ def flatten_results(results: dict) -> list[dict]:
     if w.get("fit"):
         add("wedge", "fit", "r2", w["fit"]["r2"], "", w.get("status", ""))
         add("wedge", "fit", "slope", w["fit"]["slope"], "/step")
+    add("wedge", "all", "dynamic_range_ratio", w.get("dynamic_range_ratio"), "x",
+        w.get("status", ""))
+    add("wedge", "all", "span", w.get("span"))
+    if "monotonic" in w:
+        add("wedge", "all", "monotonic", int(bool(w["monotonic"])))
 
     lp = results.get("linepairs") or {}
     for r in lp.get("rows", []):
@@ -211,6 +216,8 @@ def flatten_results(results: dict) -> list[dict]:
         add("linepairs", r["id"], "grid_residual_rms",
             lin.get("residual_rms_mm"), "mm")
         add("linepairs", r["id"], "n_lines", lin.get("used_lines"))
+        add("linepairs", r["id"], "measured_freq", lin.get("measured_freq_lp_mm"),
+            "lp/mm")
 
     lc = results.get("lowcontrast") or {}
     for r in lc.get("rows", []):

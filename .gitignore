@@ -20,6 +20,15 @@ DICOMDIR
 # Headless CLI output
 qa_output*/
 
+# ---------------------------------------------------------------- secrets
+# Real configuration and credentials. .env.example IS tracked as the template.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.json
+
 # ---------------------------------------------------------------- reference docs
 # Source manual — distributed separately, not part of the code base.
 *.docx

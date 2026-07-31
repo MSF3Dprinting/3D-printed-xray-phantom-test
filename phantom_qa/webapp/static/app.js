@@ -28,8 +28,24 @@ const fmt = (v, d = 2) => (v === null || v === undefined || Number.isNaN(v))
   ? "—" : (typeof v === "number" ? v.toFixed(d) : String(v));
 const chip = (s) => `<span class="chip ${(s || "na").replace("/", "")}">${s || "n/a"}</span>`;
 
+function csrfToken() {
+  const m = document.cookie.match(/(?:^|;\s*)phantomqa_csrf=([^;]+)/);
+  return m ? decodeURIComponent(m[1]) : "";
+}
+
+/* Every state-changing request carries the CSRF token from the cookie; the
+   server rejects the request if the two do not match. */
 async function api(path, opts = {}) {
-  const r = await fetch(path, opts);
+  const o = { credentials: "same-origin", ...opts };
+  const method = (o.method || "GET").toUpperCase();
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+    o.headers = { ...(o.headers || {}), "X-CSRF-Token": csrfToken() };
+  }
+  const r = await fetch(path, o);
+  if (r.status === 401) {
+    window.location = "/login";
+    throw new Error("Session expired — signing in again");
+  }
   if (!r.ok) {
     let msg = r.statusText;
     try { msg = (await r.json()).detail || msg; } catch (e) { /* noop */ }
@@ -130,6 +146,16 @@ function drawRoi(roi, color, opts = {}) {
     ctx2d.beginPath();
     ctx2d.arc(c[0], c[1], roi.radius_px * S.imgScale * S.view.k, 0, Math.PI * 2);
     ctx2d.stroke();
+  } else if (roi.type === "annulus") {
+    const c = nat2scr(roi.center_px);
+    const k = S.imgScale * S.view.k;
+    ctx2d.setLineDash([2, 3]);
+    [roi.inner_radius_px, roi.outer_radius_px].forEach(r => {
+      ctx2d.beginPath();
+      ctx2d.arc(c[0], c[1], r * k, 0, Math.PI * 2);
+      ctx2d.stroke();
+    });
+    ctx2d.setLineDash([]);
   } else if (roi.type === "segment") {
     const a = nat2scr(roi.p0_px), b = nat2scr(roi.p1_px);
     ctx2d.beginPath(); ctx2d.moveTo(a[0], a[1]); ctx2d.lineTo(b[0], b[1]);
@@ -171,8 +197,8 @@ function activeRois() {
     out.push({ roi: g.lowcontrast.block, test: "lowcontrast" });
     g.lowcontrast.circles.forEach(c => {
       out.push({ roi: c.full_circle, test: "lowcontrast", dash: [4, 3] });
+      out.push({ roi: c.bg_roi, test: "lowcontrast" });
       out.push({ roi: c.roi, test: "lowcontrast", label: c.id, drag: true });
-      out.push({ roi: c.bg_roi, test: "lowcontrast", dash: [2, 3], drag: true });
     });
   }
   if (g.geometry && !g.geometry._error && S.visible.geometry) {
@@ -1052,7 +1078,26 @@ function drawTrend() {
   });
 }
 
+/* ================= sign-out ================= */
+
+async function initAuth() {
+  try {
+    const a = await api("/api/auth");
+    if (a.auth_enabled) {
+      if (!a.authenticated) { window.location = "/login"; return; }
+      const btn = el("button", { id: "logout-btn", class: "tab" },
+                     `Sign out (${a.user || ""})`);
+      btn.addEventListener("click", async () => {
+        await postJSON("/api/logout", {});
+        window.location = "/login";
+      });
+      $("header nav").appendChild(btn);
+    }
+  } catch (e) { /* auth endpoint unavailable — leave UI as is */ }
+}
+
 /* ================= init ================= */
 renderToggles();
 setStage("U");
 resizeCanvas();
+initAuth();

@@ -9,27 +9,182 @@ import io
 import os
 
 import numpy as np
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse, PlainTextResponse, Response
+from fastapi import (FastAPI, File, HTTPException, Request, Response,
+                     UploadFile)
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .. import ALGO_VERSION
 from .. import ingest, pipeline
 from ..analysis.common import roi_center_from_px
+from ..config import get_config
 from ..phantom_def import load_default
 from ..registration import Registration, Transform
 from ..report import build_report
+from ..security import (CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, LoginThrottle,
+                        csrf_ok, issue_session, new_csrf_token, read_session,
+                        verify_password)
 from ..store import Store, csv_export, flatten_results
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-app = FastAPI(title="MSF Phantom QA")
+cfg = get_config()
+app = FastAPI(title="MSF Phantom QA", docs_url=None, redoc_url=None,
+              openapi_url=None)
 store = Store(ROOT)
 pdef = load_default()
+throttle = LoginThrottle(cfg.max_login_attempts, cfg.lockout_minutes)
 
 _scans: dict[str, ingest.ScanData] = {}       # id -> ScanData cache
 _regs: dict[str, Registration] = {}
 _img_cache: dict[tuple, bytes] = {}
+
+
+# ------------------------------------------------------------- security layer
+
+_PUBLIC_PATHS = {"/login", "/api/login", "/api/auth", "/style.css",
+                 "/login.js", "/favicon.ico"}
+
+
+def _client_key(request: Request) -> str:
+    if cfg.behind_proxy:
+        fwd = request.headers.get("x-forwarded-for", "")
+        if fwd:
+            return fwd.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    # 1. Host allow-list (defends against Host-header poisoning)
+    if cfg.allowed_hosts:
+        host = (request.headers.get("host") or "").split(":")[0].lower()
+        if host not in cfg.allowed_hosts:
+            return JSONResponse({"detail": "Host not allowed"}, status_code=400)
+
+    # 2. Body-size cap (uploads are large but not unbounded)
+    cl = request.headers.get("content-length")
+    if cl and cl.isdigit() and int(cl) > cfg.max_upload_mb * 1024 * 1024:
+        return JSONResponse(
+            {"detail": f"Upload exceeds {cfg.max_upload_mb} MB"}, status_code=413)
+
+    path = request.url.path
+    if cfg.auth_enabled and path not in _PUBLIC_PATHS:
+        session = read_session(cfg.secret_key,
+                               request.cookies.get(SESSION_COOKIE))
+        if session is None:
+            if path.startswith("/api/"):
+                return JSONResponse({"detail": "Authentication required"},
+                                    status_code=401)
+            return HTMLResponse(_login_page(), status_code=401)
+        # 3. CSRF: state-changing requests must echo the cookie in a header
+        if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+            if not csrf_ok(request.cookies.get(CSRF_COOKIE),
+                           request.headers.get(CSRF_HEADER)):
+                return JSONResponse({"detail": "CSRF token missing or invalid"},
+                                    status_code=403)
+
+    response = await call_next(request)
+
+    # 4. Response hardening headers
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    response.headers["Permissions-Policy"] = \
+        "geolocation=(), microphone=(), camera=()"
+    # Reports embed their charts as data: URIs; nothing is loaded cross-origin.
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+        "script-src 'self'; connect-src 'self'; frame-ancestors 'none'; "
+        "base-uri 'none'; form-action 'self'")
+    if cfg.https_only:
+        response.headers["Strict-Transport-Security"] = \
+            "max-age=31536000; includeSubDomains"
+    if path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _set_auth_cookies(response, username: str, csrf: str) -> None:
+    token = issue_session(cfg.secret_key, username, cfg.session_hours)
+    common = dict(secure=cfg.https_only, samesite="strict",
+                  max_age=cfg.session_hours * 3600, path="/")
+    response.set_cookie(SESSION_COOKIE, token, httponly=True, **common)
+    # readable by JS on purpose: the frontend echoes it in the CSRF header
+    response.set_cookie(CSRF_COOKIE, csrf, httponly=False, **common)
+
+
+def _login_page() -> str:
+    return """<!doctype html><html><head><meta charset="utf-8">
+<title>MSF Phantom QA — sign in</title><link rel="stylesheet" href="/style.css">
+</head><body class="login-body">
+<form id="login-form" class="login-card">
+  <h1>MSF Phantom QA</h1>
+  <label>User <input name="username" autocomplete="username" required></label>
+  <label>Password <input name="password" type="password"
+         autocomplete="current-password" required></label>
+  <button class="primary" type="submit">Sign in</button>
+  <p id="login-error" class="login-error"></p>
+</form>
+<script src="/login.js"></script></body></html>"""
+
+
+class LoginBody(BaseModel):
+    username: str
+    password: str
+
+
+@app.get("/api/auth")
+def auth_state(request: Request):
+    if not cfg.auth_enabled:
+        return {"auth_enabled": False, "authenticated": True,
+                "csrf": request.cookies.get(CSRF_COOKIE)}
+    s = read_session(cfg.secret_key, request.cookies.get(SESSION_COOKIE))
+    return {"auth_enabled": True, "authenticated": s is not None,
+            "user": (s or {}).get("u"),
+            "csrf": request.cookies.get(CSRF_COOKIE)}
+
+
+@app.post("/api/login")
+def login(body: LoginBody, request: Request):
+    csrf = new_csrf_token()
+    if not cfg.auth_enabled:
+        resp = JSONResponse({"ok": True, "auth_enabled": False, "csrf": csrf})
+        _set_auth_cookies(resp, "anonymous", csrf)
+        return resp
+    key = _client_key(request)
+    wait = throttle.locked_for(key)
+    if wait > 0:
+        raise HTTPException(429, f"Too many failed attempts. "
+                                 f"Try again in {wait // 60 + 1} min.")
+    ok_user = secrets_equal(body.username, cfg.username)
+    if cfg.password_hash:
+        ok_pass = verify_password(body.password, cfg.password_hash)
+    else:
+        ok_pass = secrets_equal(body.password, cfg.password_plain)
+    # both checks always run, then combine — no early return that would leak
+    # which of the two was wrong via response timing
+    if not (ok_user and ok_pass):
+        throttle.record_failure(key)
+        raise HTTPException(401, "Invalid credentials")
+    throttle.reset(key)
+    resp = JSONResponse({"ok": True, "csrf": csrf})
+    _set_auth_cookies(resp, body.username, csrf)
+    return resp
+
+
+@app.post("/api/logout")
+def logout():
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(SESSION_COOKIE, path="/")
+    resp.delete_cookie(CSRF_COOKIE, path="/")
+    return resp
+
+
+def secrets_equal(a: str, b: str) -> bool:
+    import hmac
+    return hmac.compare_digest((a or "").encode(), (b or "").encode())
 
 
 def _scan(aid: str) -> ingest.ScanData:
@@ -242,6 +397,14 @@ def move_roi(aid: str, body: RoiMove):
     node.update(pipeline.to_jsonable(updated))
     node["manually_adjusted"] = True
     node["auto_center_mm"] = node.get("auto_center_mm", old_center)
+    # companions that must stay concentric with the ROI the user dragged
+    # (low-contrast background ring and object outline)
+    for suffix in ("/bg", "/outline"):
+        comp = _walk_find(geom, body.roi_id + suffix)
+        if comp is not None:
+            moved = roi_center_from_px(ctx, comp, body.center_px)
+            comp.clear()
+            comp.update(pipeline.to_jsonable(moved))
     from ..analysis.common import stats_for_roi
     stats = stats_for_roi(ctx, node)
     store.update(aid, geometry=geom)
@@ -457,6 +620,11 @@ def signatures():
         sigs.setdefault(item["signature"], 0)
         sigs[item["signature"]] += 1
     return {"signatures": [{"signature": k, "count": v} for k, v in sigs.items()]}
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page():
+    return _login_page()
 
 
 app.mount("/", StaticFiles(

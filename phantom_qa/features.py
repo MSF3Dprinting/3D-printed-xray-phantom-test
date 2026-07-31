@@ -164,6 +164,23 @@ def roi_stats_rect(img, center, size, angle_deg=0.0) -> dict:
     return roi_stats_masked(sub, m)
 
 
+def annulus_mask(shape, center, r_inner, r_outer):
+    h, w = shape
+    yy, xx = np.mgrid[0:h, 0:w]
+    d2 = (xx - center[0]) ** 2 + (yy - center[1]) ** 2
+    return (d2 <= r_outer ** 2) & (d2 >= r_inner ** 2)
+
+
+def roi_stats_annulus(img, center, r_inner, r_outer) -> dict:
+    cx, cy = center
+    r = r_outer + 2
+    x0, x1 = int(max(0, cx - r)), int(min(img.shape[1], cx + r + 1))
+    y0, y1 = int(max(0, cy - r)), int(min(img.shape[0], cy + r + 1))
+    sub = img[y0:y1, x0:x1]
+    m = annulus_mask(sub.shape, (cx - x0, cy - y0), r_inner, r_outer)
+    return roi_stats_masked(sub, m)
+
+
 def roi_stats_circle(img, center, radius) -> dict:
     cx, cy = center
     r = radius + 2

@@ -14,7 +14,7 @@ from __future__ import annotations
 import numpy as np
 from scipy import ndimage
 
-from .common import Ctx, circle_roi, rect_roi, stats_for_roi
+from .common import Ctx, annulus_roi, circle_roi, rect_roi, stats_for_roi
 
 
 def _refine_block(ctx: Ctx):
@@ -103,23 +103,29 @@ def propose(ctx: Ctx) -> dict:
     else:
         du_med = dv_med = 0.0
 
+    bg_in = lc.get("bg_inner_dia_mm", 12.0)
+    bg_out = lc.get("bg_outer_dia_mm", 16.0)
     circles = []
     for c in lc["circles"]:
         cc = (np.asarray(center) + (c["u_mm"] + du_med) * u
               + (c["v_mm"] + dv_med) * v)
-        bg = (np.asarray(center) + (c["u_mm"] + du_med) * u + dv_med * v)
         circles.append({
             "id": c["id"], "level": c["level"],
             "roi": circle_roi(ctx, cc, roi_dia, roi_id=f"lowcontrast/{c['id']}"),
-            "bg_roi": circle_roi(ctx, bg, roi_dia,
-                                 roi_id=f"lowcontrast/{c['id']}/bg"),
+            # Local background is the ring around this circle. An ROI placed
+            # elsewhere on the block (e.g. on the midline) both picks up the
+            # block's own brightness gradient and shows up as an unexplained
+            # marker in the middle of the object.
+            "bg_roi": annulus_roi(ctx, cc, bg_in, bg_out,
+                                  roi_id=f"lowcontrast/{c['id']}/bg"),
             "full_circle": circle_roi(ctx, cc, dia,
                                       roi_id=f"lowcontrast/{c['id']}/outline"),
         })
     block = rect_roi(ctx, center, (lc["size_mm"][0], lc["size_mm"][1]), ang,
                      roi_id="lowcontrast/block")
     return {"block": block, "angle_deg": ang, "detected": detected,
-            "grid_shift_mm": [du_med, dv_med], "circles": circles}
+            "grid_shift_mm": [du_med, dv_med], "circles": circles,
+            "bg_ring_mm": [bg_in, bg_out]}
 
 
 def compute(ctx: Ctx, geometry: dict) -> dict:

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ..features import roi_stats_circle, roi_stats_rect
+from ..features import roi_stats_annulus, roi_stats_circle, roi_stats_rect
 from ..phantom_def import PhantomDef
 from ..registration import Registration, Transform
 
@@ -70,6 +70,23 @@ def circle_roi(ctx: Ctx, center_mm, dia_mm: float, roi_id: str = "") -> dict:
     }
 
 
+def annulus_roi(ctx: Ctx, center_mm, inner_dia_mm: float, outer_dia_mm: float,
+                roi_id: str = "") -> dict:
+    """Ring-shaped ROI. Used for local background around a low-contrast disc:
+    it is unmistakably tied to its own object and needs no separate marker
+    somewhere else on the phantom."""
+    T = ctx.T
+    c_px = np.asarray(T.mm_to_px(center_mm), float)
+    return {
+        "id": roi_id, "type": "annulus",
+        "center_mm": [float(center_mm[0]), float(center_mm[1])],
+        "inner_dia_mm": float(inner_dia_mm), "outer_dia_mm": float(outer_dia_mm),
+        "center_px": c_px.tolist(),
+        "inner_radius_px": float(inner_dia_mm / 2 * T.px_per_mm),
+        "outer_radius_px": float(outer_dia_mm / 2 * T.px_per_mm),
+    }
+
+
 def segment(ctx: Ctx, p0_mm, p1_mm, seg_id: str = "") -> dict:
     T = ctx.T
     return {
@@ -82,12 +99,15 @@ def segment(ctx: Ctx, p0_mm, p1_mm, seg_id: str = "") -> dict:
 
 
 def stats_for_roi(ctx: Ctx, roi: dict) -> dict:
-    """Pixel statistics for a rect/circle ROI dict (uses the px geometry)."""
+    """Pixel statistics for a rect/circle/annulus ROI dict (uses px geometry)."""
     if roi["type"] == "circle":
         return roi_stats_circle(ctx.pixels, roi["center_px"], roi["radius_px"])
     if roi["type"] == "rect":
         return roi_stats_rect(ctx.pixels, roi["center_px"], roi["size_px"],
                               roi["angle_img_deg"])
+    if roi["type"] == "annulus":
+        return roi_stats_annulus(ctx.pixels, roi["center_px"],
+                                 roi["inner_radius_px"], roi["outer_radius_px"])
     raise ValueError(f"unsupported ROI type {roi['type']}")
 
 
@@ -99,6 +119,10 @@ def refresh_px_geometry(ctx: Ctx, roi: dict) -> dict:
     if roi["type"] == "circle":
         return {**roi, **circle_roi(ctx, roi["center_mm"], roi["dia_mm"],
                                     roi.get("id", ""))}
+    if roi["type"] == "annulus":
+        return {**roi, **annulus_roi(ctx, roi["center_mm"],
+                                     roi["inner_dia_mm"], roi["outer_dia_mm"],
+                                     roi.get("id", ""))}
     if roi["type"] == "segment":
         return {**roi, **segment(ctx, roi["p0_mm"], roi["p1_mm"],
                                  roi.get("id", ""))}
