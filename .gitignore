@@ -20,6 +20,11 @@ DICOMDIR
 # Headless CLI output
 qa_output*/
 
+# Log files (they contain site names, operators and client addresses)
+logs/
+*.log
+*.log.[0-9]*
+
 # ---------------------------------------------------------------- secrets
 # Real configuration and credentials. .env.example IS tracked as the template.
 .env

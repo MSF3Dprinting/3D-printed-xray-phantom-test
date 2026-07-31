@@ -69,8 +69,25 @@ class Config:
             o.strip() for o in os.environ.get("PHANTOMQA_CORS_ORIGINS", "").split(",")
             if o.strip()]
 
+        # --- destructive actions
+        # Deleting an analysis destroys the stored source file too, so it is
+        # gated behind a SEPARATE password that ordinary users do not have.
+        # With no admin password configured, deletion is refused outright —
+        # the safe default for a shared installation.
+        self.admin_password_hash = os.environ.get(
+            "PHANTOMQA_ADMIN_PASSWORD_HASH", "")
+        self.deletion_enabled = bool(self.admin_password_hash)
+
         # --- limits
         self.max_upload_mb = _int("PHANTOMQA_MAX_UPLOAD_MB", 200)
+
+        # --- logging
+        self.log_dir = os.environ.get("PHANTOMQA_LOG_DIR", "logs")
+        self.log_level = os.environ.get("PHANTOMQA_LOG_LEVEL", "INFO")
+        self.log_max_mb = _int("PHANTOMQA_LOG_MAX_MB", 10)
+        self.log_backups = _int("PHANTOMQA_LOG_BACKUPS", 10)
+        self.log_audit_backups = _int("PHANTOMQA_LOG_AUDIT_BACKUPS", 30)
+        self.log_console = _bool("PHANTOMQA_LOG_CONSOLE", True)
 
         # --- secret key (session signing)
         key = os.environ.get("PHANTOMQA_SECRET_KEY", "")
@@ -96,7 +113,9 @@ class Config:
         return (f"env={self.env} auth={'on' if self.auth_enabled else 'OFF'} "
                 f"https_only={self.https_only} "
                 f"hosts={self.allowed_hosts or '*'} "
-                f"max_upload={self.max_upload_mb}MB")
+                f"max_upload={self.max_upload_mb}MB "
+                f"deletion={'admin-password' if self.deletion_enabled else 'DISABLED'} "
+                f"logs={self.log_dir}")
 
 
 _config: Config | None = None

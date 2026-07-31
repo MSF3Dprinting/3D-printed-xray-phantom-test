@@ -185,6 +185,7 @@ a { color: var(--accent); }
 #history-table td:nth-child(3), #history-table td:nth-child(4) {
   font-weight: 600;
 }
+a.danger { color: var(--fail); }
 
 /* ---- sign-in page ---- */
 .login-body {

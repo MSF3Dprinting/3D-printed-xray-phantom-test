@@ -6,6 +6,7 @@ One row per analysis. The original upload bytes are kept on disk
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -206,6 +207,52 @@ class Store:
         p = self.upload_path(aid)
         if os.path.exists(p):
             os.remove(p)
+
+    # ----------------------------------------------------------- integrity
+
+    def verify_integrity(self, aid: str) -> dict:
+        """Re-hash the stored source file and compare with the hash recorded
+        when it was analysed.
+
+        A mismatch means the bytes on disk are no longer the bytes that
+        produced the results — corruption, a restore of the wrong file, or
+        tampering. It never happens by accident, so it is worth checking before
+        relying on an old report."""
+        rec = self.get(aid)
+        if rec is None:
+            return {"id": aid, "status": "not_found",
+                    "message": "no such analysis"}
+        path = self.upload_path(aid)
+        if not os.path.exists(path):
+            return {"id": aid, "status": "missing_file",
+                    "stored_sha256": rec["sha256"], "computed_sha256": None,
+                    "path": path, "size_bytes": None,
+                    "message": "the stored source file is gone; results cannot "
+                               "be traced back to their input"}
+        h = hashlib.sha256()
+        size = 0
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+                size += len(chunk)
+        computed = h.hexdigest()
+        ok = (computed == rec["sha256"])
+        return {
+            "id": aid,
+            "status": "ok" if ok else "mismatch",
+            "stored_sha256": rec["sha256"],
+            "computed_sha256": computed,
+            "path": path,
+            "size_bytes": size,
+            "source_name": rec["source_name"],
+            "message": ("the stored file still hashes to the value recorded at "
+                        "analysis time" if ok else
+                        "THE STORED FILE NO LONGER MATCHES the hash recorded at "
+                        "analysis time — do not rely on these results"),
+        }
+
+    def verify_all(self) -> list[dict]:
+        return [self.verify_integrity(item["id"]) for item in self.list_all()]
 
 
 def _acquired_at(meta: dict) -> str:

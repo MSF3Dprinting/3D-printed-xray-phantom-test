@@ -111,7 +111,45 @@ window/level with the W/C sliders):
      line in mm and % of SID (tolerance ±2 %; SID entered in Stage D, default
      1000 mm).
 6. **F — Save & export.** Optionally mark the analysis as **baseline** for its
-   protocol signature; download the printable report, CSV, or full JSON.
+   protocol signature; download the printable report, CSV, or full JSON; and
+   **verify the source file** against its recorded SHA-256.
+
+## Source file integrity (SHA-256)
+
+Every analysis records a SHA-256 fingerprint of the exact file it was computed
+from, and keeps a copy of that file. This ties the numbers to their input and
+detects silent corruption, a wrong backup restore, or the wrong scan attached to
+a record.
+
+- The **report** shows the hash and re-checks it as it is generated.
+- **Verify source file** in Stage F, or the **verify** link in History,
+  re-hashes the stored copy on demand.
+- `python -m phantom_qa.manage verify --all` does the same from the command
+  line and exits non-zero on failure, so it can be scheduled.
+- To check it yourself: `Get-FileHash -Algorithm SHA256 <file>` (PowerShell) or
+  `sha256sum <file>` (Linux/macOS) must reproduce the value exactly.
+
+Full explanation, including what to do about a mismatch:
+[docs/INTEGRITY.md](docs/INTEGRITY.md).
+
+## Deleting analyses
+
+Because several people share one installation, deletion is deliberately hard to
+do by accident. It requires a **separate administrator password** (not the
+everyday login) *and* typing the analysis id back to confirm, and it is
+throttled. If no administrator password is configured, deletion is refused
+outright — the default. Every attempt, successful or not, is written to
+`logs/audit.log` together with the site, phantom and SHA-256 of what was
+removed. Set it up with
+`python -m phantom_qa.manage set-admin-password`.
+
+## Logs
+
+Three rotating files under `logs/`: `phantomqa.log` (all activity),
+`errors.log` (warnings and above), and `audit.log` (who did what to the data —
+sign-ins, uploads, computes, label edits, integrity checks, deletions).
+Passwords and tokens are redacted. See
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#logging) for retention guidance.
 
 ### Reading the overlays
 
@@ -202,15 +240,18 @@ phantom_qa/                 the Python package
   comparison_report.py      multi-analysis comparison report (trends + drift)
   config.py                 .env loading, production safety checks
   security.py               password hashing, signed sessions, CSRF, throttling
-  manage.py                 admin CLI (gen-secret, set-password, check)
+  logging_setup.py          rotating app / error / audit logs, secret redaction
+  manage.py                 admin CLI (gen-secret, set-password, verify, check)
   cli.py                    headless batch analysis
   webapp/                   FastAPI backend + no-build JS frontend
 data/phantom_definitions/msf_v1.json   calibrated phantom geometry (see below)
 data/phantom_qa.sqlite3     analysis database (created on first run)
 data/uploads/               original uploaded files (traceability)
-tests/                      pytest suite (95 tests)
+logs/                       rotating application, error and audit logs
+tests/                      pytest suite (131 tests)
 docs/ALGORITHMS.md          how every number is computed + validation results
-docs/DEPLOYMENT.md          server deployment, TLS, and the security model
+docs/DEPLOYMENT.md          server deployment, TLS, security, deletion, logging
+docs/INTEGRITY.md           what the SHA-256 is for and how to verify it
 .env.example                configuration template (copy to .env)
 ```
 

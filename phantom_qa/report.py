@@ -372,8 +372,73 @@ def _wedge_section(res, bmap):
 
 # ---------------------------------------------------------------------- report
 
+def _identity_block(record: dict) -> str:
+    rows = [("Site", record.get("site")),
+            ("Phantom", record.get("phantom")),
+            ("Operator", record.get("operator")),
+            ("Acquired", (record.get("acquired_at") or "")[:16]),
+            ("Notes", record.get("notes"))]
+    cells = "".join(
+        f'<div class="idcell"><span class="idk">{html.escape(k)}</span>'
+        f'<span class="idv">{html.escape(str(v)) if v else "—"}</span></div>'
+        for k, v in rows)
+    warn = ""
+    if not record.get("site") and not record.get("phantom"):
+        warn = ('<p class="warnbox">⚠ No site or phantom recorded — this '
+                'analysis will not appear in grouped trends.</p>')
+    return f'<section class="card"><h2>Identification</h2>' \
+           f'<div class="idgrid">{cells}</div>{warn}</section>'
+
+
+def _integrity_block(record: dict, integrity: dict | None) -> str:
+    """SHA-256 of the analysed file, and what to do with it."""
+    sha = record.get("sha256", "")
+    if integrity:
+        st = integrity.get("status")
+        if st == "ok":
+            verdict = (f'<span class="chip" style="background:{_STATUS_COLOR["pass"]}">'
+                       f'verified</span> the stored source file still hashes to '
+                       f'this value')
+        elif st == "missing_file":
+            verdict = (f'<span class="chip" style="background:{_STATUS_COLOR["warn"]}">'
+                       f'file missing</span> the stored source file is no longer '
+                       f'on the server; the hash below cannot be re-checked')
+        else:
+            verdict = (f'<span class="chip" style="background:{_STATUS_COLOR["fail"]}">'
+                       f'MISMATCH</span> the stored file no longer matches — do '
+                       f'not rely on these results')
+        computed = integrity.get("computed_sha256")
+        extra = (f"<tr><td>recomputed now</td><td><code>{html.escape(computed)}</code>"
+                 f"</td></tr>" if computed and computed != sha else "")
+    else:
+        verdict = "not checked when this report was generated"
+        extra = ""
+    return f"""
+<section class="card"><h2>Source file integrity</h2>
+<table>
+<tr><td>source file</td><td>{html.escape(record.get('source_name', ''))}</td></tr>
+<tr><td>SHA-256 recorded at analysis</td><td><code>{html.escape(sha)}</code></td></tr>
+{extra}
+<tr><td>status</td><td>{verdict}</td></tr>
+</table>
+<p class="note"><b>What this is for.</b> The SHA-256 is a fingerprint of the exact
+file that produced the numbers in this report. It ties the results to their
+input: if the file is later corrupted, restored from the wrong backup, or
+swapped, the fingerprint changes and the link is broken.</p>
+<p class="note"><b>How to check it yourself.</b> Hash your copy of the original
+file and compare the value with the one above — they must match character for
+character:</p>
+<pre class="cmd">Windows PowerShell:  Get-FileHash -Algorithm SHA256 "&lt;file&gt;"
+Linux / macOS:       sha256sum "&lt;file&gt;"</pre>
+<p class="note">Inside the app, <i>Verify source file</i> on the analysis (or
+<code>python -m phantom_qa.manage verify --all</code>) re-hashes the copy the
+server kept and reports any mismatch. Every check is written to the audit log.</p>
+</section>"""
+
+
 def build_report(record: dict, overlay_png: bytes | None = None,
-                 baseline: dict | None = None) -> str:
+                 baseline: dict | None = None,
+                 integrity: dict | None = None) -> str:
     results = record.get("results") or {}
     meta = record.get("meta") or {}
     reg = (results.get("_meta") or {}).get("registration") or {}
@@ -460,7 +525,15 @@ def build_report(record: dict, overlay_png: bytes | None = None,
              padding:8px 12px; display:flex; gap:10px; align-items:center;
              font-size:12.5px; }}
  img {{ max-width:100%; height:auto; display:block; margin:8px 0; }}
- code {{ font-size:10.5px; }}
+ code {{ font-size:10.5px; word-break:break-all; }}
+ pre.cmd {{ background:#f2f5f8; border:1px solid #dfe4ea; border-radius:6px;
+            padding:8px 10px; font-size:11px; overflow-x:auto; }}
+ .idgrid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+            gap:8px; }}
+ .idcell {{ background:#f2f5f8; border-radius:8px; padding:8px 10px; }}
+ .idk {{ display:block; font-size:10px; color:#5b6b80; text-transform:uppercase;
+         letter-spacing:.05em; }}
+ .idv {{ font-size:13.5px; font-weight:600; }}
  @media print {{ body {{ background:#fff; }} .card {{ break-inside: avoid; }} }}
 </style></head><body><div class="wrap">
 <h1>MSF Phantom QA report</h1>
@@ -470,9 +543,9 @@ def build_report(record: dict, overlay_png: bytes | None = None,
 <b>Source</b> {html.escape(record['source_name'])} ·
 <b>SID</b> {record.get('sid_mm') or 1000.0} mm ·
 <b>Algorithm</b> v{html.escape(record.get('algo_version') or '')}<br>
-<b>Protocol signature</b> {html.escape(record.get('signature') or '')}<br>
-<b>SHA-256</b> <code>{html.escape(record['sha256'])}</code></p>
+<b>Protocol signature</b> {html.escape(record.get('signature') or '')}</p>
 {reduced}
+{_identity_block(record)}
 <div class="summary">{summary}</div>
 <section class="card"><h2>Registration</h2>
 <table>
@@ -485,6 +558,7 @@ def build_report(record: dict, overlay_png: bytes | None = None,
 {overlay_html}
 <section class="card"><h2>Acquisition metadata</h2>
 <table>{meta_rows}</table></section>
+{_integrity_block(record, integrity)}
 <section class="card"><h2>Audit trail</h2>
 <table><tr><th>time</th><th>stage</th><th>action</th><th>detail</th></tr>
 {audit_html}</table></section>

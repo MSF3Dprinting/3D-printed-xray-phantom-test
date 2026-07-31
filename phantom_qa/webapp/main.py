@@ -6,7 +6,9 @@ Run with:  python run_app.py   (or: uvicorn phantom_qa.webapp.main:app)
 from __future__ import annotations
 
 import io
+import logging
 import os
+import time
 
 import numpy as np
 from fastapi import (FastAPI, File, Form, HTTPException, Request, Response,
@@ -20,6 +22,7 @@ from .. import ingest, pipeline
 from ..analysis.common import roi_center_from_px
 from ..comparison_report import build_comparison_report
 from ..config import get_config
+from ..logging_setup import audit, get_logger, setup_logging
 from ..phantom_def import load_default
 from ..registration import Registration, Transform
 from ..report import build_report
@@ -30,11 +33,24 @@ from ..store import Store, csv_export, flatten_results, wide_csv_export
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 cfg = get_config()
+
+log_dir = cfg.log_dir if os.path.isabs(cfg.log_dir) \
+    else os.path.join(ROOT, cfg.log_dir)
+setup_logging(log_dir, level=cfg.log_level, max_mb=cfg.log_max_mb,
+              backups=cfg.log_backups, audit_backups=cfg.log_audit_backups,
+              console=cfg.log_console)
+log = get_logger("web")
+log.info("starting: %s", cfg.summary())
+if not cfg.deletion_enabled:
+    log.warning("deletion is DISABLED (no PHANTOMQA_ADMIN_PASSWORD_HASH set)")
+
 app = FastAPI(title="MSF Phantom QA", docs_url=None, redoc_url=None,
               openapi_url=None)
 store = Store(ROOT)
 pdef = load_default()
 throttle = LoginThrottle(cfg.max_login_attempts, cfg.lockout_minutes)
+admin_throttle = LoginThrottle(max(cfg.max_login_attempts // 2, 3),
+                               cfg.lockout_minutes)
 
 _scans: dict[str, ingest.ScanData] = {}       # id -> ScanData cache
 _regs: dict[str, Registration] = {}
@@ -53,6 +69,13 @@ def _client_key(request: Request) -> str:
         if fwd:
             return fwd.split(",")[0].strip()
     return request.client.host if request.client else "unknown"
+
+
+def _current_user(request: Request) -> str:
+    if not cfg.auth_enabled:
+        return "anonymous"
+    s = read_session(cfg.secret_key, request.cookies.get(SESSION_COOKIE))
+    return (s or {}).get("u", "-")
 
 
 @app.middleware("http")
@@ -85,7 +108,20 @@ async def security_middleware(request: Request, call_next):
                 return JSONResponse({"detail": "CSRF token missing or invalid"},
                                     status_code=403)
 
-    response = await call_next(request)
+    t0 = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        log.exception("unhandled error %s %s client=%s user=%s",
+                      request.method, path, _client_key(request),
+                      _current_user(request))
+        raise
+    dt_ms = (time.perf_counter() - t0) * 1000.0
+    if not path.startswith(("/style.css", "/app.js", "/login.js", "/favicon")):
+        lvl = logging.WARNING if response.status_code >= 400 else logging.INFO
+        log.log(lvl, "%s %s -> %s in %.0f ms client=%s user=%s",
+                request.method, path, response.status_code, dt_ms,
+                _client_key(request), _current_user(request))
 
     # 4. Response hardening headers
     response.headers["X-Content-Type-Options"] = "nosniff"
@@ -168,15 +204,19 @@ def login(body: LoginBody, request: Request):
     # which of the two was wrong via response timing
     if not (ok_user and ok_pass):
         throttle.record_failure(key)
+        audit("login", user=body.username, client=key, outcome="denied")
+        log.warning("failed sign-in for %r from %s", body.username, key)
         raise HTTPException(401, "Invalid credentials")
     throttle.reset(key)
+    audit("login", user=body.username, client=key, outcome="ok")
     resp = JSONResponse({"ok": True, "csrf": csrf})
     _set_auth_cookies(resp, body.username, csrf)
     return resp
 
 
 @app.post("/api/logout")
-def logout():
+def logout(request: Request):
+    audit("logout", user=_current_user(request), client=_client_key(request))
     resp = JSONResponse({"ok": True})
     resp.delete_cookie(SESSION_COOKIE, path="/")
     resp.delete_cookie(CSRF_COOKIE, path="/")
@@ -262,13 +302,18 @@ def _do_register(aid: str, corners_hint=None):
 # ------------------------------------------------------------------ endpoints
 
 @app.post("/api/analyses")
-async def upload(file: UploadFile = File(...),
+async def upload(request: Request, file: UploadFile = File(...),
                  site: str = Form(""), phantom: str = Form(""),
                  operator: str = Form(""), notes: str = Form("")):
+    user, client = _current_user(request), _client_key(request)
     data = await file.read()
     try:
         scans = ingest.load_any_bytes(data, file.filename or "upload")
     except Exception as e:
+        log.warning("upload rejected (%s) name=%r user=%s",
+                    e, file.filename, user)
+        audit("upload", user=user, client=client, outcome="rejected",
+              filename=file.filename, error=str(e))
         raise HTTPException(400, f"Could not read file: {e}")
     labels = {"site": site, "phantom": phantom,
               "operator": operator, "notes": notes}
@@ -280,6 +325,13 @@ async def upload(file: UploadFile = File(...),
         store.audit(aid, "A", "uploaded",
                     {"source": scan.source_name, "kind": scan.kind,
                      **{k: v for k, v in labels.items() if v}})
+        audit("upload", user=user, client=client, analysis=aid,
+              filename=scan.source_name, kind=scan.kind,
+              sha256=scan.sha256, bytes=len(data),
+              **{k: v for k, v in labels.items() if v})
+        log.info("uploaded analysis=%s source=%r site=%r phantom=%r sha=%s",
+                 aid, scan.source_name, labels["site"], labels["phantom"],
+                 scan.sha256[:16])
         try:
             reg = _do_register(aid)
             created.append({"id": aid, "source_name": scan.source_name,
@@ -313,12 +365,16 @@ class LabelBody(BaseModel):
 
 
 @app.post("/api/analyses/{aid}/labels")
-def set_labels(aid: str, body: LabelBody):
-    if store.get(aid) is None:
+def set_labels(aid: str, body: LabelBody, request: Request):
+    rec = store.get(aid)
+    if rec is None:
         raise HTTPException(404, "not found")
     fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    before = {k: rec.get(k) for k in fields}
     store.set_labels(aid, fields)
     store.audit(aid, "F", "labels edited", fields)
+    audit("labels", user=_current_user(request), client=_client_key(request),
+          analysis=aid, before=before, after=fields)
     return {"ok": True, **fields}
 
 
@@ -548,7 +604,7 @@ class ComputeBody(BaseModel):
 
 
 @app.post("/api/analyses/{aid}/compute")
-def compute(aid: str, body: ComputeBody):
+def compute(aid: str, body: ComputeBody, request: Request):
     rec = store.get(aid)
     if not rec or not rec.get("geometry"):
         raise HTTPException(400, "no confirmed geometry")
@@ -559,6 +615,9 @@ def compute(aid: str, body: ComputeBody):
     store.update(aid, results=results, status=status, stage="F")
     store.audit(aid, "E", "computed", {"overall": status,
                                        "sid_mm": body.sid_mm})
+    audit("compute", user=_current_user(request), client=_client_key(request),
+          analysis=aid, outcome=status, sid_mm=body.sid_mm)
+    log.info("computed analysis=%s overall=%s", aid, status)
     baseline = store.baseline_for(rec["signature"], exclude_id=aid)
     return pipeline.to_jsonable({
         "results": results, "overall": status,
@@ -573,7 +632,7 @@ class FinalizeBody(BaseModel):
 
 
 @app.post("/api/analyses/{aid}/finalize")
-def finalize(aid: str, body: FinalizeBody):
+def finalize(aid: str, body: FinalizeBody, request: Request):
     rec = store.get(aid)
     if rec is None:
         raise HTTPException(404, "not found")
@@ -583,15 +642,94 @@ def finalize(aid: str, body: FinalizeBody):
             raise HTTPException(400, "reduced-precision analyses cannot be baselines")
         store.set_baseline(aid, True)
     store.audit(aid, "F", "finalized", {"baseline": body.baseline})
+    audit("finalize", user=_current_user(request), client=_client_key(request),
+          analysis=aid, baseline=body.baseline,
+          site=rec.get("site"), phantom=rec.get("phantom"))
     return {"ok": True}
 
 
-@app.delete("/api/analyses/{aid}")
-def delete_analysis(aid: str):
+class DeleteBody(BaseModel):
+    admin_password: str = ""
+    confirm_id: str = ""
+    reason: str = ""
+
+
+@app.post("/api/analyses/{aid}/delete")
+def delete_analysis(aid: str, body: DeleteBody, request: Request):
+    """Delete an analysis and its stored source file.
+
+    Deliberately hard to do by accident on a shared installation:
+      * a separate ADMIN password is required — not the everyday login;
+      * the analysis id must be typed back to confirm;
+      * every attempt, successful or not, goes to the audit log.
+    With no admin password configured the endpoint refuses outright."""
+    user = _current_user(request)
+    client = _client_key(request)
+    rec = store.get(aid)
+    if rec is None:
+        raise HTTPException(404, "not found")
+
+    if not cfg.deletion_enabled:
+        audit("delete", user=user, client=client, analysis=aid,
+              outcome="refused", reason="deletion disabled")
+        raise HTTPException(
+            403, "Deletion is disabled on this installation. An administrator "
+                 "must set PHANTOMQA_ADMIN_PASSWORD_HASH in .env "
+                 "(python -m phantom_qa.manage set-admin-password).")
+
+    wait = admin_throttle.locked_for(client)
+    if wait > 0:
+        audit("delete", user=user, client=client, analysis=aid,
+              outcome="throttled")
+        raise HTTPException(429, f"Too many failed admin attempts. Try again in "
+                                 f"{wait // 60 + 1} min.")
+
+    if body.confirm_id.strip() != aid:
+        audit("delete", user=user, client=client, analysis=aid,
+              outcome="refused", reason="confirmation id mismatch")
+        raise HTTPException(400, "Type the analysis id exactly to confirm.")
+
+    if not verify_password(body.admin_password, cfg.admin_password_hash):
+        admin_throttle.record_failure(client)
+        audit("delete", user=user, client=client, analysis=aid,
+              outcome="denied", reason="bad admin password")
+        log.warning("delete denied (bad admin password) analysis=%s client=%s "
+                    "user=%s", aid, client, user)
+        raise HTTPException(401, "Incorrect administrator password.")
+
+    admin_throttle.reset(client)
+    audit("delete", user=user, client=client, analysis=aid, outcome="ok",
+          site=rec.get("site"), phantom=rec.get("phantom"),
+          source=rec.get("source_name"), sha256=rec.get("sha256"),
+          created_at=rec.get("created_at"), reason=body.reason)
+    log.warning("DELETED analysis=%s site=%r phantom=%r by user=%s client=%s",
+                aid, rec.get("site"), rec.get("phantom"), user, client)
     store.delete(aid)
     _scans.pop(aid, None)
     _regs.pop(aid, None)
     return {"ok": True}
+
+
+@app.get("/api/deletion_policy")
+def deletion_policy():
+    return {"enabled": cfg.deletion_enabled,
+            "requires_admin_password": True,
+            "requires_id_confirmation": True}
+
+
+@app.get("/api/analyses/{aid}/verify")
+def verify(aid: str, request: Request):
+    """Re-hash the stored source file and compare with the recorded SHA-256."""
+    result = store.verify_integrity(aid)
+    if result["status"] == "not_found":
+        raise HTTPException(404, "not found")
+    outcome = "ok" if result["status"] == "ok" else "FAILED"
+    audit("verify", user=_current_user(request), client=_client_key(request),
+          analysis=aid, outcome=outcome, result=result["status"])
+    if result["status"] != "ok":
+        log.error("integrity check %s for analysis=%s: %s",
+                  result["status"], aid, result["message"])
+    return result
 
 
 @app.get("/api/analyses/{aid}/export.json")
@@ -661,7 +799,13 @@ def report_html(aid: str):
         except Exception:
             overlay = None
     baseline = store.baseline_for(rec["signature"], exclude_id=aid)
-    return build_report(rec, overlay_png=overlay, baseline=baseline)
+    # the report states whether the source file still matches its recorded hash
+    integrity = store.verify_integrity(aid)
+    if integrity.get("status") != "ok":
+        log.error("integrity %s while building report for analysis=%s",
+                  integrity.get("status"), aid)
+    return build_report(rec, overlay_png=overlay, baseline=baseline,
+                        integrity=integrity)
 
 
 @app.get("/api/trends")

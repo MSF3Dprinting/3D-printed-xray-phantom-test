@@ -506,6 +506,61 @@ function editLabelsDialog(rec, title = "Edit identification") {
   });
 }
 
+/* ================= integrity & deletion ================= */
+
+async function verifyAnalysis(aid) {
+  status("Re-hashing the stored source file…");
+  try {
+    const r = await api(`/api/analyses/${aid}/verify`);
+    const msg = {
+      ok: `✔ Verified — the stored file still matches the SHA-256 recorded at `
+        + `analysis time.\n\nSHA-256:\n${r.stored_sha256}\n\n`
+        + `File: ${r.source_name} (${(r.size_bytes / 1048576).toFixed(1)} MB)`,
+      mismatch: `✘ MISMATCH — the stored file no longer matches the hash `
+        + `recorded at analysis time. Do not rely on these results.\n\n`
+        + `recorded: ${r.stored_sha256}\ncomputed: ${r.computed_sha256}`,
+      missing_file: `⚠ The stored source file is missing, so the results can no `
+        + `longer be traced back to their input.\n\nrecorded: ${r.stored_sha256}`,
+    }[r.status] || r.message;
+    alert(msg);
+    status(r.status === "ok" ? "Integrity verified." : "Integrity check FAILED.",
+           r.status !== "ok");
+  } catch (e) { status("Verification failed: " + e.message, true); }
+}
+
+/* Deleting destroys the stored source file, so on a shared installation it
+   needs the ADMIN password plus the analysis id typed back. */
+async function deleteAnalysis(aid) {
+  let policy = { enabled: true };
+  try { policy = await api("/api/deletion_policy"); } catch (e) { /* noop */ }
+  if (!policy.enabled) {
+    alert("Deletion is disabled on this installation.\n\nAn administrator must "
+      + "set PHANTOMQA_ADMIN_PASSWORD_HASH in .env\n"
+      + "(python -m phantom_qa.manage set-admin-password).");
+    return;
+  }
+  const confirmId = prompt(
+    `This permanently deletes analysis ${aid} AND its stored source file.\n`
+    + `It cannot be undone.\n\nType the analysis id to confirm:`);
+  if (confirmId === null) return;
+  if (confirmId.trim() !== aid) { alert("The id did not match — nothing deleted."); return; }
+  const pw = prompt("Administrator password (not your login password):");
+  if (pw === null) return;
+  const reason = prompt("Reason for deletion (recorded in the audit log):", "") || "";
+  try {
+    await postJSON(`/api/analyses/${aid}/delete`,
+                   { admin_password: pw, confirm_id: confirmId.trim(), reason });
+    status(`Analysis ${aid} deleted.`);
+    if (S.aid === aid) {
+      S.aid = null; S.record = null; S.imgEl = null; S.geometry = null;
+      S.results = null; S.reg = null;
+      setStage("U");
+      draw();
+    }
+    loadHistory();
+  } catch (e) { status("Delete refused: " + e.message, true); }
+}
+
 /* ================= wizard stages ================= */
 
 function setStage(st) {
@@ -1006,6 +1061,14 @@ function stageF(c) {
       <a href="/api/analyses/${S.aid}/export.csv" download="phantom_qa_${S.aid}.csv">⬇ CSV (flat metrics)</a><br>
       <a href="/api/analyses/${S.aid}/export.json" target="_blank">⬇ JSON (full record)</a>
     </p>
+    <h3>Source file integrity</h3>
+    <p class="hint">The SHA-256 below fingerprints the exact file these results
+    came from. Verifying re-hashes the copy the server kept and reports any
+    mismatch — corruption, a wrong restore, or a swapped file.</p>
+    <p class="mono" style="font-size:10.5px; word-break:break-all">
+      ${(S.record && S.record.sha256) || ""}</p>
+    <button class="secondary" id="btn-verify">Verify source file</button>
+    <br>
     <button class="secondary" id="btn-new">New analysis</button>`;
   $("#btn-finalize").addEventListener("click", async () => {
     try {
@@ -1014,6 +1077,7 @@ function stageF(c) {
       status("Finalized.");
     } catch (e) { status(e.message, true); }
   });
+  $("#btn-verify").addEventListener("click", () => verifyAnalysis(S.aid));
   $("#btn-new").addEventListener("click", () => {
     S.aid = null; S.imgEl = null; S.geometry = null; S.results = null;
     S.reg = null; S.record = null; S.pendingFile = null;
@@ -1181,7 +1245,8 @@ async function loadHistory() {
       <td><a href="#" class="open" data-id="${a.id}">open</a> ·
           <a href="/api/analyses/${a.id}/report.html" target="_blank">report</a> ·
           <a href="#" class="edit" data-id="${a.id}">label</a> ·
-          <a href="#" class="del" data-id="${a.id}">delete</a></td>`);
+          <a href="#" class="verify" data-id="${a.id}">verify</a> ·
+          <a href="#" class="del danger" data-id="${a.id}">delete</a></td>`);
     tb.appendChild(tr);
   });
   tb.querySelectorAll("a.open").forEach(a => a.addEventListener("click", (e) => {
@@ -1190,9 +1255,11 @@ async function loadHistory() {
   }));
   tb.querySelectorAll("a.del").forEach(a => a.addEventListener("click", async (e) => {
     e.preventDefault();
-    if (!confirm("Delete analysis " + a.dataset.id + "?")) return;
-    await api("/api/analyses/" + a.dataset.id, { method: "DELETE" });
-    loadHistory();
+    await deleteAnalysis(a.dataset.id);
+  }));
+  tb.querySelectorAll("a.verify").forEach(a => a.addEventListener("click", async (e) => {
+    e.preventDefault();
+    await verifyAnalysis(a.dataset.id);
   }));
   tb.querySelectorAll("a.edit").forEach(a => a.addEventListener("click", async (e) => {
     e.preventDefault();

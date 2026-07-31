@@ -23,6 +23,16 @@ PHANTOMQA_ENV=production
 PHANTOMQA_ALLOWED_HOSTS=phantomqa.yourdomain.org
 ```
 
+If anyone should be able to delete analyses, also create the **administrator
+password** — a second, different password:
+
+```bash
+python -m phantom_qa.manage set-admin-password   # -> PHANTOMQA_ADMIN_PASSWORD_HASH
+```
+
+Leaving it empty **disables deletion entirely**, which is the right default for
+a shared installation.
+
 Verify before starting:
 
 ```bash
@@ -118,15 +128,73 @@ Then `chmod 600 .env` and make sure `data/` is owned by the service user.
 | **Response headers** | `Content-Security-Policy` (self only; `data:` images for the inlined report charts), `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cross-Origin-Opener-Policy`, `Permissions-Policy`, and HSTS when HTTPS-only. |
 | **API caching** | All `/api/` responses are `Cache-Control: no-store`, so results never sit in a shared proxy cache. |
 | **Attack surface** | The interactive API docs (`/docs`, `/redoc`) and the OpenAPI schema are disabled. |
+| **Deletion** | Requires a separate administrator password plus typing the analysis id; throttled harder than sign-in; disabled entirely when unconfigured. |
+| **Integrity** | Every analysis stores a SHA-256 of its source file; reports re-check it (see [INTEGRITY.md](INTEGRITY.md)). |
 | **Timing** | The username and password checks both always run before the result is combined, so a wrong username and a wrong password take the same time. |
+
+## Protecting records from accidental deletion
+
+Several people share one login, so an ordinary session must not be able to
+destroy a record. Deleting an analysis (which also removes its stored source
+file) needs **all** of the following:
+
+1. **A separate administrator password** — `PHANTOMQA_ADMIN_PASSWORD_HASH`, not
+   the everyday login. `manage check` warns if the two are the same, because
+   then it protects nothing.
+2. **The analysis id typed back** as confirmation. A misclick cannot satisfy it.
+3. Attempts are **throttled harder than sign-in** (half the allowed attempts).
+
+With no administrator password configured, deletion is **refused outright** and
+the UI explains how to enable it. Everything — refusals, wrong passwords,
+successful deletions with the site, phantom, source name and SHA-256 of what was
+removed — is written to `logs/audit.log`.
+
+Nothing is soft-deleted: when a deletion succeeds the row and the file are gone.
+The audit log is the record that it happened, so keep it (see retention below)
+and back up `data/` on a schedule that matches how much you could afford to lose.
+
+## Logging
+
+Three files under `PHANTOMQA_LOG_DIR` (default `logs/`), all size-rotated:
+
+| File | Contents | Default retention |
+|---|---|---|
+| `phantomqa.log` | Every request (method, path, status, duration, client, user) and application activity | 10 × 10 MB |
+| `errors.log` | Warnings and errors only, with tracebacks | 10 × 10 MB |
+| `audit.log` | Who did what to the data: sign-ins, uploads, computes, label edits, integrity checks, deletions | 30 × 10 MB |
+
+`audit.log` is what you consult after "who deleted that?" — it is written at
+INFO regardless of `PHANTOMQA_LOG_LEVEL` and kept for longer. Lines are
+greppable with a JSON tail:
+
+```
+2026-07-31 15:19:16Z event=delete outcome=ok user=qa client=10.0.0.4 \
+  analysis=499b02d1e219 detail={"site":"Goma Hospital","phantom":"MSF-01",...}
+```
+
+```bash
+grep 'event=delete' logs/audit.log            # every deletion attempt
+grep 'outcome=denied' logs/audit.log          # failed admin/login attempts
+grep 'event=verify.*FAILED' logs/audit.log    # integrity problems
+```
+
+Passwords, tokens and cookies are redacted before anything is written; the
+redaction is recursive and covered by a test.
+
+**Retention.** Logs contain site names, operator names and client IP addresses.
+Treat them like `data/`: restrict permissions, include them in backup, and set a
+retention period that matches local policy. Rotation caps disk use (default
+~100 MB app + ~300 MB audit) but does not expire by date — use logrotate or a
+scheduled cleanup if you need time-based deletion.
 
 ## What it deliberately does not do
 
 - **No TLS termination** — use the reverse proxy. Rolling our own would be worse.
-- **No multi-user accounts, roles or audit-by-user.** There is one shared login.
-  The per-analysis audit trail records *what* was changed and when, not *who*.
-  If you need per-user accountability, that is a real feature to add, not a
-  config flag — say so and it can be built.
+- **No multi-user accounts or roles.** There is one shared login plus one
+  administrator password for deletion. `audit.log` records the *username used*
+  and the client address, so with a shared account you can tell which machine
+  did something but not which person. If you need real per-user accountability,
+  that is a feature to add, not a config flag.
 - **No rate limiting on analysis endpoints.** An authenticated user can start as
   many analyses as they like; each one is CPU-heavy. Fine for a small trusted
   team, not for untrusted users.

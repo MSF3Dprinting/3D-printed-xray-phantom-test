@@ -71,6 +71,27 @@ See [README.md](README.md) for the user guide,
   instead of being painted in full colour.
 - Test suite grown to **103 tests**.
 
+### Rev. 7 changes (2026-07-31)
+
+- **Report header now carries the identification** — Site, Phantom, Operator,
+  Acquired and Notes in their own block, with a warning when both site and
+  phantom are missing.
+- **SHA-256 finished as a usable feature.** It was stored and displayed but had
+  no way to be checked. Added `store.verify_integrity()`, a `/verify` endpoint,
+  a **Verify source file** button in Stage F and a **verify** link per History
+  row, `manage verify [--all]` for scheduling, re-checking inside every
+  generated report, and [docs/INTEGRITY.md](docs/INTEGRITY.md) explaining what
+  it is for, how to reproduce it with `sha256sum` / `Get-FileHash`, and what to
+  do about a mismatch.
+- **Deletion protected for shared use.** Requires a SEPARATE administrator
+  password (`PHANTOMQA_ADMIN_PASSWORD_HASH`) plus typing the analysis id back;
+  throttled harder than sign-in; refused outright when no admin password is
+  configured; every attempt audited with what was removed.
+- **Rotating logs**: `phantomqa.log`, `errors.log` and `audit.log` with size
+  rotation, per-request logging, structured greppable audit lines, and
+  recursive redaction of passwords/tokens/cookies.
+- Test suite grown to **131 tests**.
+
 ---
 
 ## 1. What we have (data survey findings)
