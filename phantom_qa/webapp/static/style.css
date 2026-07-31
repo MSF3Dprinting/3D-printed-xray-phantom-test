@@ -128,6 +128,37 @@ a { color: var(--accent); }
   background: rgba(217,160,33,0.14); border-top: 1px solid var(--warn);
   color: var(--warn); padding: 6px 12px; font-size: 11.5px;
 }
+.ident-comment {
+  padding: 0 12px 8px; font-size: 11.5px; color: var(--muted);
+  font-style: italic;
+}
+
+/* ---- validation modal ---- */
+#val-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 60;
+  display: flex; align-items: center; justify-content: center;
+}
+#val-backdrop.hidden { display: none; }
+#val-card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  padding: 20px 22px; width: 480px; max-width: 94vw;
+  max-height: 92vh; overflow-y: auto;
+}
+#val-card h3 { margin: 0 0 4px; font-size: 15px; }
+.vopt {
+  display: flex; gap: 8px; align-items: flex-start; padding: 7px 9px;
+  border: 1px solid var(--border); border-radius: 8px; margin: 6px 0;
+  font-size: 12px; cursor: pointer;
+}
+.vopt:hover { background: var(--panel2); }
+.vopt input { margin-top: 2px; }
+.vfield { display: flex; flex-direction: column; gap: 3px; margin-top: 10px;
+  font-size: 11px; color: var(--muted); }
+.vfield input, .vfield textarea {
+  background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+  padding: 7px 9px; border-radius: 6px; font-size: 13px;
+  font-family: inherit; resize: vertical;
+}
 
 /* ---- modal ---- */
 #modal-backdrop {

@@ -24,6 +24,15 @@ from .store import flatten_results
 _STATUS_COLOR = {"pass": "#2e9e44", "warn": "#d9a021", "fail": "#cf3f3f",
                  "n/a": "#9aa4b2", "error": "#cf3f3f", "": "#9aa4b2"}
 
+_VALIDATION_COLOR = {"validated": "#2e9e44",
+                     "conditionally_validated": "#d9a021",
+                     "not_validated": "#cf3f3f",
+                     "": "#9aa4b2"}
+_VALIDATION_SHORT = {"validated": "validated",
+                     "conditionally_validated": "conditional",
+                     "not_validated": "NOT validated",
+                     "": "pending"}
+
 _SECTION_TITLES = {
     "geometry": "Geometry & dimensions",
     "alignment": "X-ray field alignment",
@@ -153,16 +162,25 @@ def _status_grid(ordered, labels):
              ("uniformity", "status", "Uniformity"),
              ("wedge", "status", "Wedge")]
     n = len(ordered)
-    fig, ax = plt.subplots(figsize=(_fig_width(n), 0.42 * len(tests) + 2.0))
+    nrows = len(tests) + 1                     # + the validation row
+    fig, ax = plt.subplots(figsize=(_fig_width(n), 0.42 * nrows + 2.2))
     for row, (test, key, label) in enumerate(tests):
         for col, rec in enumerate(ordered):
             st = ((rec.get("results") or {}).get(test) or {}).get(key, "n/a")
             ax.add_patch(plt.Rectangle((col - 0.46, row - 0.42), 0.92, 0.84,
                                        color=_STATUS_COLOR.get(st, "#9aa4b2")))
+    # the administrator's ruling, separated by a gap so it reads as a verdict
+    vrow = len(tests) + 0.35
+    for col, rec in enumerate(ordered):
+        v = rec.get("validation_status") or ""
+        ax.add_patch(plt.Rectangle((col - 0.46, vrow - 0.42), 0.92, 0.84,
+                                   color=_VALIDATION_COLOR.get(v, "#9aa4b2")))
     ax.set_xlim(-0.6, n - 0.4)
-    ax.set_ylim(-0.6, len(tests) - 0.4)
-    ax.set_yticks(range(len(tests)))
-    ax.set_yticklabels([t[2] for t in tests], fontsize=8)
+    ax.set_ylim(-0.6, vrow + 0.5)
+    ax.set_yticks(list(range(len(tests))) + [vrow])
+    ax.set_yticklabels([t[2] for t in tests] + ["VALIDATION"], fontsize=8)
+    for lbl in ax.get_yticklabels()[-1:]:
+        lbl.set_fontweight("bold")
     ax.set_xticks(range(n))
     ax.set_xticklabels(labels, rotation=40, ha="right", fontsize=7)
     ax.invert_yaxis()
@@ -171,8 +189,11 @@ def _status_grid(ordered, labels):
     ax.tick_params(length=0)
     handles = [plt.Rectangle((0, 0), 1, 1, color=_STATUS_COLOR[k])
                for k in ("pass", "warn", "fail", "n/a")]
-    ax.legend(handles, ["pass", "warn", "fail", "n/a"], ncol=4, fontsize=7,
-              loc="upper center", bbox_to_anchor=(0.5, -0.42), frameon=False)
+    ax.legend(handles,
+              ["pass / validated", "warn / conditional", "fail / not validated",
+               "n/a / pending"],
+              ncol=4, fontsize=7, loc="upper center",
+              bbox_to_anchor=(0.5, -0.42), frameon=False)
     fig.tight_layout()
     return _b64(fig)
 
@@ -457,6 +478,12 @@ def build_comparison_report(records: list[dict], title_suffix: str = "",
         f"<td><span class='chip' style='background:"
         f"{_STATUS_COLOR.get(r.get('status'), '#9aa4b2')}'>"
         f"{html.escape(str(r.get('status') or 'n/a'))}</span></td>"
+        f"<td><span class='chip' style='background:"
+        f"{_VALIDATION_COLOR.get(r.get('validation_status') or '', '#9aa4b2')}'>"
+        f"{html.escape(_VALIDATION_SHORT.get(r.get('validation_status') or '', ''))}"
+        f"</span>"
+        f"{('<br><span class=muted>' + html.escape(r.get('validated_by') or '') + '</span>') if r.get('validated_by') else ''}"
+        f"</td>"
         f"<td class='muted'>{html.escape(r.get('signature') or '')}</td>"
         f"<td class='muted'>{html.escape(r['id'][:8])}</td></tr>"
         for i, r in enumerate(ordered))
@@ -557,7 +584,8 @@ def build_comparison_report(records: list[dict], title_suffix: str = "",
   </div>
   <div class="scroll"><table>
     <tr><th>label used in the plots</th><th>site</th><th>phantom</th>
-        <th>acquired</th><th>overall</th><th>protocol</th><th>id</th></tr>
+        <th>acquired</th><th>overall</th><th>validation</th>
+        <th>protocol</th><th>id</th></tr>
     {key_rows}
   </table></div>
   <p class="muted">Entries are grouped by site and phantom, and chronologically

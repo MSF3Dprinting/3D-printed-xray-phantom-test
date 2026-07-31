@@ -47,9 +47,10 @@ def main(argv=None):
         return 0
 
     if cmd == "set-admin-password":
-        print("This password is required to DELETE an analysis. Give it only to "
-              "people who should be able to destroy records — it should not be "
-              "the everyday login password.\n")
+        print("This password gates the administrator decisions: DELETING an "
+              "analysis and VALIDATING one (validated / conditionally validated "
+              "/ not validated). Give it only to people entitled to make those "
+              "calls — it should not be the everyday login password.\n")
         pw = _read_new_password("administrator password")
         if pw is None:
             return 1
@@ -105,8 +106,8 @@ def main(argv=None):
         for p in problems:
             print(f"  WARNING: {p}")
         if not cfg.deletion_enabled:
-            print("  NOTE: deletion is disabled (no PHANTOMQA_ADMIN_PASSWORD_HASH). "
-                  "Nothing can be deleted through the web app.")
+            print("  NOTE: no PHANTOMQA_ADMIN_PASSWORD_HASH is set, so deletion "
+                  "AND validation sign-off are both disabled.")
         return 1 if problems else 0
 
     print(__doc__)

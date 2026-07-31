@@ -92,6 +92,23 @@ See [README.md](README.md) for the user guide,
   recursive redaction of passwords/tokens/cookies.
 - Test suite grown to **131 tests**.
 
+### Rev. 8 changes (2026-07-31)
+
+- **Administrator validation sign-off.** An analysis can be marked
+  **validated**, **conditionally validated** or **not validated** (default:
+  pending review), with the **name of the person approving** and an optional
+  comment. Gated by the same administrator password as deletion, because it is
+  the other decision an ordinary user must not make. The name is stored
+  separately from the password on purpose — a shared credential proves the right
+  to sign off, not who did.
+- Rulings can be changed or withdrawn; every ruling, reversal and refused
+  attempt is audited with the previous state.
+- Surfaced everywhere it matters: a colour-coded block at the top of the
+  printable report, a VALIDATION row in the comparison-report status grid and a
+  column in its key table, a column plus filter (including "pending review") in
+  History, the identity bar, Stage F, and both CSV exports.
+- Test suite grown to **151 tests**.
+
 ---
 
 ## 1. What we have (data survey findings)

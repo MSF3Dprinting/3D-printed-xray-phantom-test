@@ -372,6 +372,41 @@ def _wedge_section(res, bmap):
 
 # ---------------------------------------------------------------------- report
 
+_VALIDATION_COLOR = {"validated": "#2e9e44",
+                     "conditionally_validated": "#d9a021",
+                     "not_validated": "#cf3f3f",
+                     "": "#7a7a7a"}
+_VALIDATION_TEXT = {"validated": "VALIDATED",
+                    "conditionally_validated": "CONDITIONALLY VALIDATED",
+                    "not_validated": "NOT VALIDATED",
+                    "": "PENDING REVIEW"}
+
+
+def _validation_block(record: dict) -> str:
+    """The administrator's ruling — the first thing a reader needs to know."""
+    st = record.get("validation_status") or ""
+    color = _VALIDATION_COLOR.get(st, "#7a7a7a")
+    who = record.get("validated_by") or ""
+    when = (record.get("validated_at") or "")[:16]
+    comment = record.get("validation_comment") or ""
+    if st:
+        meta = (f"<div class='vmeta'>Approved by <b>{html.escape(who)}</b>"
+                f" on {html.escape(when)}</div>")
+    else:
+        meta = ("<div class='vmeta'>No administrator has ruled on this analysis "
+                "yet. The measurements below stand on their own; they have not "
+                "been signed off.</div>")
+    body = (f"<div class='vcomment'><b>Comment:</b> {html.escape(comment)}</div>"
+            if comment else "")
+    return f"""
+<section class="card vcard" style="border-left:6px solid {color}">
+  <h2>Validation</h2>
+  <div class="vstate" style="color:{color}">{_VALIDATION_TEXT.get(st, st)}</div>
+  {meta}
+  {body}
+</section>"""
+
+
 def _identity_block(record: dict) -> str:
     rows = [("Site", record.get("site")),
             ("Phantom", record.get("phantom")),
@@ -534,6 +569,10 @@ def build_report(record: dict, overlay_png: bytes | None = None,
  .idk {{ display:block; font-size:10px; color:#5b6b80; text-transform:uppercase;
          letter-spacing:.05em; }}
  .idv {{ font-size:13.5px; font-weight:600; }}
+ .vstate {{ font-size:20px; font-weight:700; letter-spacing:.03em; }}
+ .vmeta {{ font-size:12.5px; margin-top:4px; }}
+ .vcomment {{ font-size:12.5px; margin-top:8px; background:#f2f5f8;
+              border-radius:6px; padding:8px 10px; }}
  @media print {{ body {{ background:#fff; }} .card {{ break-inside: avoid; }} }}
 </style></head><body><div class="wrap">
 <h1>MSF Phantom QA report</h1>
@@ -545,6 +584,7 @@ def build_report(record: dict, overlay_png: bytes | None = None,
 <b>Algorithm</b> v{html.escape(record.get('algo_version') or '')}<br>
 <b>Protocol signature</b> {html.escape(record.get('signature') or '')}</p>
 {reduced}
+{_validation_block(record)}
 {_identity_block(record)}
 <div class="summary">{summary}</div>
 <section class="card"><h2>Registration</h2>

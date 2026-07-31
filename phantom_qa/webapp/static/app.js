@@ -450,8 +450,23 @@ function renderIdentityBar() {
       </div>
       <button id="btn-edit-ident" class="secondary-sm">Edit</button>
     </div>
+    <div class="ident-row" style="padding-top:0">
+      <div>
+        <span class="ident-k">Validation</span> ${valChip(r.validation_status)}
+        ${r.validated_by
+          ? `<span class="hint"> by ${html_escape(r.validated_by)}`
+            + `${r.validated_at ? " · " + html_escape(r.validated_at.slice(0, 16)) : ""}</span>`
+          : ""}
+      </div>
+      <button id="btn-validate" class="secondary-sm">Set…</button>
+    </div>
+    ${r.validation_comment
+      ? `<div class="ident-comment">“${html_escape(r.validation_comment)}”</div>`
+      : ""}
     ${missing ? '<div class="ident-warn">⚠ No site or phantom — this analysis '
       + 'will not appear in any grouped trend. Add them now.</div>' : ""}`;
+  $("#btn-validate").addEventListener("click", () =>
+    setValidation(r, (v) => { Object.assign(S.record, v); renderIdentityBar(); }));
   $("#btn-edit-ident").addEventListener("click", async () => {
     const vals = await editLabelsDialog(r, `Identification — ${r.id}`);
     if (!vals) return;
@@ -504,6 +519,94 @@ function editLabelsDialog(rec, title = "Edit identification") {
     back.onclick = (e) => { if (e.target === back) done(null); };
     document.onkeydown = (e) => { if (e.key === "Escape") done(null); };
   });
+}
+
+/* ================= validation (administrator sign-off) ================= */
+
+const VAL_LABEL = {
+  "": "pending review",
+  validated: "validated",
+  conditionally_validated: "conditionally validated",
+  not_validated: "not validated",
+};
+const VAL_CLASS = {
+  "": "na", validated: "pass",
+  conditionally_validated: "warn", not_validated: "fail",
+};
+
+function valChip(st) {
+  const s = st || "";
+  return `<span class="chip ${VAL_CLASS[s] || "na"}">${VAL_LABEL[s] || s}</span>`;
+}
+
+/* Same administrator credential as deletion: it is the other decision an
+   ordinary user must not be able to make. The approver's NAME is recorded
+   separately, because a shared password cannot say who signed. */
+function validationDialog(rec) {
+  return new Promise((resolve) => {
+    const back = $("#val-backdrop");
+    $("#val-target").textContent =
+      `${rec.id} · ${[rec.site, rec.phantom].filter(Boolean).join(" / ") || "unlabelled"}`;
+    const cur = rec.validation_status || "";
+    document.querySelectorAll('input[name="vstatus"]').forEach(
+      r => { r.checked = (r.value === cur); });
+    if (!document.querySelector('input[name="vstatus"]:checked')) {
+      document.querySelector('input[name="vstatus"][value="validated"]').checked = true;
+    }
+    $("#v-by").value = rec.validated_by || "";
+    $("#v-comment").value = rec.validation_comment || "";
+    $("#v-pw").value = "";
+    $("#val-error").textContent = "";
+    back.classList.remove("hidden");
+    $("#v-by").focus();
+
+    const done = (result) => {
+      back.classList.add("hidden");
+      $("#v-save").onclick = null;
+      $("#v-cancel").onclick = null;
+      back.onclick = null;
+      document.onkeydown = null;
+      resolve(result);
+    };
+    $("#v-save").onclick = () => {
+      const sel = document.querySelector('input[name="vstatus"]:checked');
+      const status = sel ? sel.value : "";
+      const by = $("#v-by").value.trim();
+      if (status && !by) {
+        $("#val-error").textContent =
+          "The name of the person approving is required.";
+        return;
+      }
+      if (!$("#v-pw").value) {
+        $("#val-error").textContent = "The administrator password is required.";
+        return;
+      }
+      done({ status, validated_by: by, comment: $("#v-comment").value.trim(),
+             admin_password: $("#v-pw").value });
+    };
+    $("#v-cancel").onclick = () => done(null);
+    back.onclick = (e) => { if (e.target === back) done(null); };
+    document.onkeydown = (e) => { if (e.key === "Escape") done(null); };
+  });
+}
+
+async function setValidation(rec, onDone) {
+  let policy = { enabled: true };
+  try { policy = await api("/api/validation_policy"); } catch (e) { /* noop */ }
+  if (!policy.enabled) {
+    alert("Validation requires an administrator password.\n\nAn administrator "
+      + "must set PHANTOMQA_ADMIN_PASSWORD_HASH in .env\n"
+      + "(python -m phantom_qa.manage set-admin-password).");
+    return;
+  }
+  const vals = await validationDialog(rec);
+  if (!vals) return;
+  try {
+    const r = await postJSON(`/api/analyses/${rec.id}/validation`, vals);
+    status(`Recorded: ${VAL_LABEL[r.validation_status] || "pending review"}`
+           + (r.validated_by ? ` (${r.validated_by})` : ""));
+    if (onDone) onDone(r);
+  } catch (e) { status("Validation refused: " + e.message, true); }
 }
 
 /* ================= integrity & deletion ================= */
@@ -1049,9 +1152,22 @@ function stageF(c) {
       + 'phantom, so it will not appear in any grouped trend. Use <b>Edit</b> in '
       + 'the identity bar above to add them — you can do this at any time.</p>'
     : "";
+  const valBlock = `
+    <h3>Validation</h3>
+    <p>${valChip(r.validation_status)}${r.validated_by
+        ? ` by <b>${html_escape(r.validated_by)}</b>`
+          + (r.validated_at ? ` on ${html_escape(r.validated_at.slice(0, 16))}` : "")
+        : ""}</p>
+    ${r.validation_comment
+      ? `<p class="hint">“${html_escape(r.validation_comment)}”</p>` : ""}
+    <p class="hint">The administrator decides whether this phantom is accepted.
+    The decision, the approver's name and any comment appear at the top of the
+    printable report.</p>
+    <button class="secondary" id="btn-validate-f">Set validation…</button>`;
   c.innerHTML = `<h2>Stage F — Save &amp; export</h2>
     <p>Analysis <b>${S.aid}</b> stored with full audit trail.</p>
     ${identWarn}
+    ${valBlock}
     <label><input type="checkbox" id="cb-baseline"> Mark as baseline for this
     protocol signature</label><br>
     <button class="primary" id="btn-finalize">Finalize</button>
@@ -1077,6 +1193,12 @@ function stageF(c) {
       status("Finalized.");
     } catch (e) { status(e.message, true); }
   });
+  $("#btn-validate-f").addEventListener("click", () =>
+    setValidation(S.record, (v) => {
+      Object.assign(S.record, v);
+      renderIdentityBar();
+      renderStage();
+    }));
   $("#btn-verify").addEventListener("click", () => verifyAnalysis(S.aid));
   $("#btn-new").addEventListener("click", () => {
     S.aid = null; S.imgEl = null; S.geometry = null; S.results = null;
@@ -1186,7 +1308,8 @@ $("#tab-analyze").addEventListener("click", () => showTab("analyze"));
 $("#tab-history").addEventListener("click", () => showTab("history"));
 
 /* current filter + selection state */
-const H = { filter: { site: "", phantom: "", signature: "" }, rows: [] };
+const H = { filter: { site: "", phantom: "", signature: "", validation: "" },
+            rows: [] };
 
 function selectedIds() {
   return [...document.querySelectorAll("#history-table .sel:checked")]
@@ -1241,10 +1364,13 @@ async function loadHistory() {
       <td>${a.source_name}${a.reduced_precision ? " ⚠" : ""}</td>
       <td style="font-size:11px">${a.signature || ""}</td>
       <td>${a.stage}</td><td>${chip(a.status)}</td>
+      <td>${valChip(a.validation_status)}${a.validated_by
+            ? `<br><span class="hint">${a.validated_by}</span>` : ""}</td>
       <td>${a.is_baseline ? "★" : ""}</td>
       <td><a href="#" class="open" data-id="${a.id}">open</a> ·
           <a href="/api/analyses/${a.id}/report.html" target="_blank">report</a> ·
           <a href="#" class="edit" data-id="${a.id}">label</a> ·
+          <a href="#" class="validate" data-id="${a.id}">validate</a> ·
           <a href="#" class="verify" data-id="${a.id}">verify</a> ·
           <a href="#" class="del danger" data-id="${a.id}">delete</a></td>`);
     tb.appendChild(tr);
@@ -1260,6 +1386,14 @@ async function loadHistory() {
   tb.querySelectorAll("a.verify").forEach(a => a.addEventListener("click", async (e) => {
     e.preventDefault();
     await verifyAnalysis(a.dataset.id);
+  }));
+  tb.querySelectorAll("a.validate").forEach(a => a.addEventListener("click", async (e) => {
+    e.preventDefault();
+    const rec = H.rows.find(x => x.id === a.dataset.id) || { id: a.dataset.id };
+    await setValidation(rec, () => {
+      if (S.aid === rec.id && S.record) openAnalysis(rec.id);
+      loadHistory();
+    });
   }));
   tb.querySelectorAll("a.edit").forEach(a => a.addEventListener("click", async (e) => {
     e.preventDefault();
@@ -1282,14 +1416,15 @@ async function loadHistory() {
   loadTrends();
 }
 
-["site", "phantom", "signature"].forEach(k => {
+["site", "phantom", "signature", "validation"].forEach(k => {
   $("#f-" + k).addEventListener("change", (e) => {
     H.filter[k] = e.target.value;
     loadHistory();
   });
 });
 $("#btn-clear-filter").addEventListener("click", () => {
-  H.filter = { site: "", phantom: "", signature: "" };
+  H.filter = { site: "", phantom: "", signature: "", validation: "" };
+  $("#f-validation").value = "";
   loadHistory();
 });
 $("#sel-all").addEventListener("change", (e) => {

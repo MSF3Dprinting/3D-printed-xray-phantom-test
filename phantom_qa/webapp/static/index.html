@@ -62,6 +62,33 @@
   </div>
 </div>
 
+<div id="val-backdrop" class="hidden">
+  <div id="val-card">
+    <h3>Validation — administrator sign-off</h3>
+    <p class="hint" id="val-target"></p>
+    <label class="vopt"><input type="radio" name="vstatus" value="validated">
+      <span><b>Validated</b> — the phantom and this measurement are accepted.</span></label>
+    <label class="vopt"><input type="radio" name="vstatus" value="conditionally_validated">
+      <span><b>Conditionally validated</b> — accepted with reservations; state them
+      in the comment.</span></label>
+    <label class="vopt"><input type="radio" name="vstatus" value="not_validated">
+      <span><b>Not validated</b> — rejected; state why in the comment.</span></label>
+    <label class="vopt"><input type="radio" name="vstatus" value="">
+      <span><b>Withdraw ruling</b> — return to pending review.</span></label>
+    <label class="vfield">Name of the person approving
+      <input id="v-by" placeholder="e.g. S. Tkac" autocomplete="name"></label>
+    <label class="vfield">Comment (optional)
+      <textarea id="v-comment" rows="3"></textarea></label>
+    <label class="vfield">Administrator password
+      <input id="v-pw" type="password" autocomplete="off"></label>
+    <p id="val-error" class="login-error"></p>
+    <div class="modal-actions">
+      <button id="v-save" class="primary">Record decision</button>
+      <button id="v-cancel" class="secondary">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <main id="view-history" class="hidden">
   <section class="history-block">
     <h2>Filter</h2>
@@ -69,6 +96,13 @@
       <label>Site <select id="f-site"><option value="">(all)</option></select></label>
       <label>Phantom <select id="f-phantom"><option value="">(all)</option></select></label>
       <label>Protocol <select id="f-signature"><option value="">(all)</option></select></label>
+      <label>Validation <select id="f-validation">
+        <option value="">(all)</option>
+        <option value="validated">validated</option>
+        <option value="conditionally_validated">conditionally validated</option>
+        <option value="not_validated">not validated</option>
+        <option value="pending">pending review</option>
+      </select></label>
       <button id="btn-clear-filter" class="secondary-sm">Clear</button>
       <span id="filter-count" class="hint"></span>
     </div>
@@ -88,7 +122,8 @@
     <table id="history-table"><thead>
       <tr><th><input type="checkbox" id="sel-all"></th><th>acquired</th>
           <th>site</th><th>phantom</th><th>source</th><th>protocol</th>
-          <th>stage</th><th>status</th><th>base</th><th></th></tr>
+          <th>stage</th><th>status</th><th>validation</th><th>base</th>
+          <th></th></tr>
     </thead><tbody></tbody></table>
   </section>
 

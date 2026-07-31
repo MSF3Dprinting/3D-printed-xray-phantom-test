@@ -114,6 +114,38 @@ window/level with the W/C sliders):
    protocol signature; download the printable report, CSV, or full JSON; and
    **verify the source file** against its recorded SHA-256.
 
+## Validation — the administrator's sign-off
+
+The measurements say what the phantom looks like; a person still has to decide
+whether it is **accepted**. That decision is recorded on the analysis:
+
+| State | Meaning |
+|---|---|
+| **pending review** | Nobody has ruled yet (the state of every new analysis). |
+| **validated** | The phantom and this measurement are accepted. |
+| **conditionally validated** | Accepted with reservations — state them in the comment. |
+| **not validated** | Rejected — state why in the comment. |
+
+Recording a decision requires the **administrator password** (the same
+credential as deletion — it is the other call an ordinary user must not make),
+plus the **name of the person approving** and an optional comment. The name is
+stored separately from the password on purpose: a shared credential proves the
+*right* to sign off, it cannot say *who* did.
+
+Set it from the identity bar (**Set…**), Stage F, or the **validate** link in
+History. A ruling can be changed or withdrawn later; every change — including
+refused attempts — is written to `logs/audit.log`.
+
+Where it shows up:
+
+- **At the top of the printable report**, colour-coded, with the approver's
+  name, the date and the comment.
+- **In the comparison report** — a dedicated VALIDATION row in the status grid
+  and a column in the key table.
+- **In History** — a column, plus a filter (including "pending review", to find
+  what still needs a decision).
+- **In both CSV exports**.
+
 ## Source file integrity (SHA-256)
 
 Every analysis records a SHA-256 fingerprint of the exact file it was computed

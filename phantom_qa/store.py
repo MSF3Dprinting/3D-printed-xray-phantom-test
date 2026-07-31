@@ -37,7 +37,11 @@ CREATE TABLE IF NOT EXISTS analyses (
   phantom TEXT DEFAULT '',
   operator TEXT DEFAULT '',
   notes TEXT DEFAULT '',
-  acquired_at TEXT DEFAULT ''
+  acquired_at TEXT DEFAULT '',
+  validation_status TEXT DEFAULT '',
+  validated_by TEXT DEFAULT '',
+  validation_comment TEXT DEFAULT '',
+  validated_at TEXT DEFAULT ''
 );
 """
 
@@ -56,9 +60,22 @@ _ADDED_COLUMNS = {
     "operator": "TEXT DEFAULT ''",
     "notes": "TEXT DEFAULT ''",
     "acquired_at": "TEXT DEFAULT ''",
+    "validation_status": "TEXT DEFAULT ''",
+    "validated_by": "TEXT DEFAULT ''",
+    "validation_comment": "TEXT DEFAULT ''",
+    "validated_at": "TEXT DEFAULT ''",
 }
 
 LABEL_FIELDS = ("site", "phantom", "operator", "notes")
+
+# The administrator's sign-off on an analysis. "" means nobody has ruled yet.
+VALIDATION_STATES = ("validated", "conditionally_validated", "not_validated")
+VALIDATION_LABELS = {
+    "": "pending review",
+    "validated": "validated",
+    "conditionally_validated": "conditionally validated",
+    "not_validated": "not validated",
+}
 
 
 class Store:
@@ -146,11 +163,13 @@ class Store:
         self.update(aid, audit=log)
 
     def list_all(self, site: str | None = None, phantom: str | None = None,
-                 signature: str | None = None,
+                 signature: str | None = None, validation: str | None = None,
                  completed_only: bool = False) -> list[dict]:
         sql = ("SELECT id, created_at, acquired_at, source_name, signature,"
                " stage, status, is_baseline, sha256, reduced_precision, sid_mm,"
-               " site, phantom, operator, notes"
+               " site, phantom, operator, notes,"
+               " validation_status, validated_by, validation_comment,"
+               " validated_at"
                " FROM analyses WHERE 1=1")
         args: list = []
         for col, val in (("site", site), ("phantom", phantom),
@@ -158,6 +177,10 @@ class Store:
             if val:
                 sql += f" AND {col}=?"
                 args.append(val)
+        if validation is not None:
+            # "pending" selects the rows nobody has ruled on yet
+            sql += " AND COALESCE(validation_status,'')=?"
+            args.append("" if validation == "pending" else validation)
         if completed_only:
             sql += " AND results_json IS NOT NULL"
         sql += " ORDER BY COALESCE(NULLIF(acquired_at,''), created_at) DESC"
@@ -182,6 +205,29 @@ class Store:
                   if k in LABEL_FIELDS}
         if fields:
             self.update(aid, **fields)
+
+    # ---------------------------------------------------------- validation
+
+    def set_validation(self, aid: str, status: str, validated_by: str,
+                       comment: str = "") -> dict:
+        """Record the administrator's ruling on an analysis.
+
+        ``validated_by`` is the NAME of the person taking responsibility. The
+        admin password proves the right to sign off; the name says who did,
+        which a shared password cannot."""
+        status = (status or "").strip()
+        if status and status not in VALIDATION_STATES:
+            raise ValueError(f"unknown validation status: {status!r}")
+        who = str(validated_by or "").strip()
+        if status and not who:
+            raise ValueError("the name of the approver is required")
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S") if status else ""
+        self.update(aid, validation_status=status, validated_by=who,
+                    validation_comment=str(comment or "").strip(),
+                    validated_at=stamp)
+        return {"validation_status": status, "validated_by": who,
+                "validation_comment": str(comment or "").strip(),
+                "validated_at": stamp}
 
     def set_baseline(self, aid: str, value: bool = True):
         rec = self.get(aid)
@@ -371,6 +417,7 @@ def csv_export(records: list[dict]) -> str:
     wr = csv.writer(buf, lineterminator="\n")
     wr.writerow(["analysis_id", "site", "phantom", "operator", "acquired_at",
                  "created_at", "source", "signature", "is_baseline",
+                 "validation", "validated_by", "validated_at",
                  "test", "object", "metric", "value", "unit", "status"])
     for rec in records:
         res = rec.get("results")
@@ -381,6 +428,10 @@ def csv_export(records: list[dict]) -> str:
                          rec.get("operator", ""), rec.get("acquired_at", ""),
                          rec["created_at"], rec["source_name"],
                          rec["signature"], rec.get("is_baseline", 0),
+                         VALIDATION_LABELS.get(rec.get("validation_status", ""),
+                                               rec.get("validation_status", "")),
+                         rec.get("validated_by", ""),
+                         rec.get("validated_at", ""),
                          row["test"], row["object"], row["metric"],
                          row["value"], row["unit"], row["status"]])
     return buf.getvalue()
@@ -414,7 +465,7 @@ def wide_csv_export(records: list[dict]) -> str:
     wr.writerow(["test", "object", "metric", "unit"]
                 + [r["id"] for r in ordered])
     for label in ("site", "phantom", "operator", "acquired_at", "signature",
-                  "status"):
+                  "status", "validation_status", "validated_by", "validated_at"):
         wr.writerow(["", "", f"# {label}", ""]
                     + [str(r.get(label, "") or "") for r in ordered])
     for key, unit in metrics:

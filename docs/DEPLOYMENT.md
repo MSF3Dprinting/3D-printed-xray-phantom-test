@@ -23,15 +23,17 @@ PHANTOMQA_ENV=production
 PHANTOMQA_ALLOWED_HOSTS=phantomqa.yourdomain.org
 ```
 
-If anyone should be able to delete analyses, also create the **administrator
-password** — a second, different password:
+Create the **administrator password** — a second, different password. It gates
+the two decisions an ordinary user must not be able to make: **deleting** an
+analysis and **validating** one.
 
 ```bash
 python -m phantom_qa.manage set-admin-password   # -> PHANTOMQA_ADMIN_PASSWORD_HASH
 ```
 
-Leaving it empty **disables deletion entirely**, which is the right default for
-a shared installation.
+Leaving it empty disables **both** deletion and validation. That is a safe
+default for deletion, but it also means nobody can sign analyses off — so set it
+if the validation workflow is going to be used.
 
 Verify before starting:
 
@@ -129,6 +131,7 @@ Then `chmod 600 .env` and make sure `data/` is owned by the service user.
 | **API caching** | All `/api/` responses are `Cache-Control: no-store`, so results never sit in a shared proxy cache. |
 | **Attack surface** | The interactive API docs (`/docs`, `/redoc`) and the OpenAPI schema are disabled. |
 | **Deletion** | Requires a separate administrator password plus typing the analysis id; throttled harder than sign-in; disabled entirely when unconfigured. |
+| **Validation** | Same administrator password; records the approver's name and comment; every ruling and reversal audited. |
 | **Integrity** | Every analysis stores a SHA-256 of its source file; reports re-check it (see [INTEGRITY.md](INTEGRITY.md)). |
 | **Timing** | The username and password checks both always run before the result is combined, so a wrong username and a wrong password take the same time. |
 
@@ -153,6 +156,21 @@ Nothing is soft-deleted: when a deletion succeeds the row and the file are gone.
 The audit log is the record that it happened, so keep it (see retention below)
 and back up `data/` on a schedule that matches how much you could afford to lose.
 
+## Validation sign-off
+
+Marking an analysis **validated / conditionally validated / not validated** uses
+the same administrator password as deletion, and additionally records the
+**name** of the person approving plus an optional comment.
+
+The name matters: the password is shared, so it establishes only that someone
+entitled to sign off did so. The typed name is what attributes the decision to a
+person, and it lands in the report, the exports and `logs/audit.log`. If your
+process needs the name to be trustworthy rather than self-declared, that
+requires per-user accounts — see the limitations below.
+
+A ruling can be changed or withdrawn at any time; the audit log keeps the
+history, including the previous state, so a reversal is traceable.
+
 ## Logging
 
 Three files under `PHANTOMQA_LOG_DIR` (default `logs/`), all size-rotated:
@@ -161,7 +179,7 @@ Three files under `PHANTOMQA_LOG_DIR` (default `logs/`), all size-rotated:
 |---|---|---|
 | `phantomqa.log` | Every request (method, path, status, duration, client, user) and application activity | 10 × 10 MB |
 | `errors.log` | Warnings and errors only, with tracebacks | 10 × 10 MB |
-| `audit.log` | Who did what to the data: sign-ins, uploads, computes, label edits, integrity checks, deletions | 30 × 10 MB |
+| `audit.log` | Who did what to the data: sign-ins, uploads, computes, label edits, validation rulings, integrity checks, deletions | 30 × 10 MB |
 
 `audit.log` is what you consult after "who deleted that?" — it is written at
 INFO regardless of `PHANTOMQA_LOG_LEVEL` and kept for longer. Lines are
@@ -174,6 +192,7 @@ greppable with a JSON tail:
 
 ```bash
 grep 'event=delete' logs/audit.log            # every deletion attempt
+grep 'event=validation' logs/audit.log        # every sign-off and reversal
 grep 'outcome=denied' logs/audit.log          # failed admin/login attempts
 grep 'event=verify.*FAILED' logs/audit.log    # integrity problems
 ```
@@ -191,10 +210,12 @@ scheduled cleanup if you need time-based deletion.
 
 - **No TLS termination** — use the reverse proxy. Rolling our own would be worse.
 - **No multi-user accounts or roles.** There is one shared login plus one
-  administrator password for deletion. `audit.log` records the *username used*
-  and the client address, so with a shared account you can tell which machine
-  did something but not which person. If you need real per-user accountability,
-  that is a feature to add, not a config flag.
+  administrator password for deletion and validation. `audit.log` records the
+  *username used* and the client address, so with a shared account you can tell
+  which machine did something but not which person. The approver's name on a
+  validation is **typed, not authenticated** — it is a declaration, not proof.
+  If your process needs that name to be trustworthy, per-user accounts are a
+  real feature to add, not a config flag.
 - **No rate limiting on analysis endpoints.** An authenticated user can start as
   many analyses as they like; each one is CPU-heavy. Fine for a small trusted
   team, not for untrusted users.

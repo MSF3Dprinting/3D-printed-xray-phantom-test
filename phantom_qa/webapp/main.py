@@ -29,7 +29,8 @@ from ..report import build_report
 from ..security import (CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, LoginThrottle,
                         csrf_ok, issue_session, new_csrf_token, read_session,
                         verify_password)
-from ..store import Store, csv_export, flatten_results, wide_csv_export
+from ..store import (VALIDATION_LABELS, VALIDATION_STATES, Store, csv_export,
+                     flatten_results, wide_csv_export)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 cfg = get_config()
@@ -345,10 +346,11 @@ async def upload(request: Request, file: UploadFile = File(...),
 
 @app.get("/api/analyses")
 def list_analyses(site: str = "", phantom: str = "", signature: str = "",
-                  completed_only: bool = False):
+                  validation: str = "", completed_only: bool = False):
     return {"analyses": store.list_all(site=site or None,
                                        phantom=phantom or None,
                                        signature=signature or None,
+                                       validation=validation or None,
                                        completed_only=completed_only)}
 
 
@@ -388,7 +390,9 @@ def get_analysis(aid: str):
                                    "stage", "status", "sid_mm", "is_baseline",
                                    "algo_version", "pdef_version",
                                    "site", "phantom", "operator", "notes",
-                                   "acquired_at")}
+                                   "acquired_at", "validation_status",
+                                   "validated_by", "validation_comment",
+                                   "validated_at")}
     payload["meta"] = rec.get("meta")
     payload["geometry"] = rec.get("geometry")
     payload["results"] = rec.get("results")
@@ -715,6 +719,76 @@ def deletion_policy():
     return {"enabled": cfg.deletion_enabled,
             "requires_admin_password": True,
             "requires_id_confirmation": True}
+
+
+class ValidationBody(BaseModel):
+    status: str                      # validated | conditionally_validated |
+                                     # not_validated | "" to withdraw
+    validated_by: str = ""           # the NAME of the person signing off
+    comment: str = ""
+    admin_password: str = ""
+
+
+@app.get("/api/validation_policy")
+def validation_policy():
+    return {"enabled": cfg.deletion_enabled,     # same admin credential
+            "states": list(VALIDATION_STATES),
+            "labels": VALIDATION_LABELS}
+
+
+@app.post("/api/analyses/{aid}/validation")
+def set_validation(aid: str, body: ValidationBody, request: Request):
+    """Administrator's ruling on an analysis.
+
+    Gated by the same administrator password as deletion, because it is the
+    other decision an ordinary user must not be able to make. The approver's
+    NAME is recorded separately from the password: a shared credential proves
+    the right to sign off, not who did it."""
+    user, client = _current_user(request), _client_key(request)
+    rec = store.get(aid)
+    if rec is None:
+        raise HTTPException(404, "not found")
+
+    if not cfg.deletion_enabled:
+        audit("validation", user=user, client=client, analysis=aid,
+              outcome="refused", reason="no administrator password configured")
+        raise HTTPException(
+            403, "Validation requires an administrator password. Set "
+                 "PHANTOMQA_ADMIN_PASSWORD_HASH in .env "
+                 "(python -m phantom_qa.manage set-admin-password).")
+
+    wait = admin_throttle.locked_for(client)
+    if wait > 0:
+        audit("validation", user=user, client=client, analysis=aid,
+              outcome="throttled")
+        raise HTTPException(429, f"Too many failed admin attempts. Try again in "
+                                 f"{wait // 60 + 1} min.")
+
+    if not verify_password(body.admin_password, cfg.admin_password_hash):
+        admin_throttle.record_failure(client)
+        audit("validation", user=user, client=client, analysis=aid,
+              outcome="denied", reason="bad admin password")
+        log.warning("validation denied (bad admin password) analysis=%s "
+                    "client=%s", aid, client)
+        raise HTTPException(401, "Incorrect administrator password.")
+    admin_throttle.reset(client)
+
+    try:
+        applied = store.set_validation(aid, body.status, body.validated_by,
+                                       body.comment)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    before = {"validation_status": rec.get("validation_status", ""),
+              "validated_by": rec.get("validated_by", "")}
+    store.audit(aid, "F", "validation set", applied)
+    audit("validation", user=user, client=client, analysis=aid,
+          outcome=applied["validation_status"] or "withdrawn",
+          approver=applied["validated_by"], comment=applied["validation_comment"],
+          before=before, site=rec.get("site"), phantom=rec.get("phantom"))
+    log.info("validation analysis=%s -> %r by %r (login %s)", aid,
+             applied["validation_status"], applied["validated_by"], user)
+    return {"ok": True, **applied}
 
 
 @app.get("/api/analyses/{aid}/verify")
