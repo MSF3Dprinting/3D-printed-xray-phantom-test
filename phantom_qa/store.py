@@ -31,9 +31,33 @@ CREATE TABLE IF NOT EXISTS analyses (
   is_baseline INTEGER DEFAULT 0,
   algo_version TEXT,
   pdef_version TEXT,
-  status TEXT
+  status TEXT,
+  site TEXT DEFAULT '',
+  phantom TEXT DEFAULT '',
+  operator TEXT DEFAULT '',
+  notes TEXT DEFAULT '',
+  acquired_at TEXT DEFAULT ''
 );
 """
+
+# Created only after the column migration has run — on a pre-labels database
+# the indexed columns do not exist yet.
+_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_analyses_site ON analyses(site);
+CREATE INDEX IF NOT EXISTS idx_analyses_phantom ON analyses(phantom);
+"""
+
+# Columns added after the first release; existing databases are migrated in
+# place so an upgrade never loses stored analyses.
+_ADDED_COLUMNS = {
+    "site": "TEXT DEFAULT ''",
+    "phantom": "TEXT DEFAULT ''",
+    "operator": "TEXT DEFAULT ''",
+    "notes": "TEXT DEFAULT ''",
+    "acquired_at": "TEXT DEFAULT ''",
+}
+
+LABEL_FIELDS = ("site", "phantom", "operator", "notes")
 
 
 class Store:
@@ -43,6 +67,15 @@ class Store:
         self.db_path = os.path.join(root, "data", "phantom_qa.sqlite3")
         with self._conn() as c:
             c.executescript(_SCHEMA)
+            self._migrate(c)
+            c.executescript(_INDEXES)
+
+    def _migrate(self, conn):
+        have = {r["name"] for r in
+                conn.execute("PRAGMA table_info(analyses)").fetchall()}
+        for col, decl in _ADDED_COLUMNS.items():
+            if col not in have:
+                conn.execute(f"ALTER TABLE analyses ADD COLUMN {col} {decl}")
 
     def _conn(self):
         c = sqlite3.connect(self.db_path)
@@ -52,20 +85,29 @@ class Store:
     # ------------------------------------------------------------- lifecycle
 
     def new_analysis(self, scan, file_bytes: bytes, signature: str,
-                     algo_version: str, pdef_version: str) -> str:
+                     algo_version: str, pdef_version: str,
+                     labels: dict | None = None) -> str:
         aid = uuid.uuid4().hex[:12]
         with open(self.upload_path(aid), "wb") as f:
             f.write(file_bytes)
+        lab = {k: str((labels or {}).get(k, "") or "").strip()
+               for k in LABEL_FIELDS}
+        # Prefer the acquisition time from the scan itself; it is what the
+        # trend axis should use, not the moment the file happened to be uploaded.
+        acquired = _acquired_at(scan.meta) or time.strftime("%Y-%m-%d %H:%M:%S")
         with self._conn() as c:
             c.execute(
                 "INSERT INTO analyses (id, created_at, source_name, sha256, kind,"
                 " reduced_precision, signature, meta_json, stage, audit_json,"
-                " algo_version, pdef_version, status, is_baseline)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0)",
+                " algo_version, pdef_version, status, is_baseline,"
+                " site, phantom, operator, notes, acquired_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?)",
                 (aid, time.strftime("%Y-%m-%d %H:%M:%S"), scan.source_name,
                  scan.sha256, scan.kind, int(scan.reduced_precision), signature,
                  json.dumps(scan.meta), "A", json.dumps([]),
-                 algo_version, pdef_version, "draft"))
+                 algo_version, pdef_version, "draft",
+                 lab["site"], lab["phantom"], lab["operator"], lab["notes"],
+                 acquired))
         return aid
 
     def upload_path(self, aid: str) -> str:
@@ -102,13 +144,43 @@ class Store:
                     "action": action, "detail": detail})
         self.update(aid, audit=log)
 
-    def list_all(self) -> list[dict]:
+    def list_all(self, site: str | None = None, phantom: str | None = None,
+                 signature: str | None = None,
+                 completed_only: bool = False) -> list[dict]:
+        sql = ("SELECT id, created_at, acquired_at, source_name, signature,"
+               " stage, status, is_baseline, sha256, reduced_precision, sid_mm,"
+               " site, phantom, operator, notes"
+               " FROM analyses WHERE 1=1")
+        args: list = []
+        for col, val in (("site", site), ("phantom", phantom),
+                         ("signature", signature)):
+            if val:
+                sql += f" AND {col}=?"
+                args.append(val)
+        if completed_only:
+            sql += " AND results_json IS NOT NULL"
+        sql += " ORDER BY COALESCE(NULLIF(acquired_at,''), created_at) DESC"
         with self._conn() as c:
-            rows = c.execute(
-                "SELECT id, created_at, source_name, signature, stage, status,"
-                " is_baseline, sha256, reduced_precision, sid_mm"
-                " FROM analyses ORDER BY created_at DESC").fetchall()
+            rows = c.execute(sql, args).fetchall()
         return [dict(r) for r in rows]
+
+    def labels(self) -> dict:
+        """Distinct site / phantom values with counts, for the filter menus."""
+        out = {}
+        with self._conn() as c:
+            for col in ("site", "phantom"):
+                rows = c.execute(
+                    f"SELECT {col} AS v, COUNT(*) AS n FROM analyses"
+                    f" WHERE COALESCE({col},'') <> '' GROUP BY {col}"
+                    f" ORDER BY {col}").fetchall()
+                out[col] = [{"value": r["v"], "count": r["n"]} for r in rows]
+        return out
+
+    def set_labels(self, aid: str, labels: dict):
+        fields = {k: str(v or "").strip() for k, v in labels.items()
+                  if k in LABEL_FIELDS}
+        if fields:
+            self.update(aid, **fields)
 
     def set_baseline(self, aid: str, value: bool = True):
         rec = self.get(aid)
@@ -134,6 +206,23 @@ class Store:
         p = self.upload_path(aid)
         if os.path.exists(p):
             os.remove(p)
+
+
+def _acquired_at(meta: dict) -> str:
+    """Acquisition timestamp from the DICOM header, as 'YYYY-MM-DD HH:MM:SS'."""
+    d = str((meta or {}).get("StudyDate") or "").strip()
+    t = str((meta or {}).get("SeriesTime")
+            or (meta or {}).get("AcquisitionTime")
+            or (meta or {}).get("StudyTime") or "").strip()
+    if len(d) != 8 or not d.isdigit():
+        return ""
+    stamp = f"{d[0:4]}-{d[4:6]}-{d[6:8]}"
+    digits = "".join(ch for ch in t if ch.isdigit())
+    if len(digits) >= 6:
+        stamp += f" {digits[0:2]}:{digits[2:4]}:{digits[4:6]}"
+    else:
+        stamp += " 00:00:00"
+    return stamp
 
 
 # ------------------------------------------------------------------ flattening
@@ -233,16 +322,55 @@ def csv_export(records: list[dict]) -> str:
     import io as _io
     buf = _io.StringIO()
     wr = csv.writer(buf, lineterminator="\n")
-    wr.writerow(["analysis_id", "created_at", "source", "signature",
-                 "is_baseline", "test", "object", "metric", "value", "unit",
-                 "status"])
+    wr.writerow(["analysis_id", "site", "phantom", "operator", "acquired_at",
+                 "created_at", "source", "signature", "is_baseline",
+                 "test", "object", "metric", "value", "unit", "status"])
     for rec in records:
         res = rec.get("results")
         if not res:
             continue
         for row in flatten_results(res):
-            wr.writerow([rec["id"], rec["created_at"], rec["source_name"],
+            wr.writerow([rec["id"], rec.get("site", ""), rec.get("phantom", ""),
+                         rec.get("operator", ""), rec.get("acquired_at", ""),
+                         rec["created_at"], rec["source_name"],
                          rec["signature"], rec.get("is_baseline", 0),
                          row["test"], row["object"], row["metric"],
                          row["value"], row["unit"], row["status"]])
+    return buf.getvalue()
+
+
+def wide_csv_export(records: list[dict]) -> str:
+    """Wide-format CSV: one row per metric, one column per analysis.
+
+    This is the shape you want for eyeballing drift across a series — the
+    long format is better for pivot tables, this one is better for reading."""
+    import csv
+    import io as _io
+    ordered = sorted(records,
+                     key=lambda r: (r.get("acquired_at") or r["created_at"]))
+    ordered = [r for r in ordered if r.get("results")]
+    metrics: list[tuple] = []
+    seen = set()
+    per_rec = []
+    for rec in ordered:
+        m = {}
+        for row in flatten_results(rec["results"]):
+            key = (row["test"], row["object"], row["metric"])
+            if key not in seen:
+                seen.add(key)
+                metrics.append((key, row["unit"]))
+            m[key] = row["value"]
+        per_rec.append(m)
+
+    buf = _io.StringIO()
+    wr = csv.writer(buf, lineterminator="\n")
+    wr.writerow(["test", "object", "metric", "unit"]
+                + [r["id"] for r in ordered])
+    for label in ("site", "phantom", "operator", "acquired_at", "signature",
+                  "status"):
+        wr.writerow(["", "", f"# {label}", ""]
+                    + [str(r.get(label, "") or "") for r in ordered])
+    for key, unit in metrics:
+        wr.writerow(list(key) + [unit]
+                    + [m.get(key, "") for m in per_rec])
     return buf.getvalue()

@@ -32,6 +32,45 @@ See [README.md](README.md) for the user guide,
   secrets in `.env`.
 - Test suite grown from 31 to **73 tests**.
 
+### Rev. 5 changes (2026-07-31)
+
+- **Scans are labelled at upload** with Site / Phantom (plus operator, notes),
+  with autocomplete from previous values and session-sticky defaults for batch
+  uploads. Labels are editable afterwards from the History table.
+- **Acquisition time** is taken from the DICOM header and used for ordering, so
+  re-analysing an old scan does not distort a series.
+- **History & Trends filters** by site, phantom and protocol signature; a manual
+  row selection overrides the filter when present. Filter and selection drive
+  the table, the trend chart and both exports consistently.
+- **Comprehensive comparison report** (new): every metric of every pattern
+  across the selected analyses, one column per scan in acquisition order, with
+  per-pattern trend charts, a status timeline and a ranked "largest changes"
+  table.
+- **Wide CSV export** added alongside the long format — one row per metric, one
+  column per analysis, for reading drift directly.
+- Database migrates itself in place; existing analyses survive the upgrade.
+
+### Rev. 6 changes (2026-07-31)
+
+- **Upload is explicit.** Choosing a file no longer starts the upload; the file
+  and the labels can be set in any order and are committed by an
+  *Upload & analyse* button.
+- **Identity is always editable.** An identity bar above every wizard stage
+  shows Site / Phantom with an Edit button, so a forgotten label is recoverable
+  at any point — during the wizard, after results, or from the History table.
+  All three routes share one modal editor.
+- **Comparison report rebuilt around visuals.** Plots replaced the wall of
+  numbers (numeric tables are collapsed); the reference changed from "the first
+  analysis" to **the median of the selection**, so comparing ten different
+  phantoms is as natural as following one over time; every visual is labelled by
+  Site / Phantom.
+- Fixed a numeric flaw found while rebuilding it: metrics that are already
+  percentages (pitch deviation, ΔSNR) sit near zero, so ranking them by
+  range ÷ median produced ~13 000 % artefacts. They are now compared in
+  percentage points, and heatmap rows that do not meaningfully vary are dropped
+  instead of being painted in full colour.
+- Test suite grown to **103 tests**.
+
 ---
 
 ## 1. What we have (data survey findings)

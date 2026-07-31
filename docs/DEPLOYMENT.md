@@ -133,6 +133,13 @@ Then `chmod 600 .env` and make sure `data/` is owned by the service user.
 - **The in-process login throttle is per worker.** Run a single worker (the
   default) or move the throttle to shared storage before scaling out.
 
+## Database upgrades
+
+The schema migrates itself in place on startup: missing columns are added and
+existing rows are preserved (`tests/test_store_labels.py` covers upgrading a
+pre-labels database). Still take a copy of `data/phantom_qa.sqlite3` before an
+upgrade — it is a single file, so a copy is the whole backup.
+
 ## Patient data
 
 The uploaded DICOM files are kept under `data/uploads/` for traceability, and

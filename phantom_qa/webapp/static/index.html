@@ -39,30 +39,68 @@
       <li data-stage="E">E&nbsp;Analysis</li>
       <li data-stage="F">F&nbsp;Save&nbsp;&amp;&nbsp;export</li>
     </ol>
+    <div id="identity-bar"></div>
     <div id="stage-content"></div>
   </aside>
 </main>
 
+<div id="modal-backdrop" class="hidden">
+  <div id="modal-card">
+    <h3 id="modal-title">Edit identification</h3>
+    <div class="form-grid">
+      <label>Site <input id="m-site" list="dl-site-m"></label>
+      <label>Phantom <input id="m-phantom" list="dl-phantom-m"></label>
+      <label>Operator <input id="m-operator"></label>
+      <label>Notes <input id="m-notes"></label>
+    </div>
+    <datalist id="dl-site-m"></datalist>
+    <datalist id="dl-phantom-m"></datalist>
+    <div class="modal-actions">
+      <button id="m-save" class="primary">Save</button>
+      <button id="m-cancel" class="secondary">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <main id="view-history" class="hidden">
+  <section class="history-block">
+    <h2>Filter</h2>
+    <div class="filter-bar">
+      <label>Site <select id="f-site"><option value="">(all)</option></select></label>
+      <label>Phantom <select id="f-phantom"><option value="">(all)</option></select></label>
+      <label>Protocol <select id="f-signature"><option value="">(all)</option></select></label>
+      <button id="btn-clear-filter" class="secondary-sm">Clear</button>
+      <span id="filter-count" class="hint"></span>
+    </div>
+    <p class="hint">The filter drives the table, the trend chart and the
+    comparison report. Tick individual rows to work with a manual selection
+    instead.</p>
+  </section>
+
   <section class="history-block">
     <h2>Analyses</h2>
     <div id="history-actions">
-      <button id="btn-export-selected">Export selected as CSV</button>
+      <button id="btn-comparison" class="primary-sm">📊 Comprehensive comparison report</button>
+      <button id="btn-export-long">⬇ CSV (long)</button>
+      <button id="btn-export-wide">⬇ CSV (wide: metrics × scans)</button>
+      <span id="selection-note" class="hint"></span>
     </div>
     <table id="history-table"><thead>
-      <tr><th></th><th>created</th><th>source</th><th>signature</th>
-          <th>stage</th><th>status</th><th>baseline</th><th></th></tr>
+      <tr><th><input type="checkbox" id="sel-all"></th><th>acquired</th>
+          <th>site</th><th>phantom</th><th>source</th><th>protocol</th>
+          <th>stage</th><th>status</th><th>base</th><th></th></tr>
     </thead><tbody></tbody></table>
   </section>
+
   <section class="history-block">
-    <h2>Trends</h2>
-    <div>
-      <select id="trend-signature"></select>
-      <select id="trend-metric"></select>
+    <h2>Trend of a single metric</h2>
+    <div class="filter-bar">
+      <label>Metric <select id="trend-metric"></select></label>
     </div>
-    <canvas id="trend-chart" width="900" height="360"></canvas>
-    <p class="hint">Points in acquisition order; star = baseline. Dashed band =
-    ±20 % of baseline (constancy default).</p>
+    <canvas id="trend-chart" width="1000" height="380"></canvas>
+    <p class="hint">Points in acquisition order; ★ = baseline. Dashed green band
+    = ±20 % of the baseline (constancy default). For everything at once, use the
+    comprehensive comparison report above.</p>
   </section>
 </main>
 

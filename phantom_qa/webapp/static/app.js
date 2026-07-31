@@ -15,6 +15,7 @@ const S = {
              uniformity: true, wedge: true },
   labels: true, selectedRoi: null, mode: "normal", manualCorners: [],
   fieldEdgeSide: null, dragRoi: null, dimPreview: null,
+  pendingFile: null,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -427,6 +428,84 @@ function renderToggles() {
   c.appendChild(lab);
 }
 
+/* ================= identity (site / phantom) ================= */
+
+/* Shown above every stage once an analysis is open, so the labels are always
+   visible and always editable — forgetting them at upload is recoverable. */
+function renderIdentityBar() {
+  const bar = $("#identity-bar");
+  if (!S.aid || !S.record) { bar.innerHTML = ""; bar.classList.add("hidden"); return; }
+  bar.classList.remove("hidden");
+  const r = S.record;
+  const missing = !r.site && !r.phantom;
+  const val = (v) => v ? html_escape(v) : '<span class="hint">—</span>';
+  bar.innerHTML = `
+    <div class="ident-row">
+      <div>
+        <span class="ident-k">Site</span> ${val(r.site)}
+        <span class="ident-sep">·</span>
+        <span class="ident-k">Phantom</span> ${val(r.phantom)}
+        ${r.operator ? `<span class="ident-sep">·</span>
+           <span class="ident-k">Op</span> ${html_escape(r.operator)}` : ""}
+      </div>
+      <button id="btn-edit-ident" class="secondary-sm">Edit</button>
+    </div>
+    ${missing ? '<div class="ident-warn">⚠ No site or phantom — this analysis '
+      + 'will not appear in any grouped trend. Add them now.</div>' : ""}`;
+  $("#btn-edit-ident").addEventListener("click", async () => {
+    const vals = await editLabelsDialog(r, `Identification — ${r.id}`);
+    if (!vals) return;
+    try {
+      await postJSON(`/api/analyses/${S.aid}/labels`, vals);
+      Object.assign(S.record, vals);
+      renderIdentityBar();
+      status("Identification updated.");
+    } catch (e) { status("Could not save: " + e.message, true); }
+  });
+}
+
+function html_escape(s) {
+  return String(s).replace(/[&<>"]/g, ch => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
+}
+
+/* Modal editor shared by the identity bar and the History table. */
+function editLabelsDialog(rec, title = "Edit identification") {
+  return new Promise(async (resolve) => {
+    $("#modal-title").textContent = title;
+    ["site", "phantom", "operator", "notes"].forEach(
+      k => { $("#m-" + k).value = rec[k] || ""; });
+    try {
+      const lab = await api("/api/labels");
+      const opts = (items) => (items || [])
+        .map(s => `<option value="${s.value.replace(/"/g, "&quot;")}">`).join("");
+      $("#dl-site-m").innerHTML = opts(lab.site);
+      $("#dl-phantom-m").innerHTML = opts(lab.phantom);
+    } catch (e) { /* ignore */ }
+    const back = $("#modal-backdrop");
+    back.classList.remove("hidden");
+    $("#m-site").focus();
+
+    const done = (result) => {
+      back.classList.add("hidden");
+      $("#m-save").onclick = null;
+      $("#m-cancel").onclick = null;
+      back.onclick = null;
+      document.onkeydown = null;
+      resolve(result);
+    };
+    $("#m-save").onclick = () => done({
+      site: $("#m-site").value.trim(),
+      phantom: $("#m-phantom").value.trim(),
+      operator: $("#m-operator").value.trim(),
+      notes: $("#m-notes").value.trim(),
+    });
+    $("#m-cancel").onclick = () => done(null);
+    back.onclick = (e) => { if (e.target === back) done(null); };
+    document.onkeydown = (e) => { if (e.key === "Escape") done(null); };
+  });
+}
+
 /* ================= wizard stages ================= */
 
 function setStage(st) {
@@ -439,6 +518,7 @@ function setStage(st) {
   });
   const rd = $("#roi-details");
   if (rd && st !== "C") rd.remove();
+  renderIdentityBar();
   renderStage();
   draw();
 }
@@ -449,40 +529,115 @@ function renderStage() {
      F: stageF }[S.stage])(c);
 }
 
-/* ---- Stage U: upload ---- */
-function stageU(c) {
-  c.innerHTML = `<h2>Upload scan</h2>
+/* ---- Stage U: upload (choose file, fill identity, then confirm) ---- */
+async function stageU(c) {
+  c.innerHTML = `<h2>New analysis</h2>
     <p class="hint">DICOM file (preferred), zipped DICOM CD export, or a plain
-    image (reduced precision). The analysis is fully automatic — you will verify
-    each step before results are accepted.</p>
+    image (reduced precision). Nothing is uploaded until you press
+    <b>Upload &amp; analyse</b>, so you can set the file and the labels in any
+    order.</p>
+
+    <h3>1 · Choose the scan file</h3>
     <div class="drop-zone" id="drop">Drop file here or click to choose</div>
-    <input type="file" id="file-input" class="hidden">`;
+    <input type="file" id="file-input" class="hidden">
+    <div id="file-chosen" class="chosen hidden"></div>
+
+    <h3>2 · Identify this scan</h3>
+    <p class="hint">Site and phantom are how analyses are grouped for trending.
+    Use the same spelling every time — previous values appear as suggestions.
+    You can still change these later from the identity bar above.</p>
+    <div class="form-grid">
+      <label>Site <input id="up-site" list="dl-site" placeholder="e.g. Goma Hospital"></label>
+      <label>Phantom <input id="up-phantom" list="dl-phantom" placeholder="e.g. MSF-01"></label>
+      <label>Operator <input id="up-operator" placeholder="optional"></label>
+      <label>Notes <input id="up-notes" placeholder="optional"></label>
+    </div>
+    <datalist id="dl-site"></datalist>
+    <datalist id="dl-phantom"></datalist>
+    <p id="up-warn" class="hint"></p>
+
+    <h3>3 · Confirm</h3>
+    <button class="primary" id="btn-upload" disabled>Upload &amp; analyse</button>
+    <button class="secondary" id="btn-clear-file">Clear file</button>`;
+
+  try {
+    const lab = await api("/api/labels");
+    const opts = (items) => (items || [])
+      .map(s => `<option value="${s.value.replace(/"/g, "&quot;")}">`).join("");
+    $("#dl-site").innerHTML = opts(lab.site);
+    $("#dl-phantom").innerHTML = opts(lab.phantom);
+  } catch (e) { /* first run: no labels yet */ }
+
+  // remember the last used labels so a batch of scans is not retyped
+  ["site", "phantom", "operator"].forEach(k => {
+    const v = sessionStorage.getItem("lbl_" + k);
+    if (v) $("#up-" + k).value = v;
+  });
+
   const drop = $("#drop"), inp = $("#file-input");
+  const refresh = () => {
+    const f = S.pendingFile;
+    const box = $("#file-chosen");
+    box.classList.toggle("hidden", !f);
+    if (f) {
+      box.innerHTML = `<b>${f.name}</b> · ${(f.size / 1048576).toFixed(1)} MB`;
+    }
+    $("#btn-upload").disabled = !f;
+    const noLabel = !$("#up-site").value.trim() && !$("#up-phantom").value.trim();
+    $("#up-warn").innerHTML = noLabel
+      ? '<span style="color:var(--warn)">⚠ Without a site or phantom this '
+        + 'analysis will not appear in any grouped trend.</span>'
+      : "";
+  };
+
   drop.addEventListener("click", () => inp.click());
   drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("armed"); });
   drop.addEventListener("dragleave", () => drop.classList.remove("armed"));
   drop.addEventListener("drop", (e) => {
     e.preventDefault(); drop.classList.remove("armed");
-    if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]);
+    if (e.dataTransfer.files.length) { S.pendingFile = e.dataTransfer.files[0]; refresh(); }
   });
   inp.addEventListener("change", () => {
-    if (inp.files.length) uploadFile(inp.files[0]);
+    if (inp.files.length) { S.pendingFile = inp.files[0]; refresh(); }
   });
+  ["up-site", "up-phantom"].forEach(id =>
+    $("#" + id).addEventListener("input", refresh));
+  $("#btn-clear-file").addEventListener("click", () => {
+    S.pendingFile = null; inp.value = ""; refresh();
+  });
+  $("#btn-upload").addEventListener("click", () => {
+    if (S.pendingFile) uploadFile(S.pendingFile);
+  });
+  refresh();
 }
 
 async function uploadFile(file) {
+  const labels = {
+    site: ($("#up-site") || {}).value.trim() || "",
+    phantom: ($("#up-phantom") || {}).value.trim() || "",
+    operator: ($("#up-operator") || {}).value.trim() || "",
+    notes: ($("#up-notes") || {}).value.trim() || "",
+  };
+  ["site", "phantom", "operator"].forEach(
+    k => sessionStorage.setItem("lbl_" + k, labels[k]));
+  $("#btn-upload").disabled = true;
   status("Uploading and registering…");
   const fd = new FormData();
   fd.append("file", file);
+  Object.entries(labels).forEach(([k, v]) => fd.append(k, v));
   try {
     const r = await api("/api/analyses", { method: "POST", body: fd });
     const ok = r.analyses.filter(a => a.registered);
     if (!r.analyses.length) throw new Error("no images found");
     if (r.analyses.length > 1)
       status(`${r.analyses.length} images found — opening the first; others are in History.`);
+    S.pendingFile = null;
     const first = ok[0] || r.analyses[0];
     await openAnalysis(first.id);
-  } catch (e) { status("Upload failed: " + e.message, true); }
+  } catch (e) {
+    status("Upload failed: " + e.message, true);
+    if ($("#btn-upload")) $("#btn-upload").disabled = false;
+  }
 }
 
 async function openAnalysis(aid) {
@@ -833,10 +988,15 @@ async function stageE(c) {
 
 /* ---- Stage F ---- */
 function stageF(c) {
-  const overall = S.results ?
-    (S.record && S.record.status) || "complete" : "no results";
+  const r = S.record || {};
+  const identWarn = (!r.site && !r.phantom)
+    ? '<p class="hint" style="color:var(--warn)">⚠ This analysis has no site or '
+      + 'phantom, so it will not appear in any grouped trend. Use <b>Edit</b> in '
+      + 'the identity bar above to add them — you can do this at any time.</p>'
+    : "";
   c.innerHTML = `<h2>Stage F — Save &amp; export</h2>
     <p>Analysis <b>${S.aid}</b> stored with full audit trail.</p>
+    ${identWarn}
     <label><input type="checkbox" id="cb-baseline"> Mark as baseline for this
     protocol signature</label><br>
     <button class="primary" id="btn-finalize">Finalize</button>
@@ -856,7 +1016,7 @@ function stageF(c) {
   });
   $("#btn-new").addEventListener("click", () => {
     S.aid = null; S.imgEl = null; S.geometry = null; S.results = null;
-    S.reg = null;
+    S.reg = null; S.record = null; S.pendingFile = null;
     setStage("U");
     draw();
   });
@@ -961,20 +1121,66 @@ function showTab(which) {
 $("#tab-analyze").addEventListener("click", () => showTab("analyze"));
 $("#tab-history").addEventListener("click", () => showTab("history"));
 
+/* current filter + selection state */
+const H = { filter: { site: "", phantom: "", signature: "" }, rows: [] };
+
+function selectedIds() {
+  return [...document.querySelectorAll("#history-table .sel:checked")]
+    .map(cb => cb.dataset.id);
+}
+
+function filterQuery(extra = {}) {
+  const p = new URLSearchParams();
+  const ids = selectedIds();
+  if (ids.length) p.set("ids", ids.join(","));
+  else Object.entries(H.filter).forEach(([k, v]) => { if (v) p.set(k, v); });
+  Object.entries(extra).forEach(([k, v]) => p.set(k, v));
+  return p.toString();
+}
+
+function updateSelectionNote() {
+  const n = selectedIds().length;
+  $("#selection-note").textContent = n
+    ? `${n} row${n > 1 ? "s" : ""} ticked — actions use the ticked rows`
+    : "no rows ticked — actions use the filter above";
+}
+
 async function loadHistory() {
-  const r = await api("/api/analyses");
+  const lab = await api("/api/labels");
+  const fill = (sel, items, cur) => {
+    sel.innerHTML = '<option value="">(all)</option>' + items.map(s =>
+      `<option value="${s.value.replace(/"/g, "&quot;")}"${s.value === cur ? " selected" : ""}>` +
+      `${s.value} (${s.count})</option>`).join("");
+  };
+  fill($("#f-site"), lab.site || [], H.filter.site);
+  fill($("#f-phantom"), lab.phantom || [], H.filter.phantom);
+  const sigs = await api("/api/signatures");
+  fill($("#f-signature"),
+       sigs.signatures.map(s => ({ value: s.signature, count: s.count })),
+       H.filter.signature);
+
+  const q = new URLSearchParams();
+  Object.entries(H.filter).forEach(([k, v]) => { if (v) q.set(k, v); });
+  const r = await api("/api/analyses?" + q.toString());
+  H.rows = r.analyses;
+  $("#filter-count").textContent =
+    `${r.analyses.length} analysis(es) match`;
+
   const tb = $("#history-table tbody");
   tb.innerHTML = "";
   r.analyses.forEach(a => {
     const tr = el("tr", {}, `
       <td><input type="checkbox" class="sel" data-id="${a.id}"></td>
-      <td>${a.created_at}</td>
+      <td>${(a.acquired_at || a.created_at || "").slice(0, 16)}</td>
+      <td>${a.site || "<span class='hint'>—</span>"}</td>
+      <td>${a.phantom || "<span class='hint'>—</span>"}</td>
       <td>${a.source_name}${a.reduced_precision ? " ⚠" : ""}</td>
       <td style="font-size:11px">${a.signature || ""}</td>
       <td>${a.stage}</td><td>${chip(a.status)}</td>
       <td>${a.is_baseline ? "★" : ""}</td>
       <td><a href="#" class="open" data-id="${a.id}">open</a> ·
           <a href="/api/analyses/${a.id}/report.html" target="_blank">report</a> ·
+          <a href="#" class="edit" data-id="${a.id}">label</a> ·
           <a href="#" class="del" data-id="${a.id}">delete</a></td>`);
     tb.appendChild(tr);
   });
@@ -988,46 +1194,92 @@ async function loadHistory() {
     await api("/api/analyses/" + a.dataset.id, { method: "DELETE" });
     loadHistory();
   }));
-
-  const sigs = await api("/api/signatures");
-  const sel = $("#trend-signature");
-  sel.innerHTML = sigs.signatures.map(s =>
-    `<option value="${encodeURIComponent(s.signature)}">${s.signature} (${s.count})</option>`).join("");
-  sel.onchange = loadTrends;
-  if (sigs.signatures.length) loadTrends();
+  tb.querySelectorAll("a.edit").forEach(a => a.addEventListener("click", async (e) => {
+    e.preventDefault();
+    const rec = H.rows.find(x => x.id === a.dataset.id) || {};
+    const vals = await editLabelsDialog(rec, `Identification — ${rec.id}`);
+    if (!vals) return;
+    try {
+      await postJSON(`/api/analyses/${a.dataset.id}/labels`, vals);
+      if (S.aid === a.dataset.id && S.record) {
+        Object.assign(S.record, vals);
+        renderIdentityBar();
+      }
+      loadHistory();
+    } catch (err) { status("Could not save: " + err.message, true); }
+  }));
+  tb.querySelectorAll(".sel").forEach(cb =>
+    cb.addEventListener("change", () => { updateSelectionNote(); loadTrends(); }));
+  $("#sel-all").checked = false;
+  updateSelectionNote();
+  loadTrends();
 }
 
-$("#btn-export-selected").addEventListener("click", () => {
-  const ids = [...document.querySelectorAll("#history-table .sel:checked")]
-    .map(cb => cb.dataset.id);
-  if (!ids.length) { alert("Select analyses first."); return; }
-  window.location = "/api/export.csv?ids=" + ids.join(",");
+["site", "phantom", "signature"].forEach(k => {
+  $("#f-" + k).addEventListener("change", (e) => {
+    H.filter[k] = e.target.value;
+    loadHistory();
+  });
+});
+$("#btn-clear-filter").addEventListener("click", () => {
+  H.filter = { site: "", phantom: "", signature: "" };
+  loadHistory();
+});
+$("#sel-all").addEventListener("change", (e) => {
+  document.querySelectorAll("#history-table .sel").forEach(
+    cb => { cb.checked = e.target.checked; });
+  updateSelectionNote();
+  loadTrends();
+});
+
+$("#btn-comparison").addEventListener("click", () => {
+  const q = filterQuery();
+  if (!q) { alert("Pick a site/phantom filter or tick some rows first."); return; }
+  window.open("/api/comparison_report.html?" + q, "_blank");
+});
+$("#btn-export-long").addEventListener("click", () => {
+  window.location = "/api/export.csv?" + filterQuery({ layout: "long" });
+});
+$("#btn-export-wide").addEventListener("click", () => {
+  window.location = "/api/export.csv?" + filterQuery({ layout: "wide" });
 });
 
 let trendData = null;
 async function loadTrends() {
-  const sig = decodeURIComponent($("#trend-signature").value);
-  trendData = await api("/api/trends?signature=" + encodeURIComponent(sig));
+  const q = filterQuery();
+  try {
+    trendData = await api("/api/trends?" + q);
+  } catch (e) { trendData = null; }
+  const msel = $("#trend-metric");
+  if (!trendData || !trendData.analyses.length) {
+    msel.innerHTML = "";
+    const cv = $("#trend-chart");
+    cv.getContext("2d").clearRect(0, 0, cv.width, cv.height);
+    return;
+  }
   const metrics = new Set();
   trendData.analyses.forEach(a => a.rows.forEach(row =>
     metrics.add(`${row.test} | ${row.object} | ${row.metric}`)));
-  const msel = $("#trend-metric");
-  msel.innerHTML = [...metrics].sort().map(m =>
-    `<option>${m}</option>`).join("");
+  const prev = msel.value;
+  const opts = [...metrics].sort();
+  msel.innerHTML = opts.map(m =>
+    `<option${m === prev ? " selected" : ""}>${m}</option>`).join("");
   msel.onchange = drawTrend;
   drawTrend();
 }
 
 function drawTrend() {
   if (!trendData) return;
-  const key = $("#trend-metric").value.split(" | ");
+  const key = ($("#trend-metric").value || "").split(" | ");
   const pts = [];
   let baseVal = null;
-  trendData.analyses.slice().reverse().forEach(a => {
+  trendData.analyses.forEach(a => {
     const row = a.rows.find(r => r.test === key[0] && r.object === key[1]
                                  && r.metric === key[2]);
     if (row && typeof row.value === "number") {
-      pts.push({ x: a.created_at, y: row.value, baseline: a.is_baseline });
+      pts.push({ x: (a.acquired_at || a.created_at).slice(0, 16), y: row.value,
+                 baseline: a.is_baseline,
+                 label: [a.site, a.phantom].filter(Boolean).join(" / ") });
       if (a.is_baseline) baseVal = row.value;
     }
   });
@@ -1069,13 +1321,19 @@ function drawTrend() {
     ctx.beginPath();
     ctx.arc(sx(i), sy(p.y), p.baseline ? 6 : 4, 0, Math.PI * 2);
     ctx.fill();
+    if (p.baseline) {
+      ctx.fillStyle = "#35b45c"; ctx.font = "12px Segoe UI";
+      ctx.fillText("★", sx(i) - 4, sy(p.y) - 9);
+    }
     ctx.fillStyle = "#777"; ctx.font = "9px Segoe UI";
     ctx.save();
     ctx.translate(sx(i), cv.height - 34);
     ctx.rotate(0.5);
-    ctx.fillText(p.x.slice(0, 16), 0, 8);
+    ctx.fillText(p.x, 0, 8);
     ctx.restore();
   });
+  ctx.fillStyle = "#333"; ctx.font = "11px Segoe UI";
+  ctx.fillText($("#trend-metric").value || "", pad, 14);
 }
 
 /* ================= sign-out ================= */

@@ -114,6 +114,78 @@ input[type="number"] { background: var(--panel2); color: var(--text);
   border: 1px solid var(--border); padding: 5px 8px; border-radius: 6px; width: 90px; }
 a { color: var(--accent); }
 
+/* ---- identity bar (always visible while an analysis is open) ---- */
+#identity-bar { border-bottom: 1px solid var(--border); background: var(--panel2); }
+#identity-bar.hidden { display: none; }
+.ident-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 7px 12px; font-size: 12.5px;
+}
+.ident-k { color: var(--muted); font-size: 11px; text-transform: uppercase;
+  letter-spacing: .04em; margin-right: 3px; }
+.ident-sep { color: var(--border); margin: 0 6px; }
+.ident-warn {
+  background: rgba(217,160,33,0.14); border-top: 1px solid var(--warn);
+  color: var(--warn); padding: 6px 12px; font-size: 11.5px;
+}
+
+/* ---- modal ---- */
+#modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 50;
+  display: flex; align-items: center; justify-content: center;
+}
+#modal-backdrop.hidden { display: none; }
+#modal-card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  padding: 20px 22px; width: 420px; max-width: 92vw;
+}
+#modal-card h3 { margin: 0 0 12px; font-size: 15px; }
+.modal-actions { display: flex; gap: 10px; margin-top: 14px; }
+
+/* ---- chosen file ---- */
+.chosen {
+  background: var(--panel2); border: 1px solid var(--accent);
+  border-radius: 6px; padding: 8px 10px; margin-top: 8px; font-size: 12.5px;
+}
+.chosen.hidden { display: none; }
+
+/* ---- upload identity form ---- */
+.form-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; margin: 8px 0 4px;
+}
+.form-grid label { display: flex; flex-direction: column; gap: 3px;
+  font-size: 11px; color: var(--muted); }
+.form-grid input {
+  background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+  padding: 6px 8px; border-radius: 6px; font-size: 13px;
+}
+
+/* ---- history filter bar ---- */
+.filter-bar {
+  display: flex; gap: 14px; align-items: flex-end; flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.filter-bar label { display: flex; flex-direction: column; gap: 3px;
+  font-size: 11px; color: var(--muted); }
+.filter-bar select { min-width: 190px; max-width: 420px; }
+#history-actions { display: flex; gap: 10px; align-items: center;
+  flex-wrap: wrap; margin-bottom: 8px; }
+#history-actions button {
+  background: none; color: var(--text); border: 1px solid var(--border);
+  padding: 7px 13px; border-radius: 6px; cursor: pointer; font-size: 12.5px;
+}
+#history-actions button.primary-sm {
+  background: var(--accent); color: #08131f; border-color: var(--accent);
+  font-weight: 600;
+}
+.secondary-sm {
+  background: none; color: var(--text); border: 1px solid var(--border);
+  padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px;
+}
+#history-table td:nth-child(3), #history-table td:nth-child(4) {
+  font-weight: 600;
+}
+
 /* ---- sign-in page ---- */
 .login-body {
   display: flex; align-items: center; justify-content: center;

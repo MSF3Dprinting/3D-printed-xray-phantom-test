@@ -67,6 +67,20 @@ Nothing is measured from geometry you have not confirmed. Each stage shows
 overlays on the actual image (zoom with the mouse wheel, pan by dragging,
 window/level with the W/C sliders):
 
+0. **Upload — choose the file, identify the scan, then confirm.** Nothing is
+   uploaded until you press **Upload & analyse**, so the file and the labels can
+   be set in any order and changed freely first. **Site** and **Phantom** are how
+   analyses are grouped for trending, so use consistent spelling — previously
+   used values appear as autocomplete suggestions, and the last values are
+   remembered for the rest of the session so a batch of scans is not retyped.
+   A warning appears if both are empty.
+
+   **Forgetting a label is never a dead end.** Once an analysis is open, an
+   identity bar sits above every stage showing Site / Phantom with an **Edit**
+   button, so you can add or correct them at any point — during the wizard,
+   after the results are computed, or later from the History table's "label"
+   link. Editing is recorded in the audit trail, and the analysis immediately
+   appears in the matching filters, trends and reports.
 1. **A — Registration.** The app finds the phantom, resolves orientation
    (any rotation, flipped or not) and shows the fitted outline + per-side
    ruler-landmark residuals. If detection failed, click *Manual corners* and
@@ -117,18 +131,61 @@ outline follow their circle automatically.
 
 ## Comparison & trending
 
-*History & Trends* tab:
-- table of all analyses (open / report / delete; ⚠ marks reduced precision),
-- multi-select → **one CSV** in long format (`analysis_id, test, object,
-  metric, value, unit, status`) — pivot-ready in Excel,
-- trend chart per metric, grouped by **protocol signature**
-  (detector model + kV + pixel spacing + processing family). Baseline is
-  starred; the dashed band is ±20 % of baseline (constancy default).
+The *History & Trends* tab works off either a **filter** or a **manual
+selection**, and everything on the page follows whichever is active:
+
+- **Filter** by Site, Phantom and/or Protocol signature. The counts next to
+  each option show how many analyses match.
+- **Or tick individual rows** in the table. As soon as anything is ticked, the
+  ticked rows win over the filter (the note under the buttons tells you which
+  is in effect).
+
+Three outputs, all respecting that selection:
+
+| Output | What it gives you |
+|---|---|
+| **📊 Comprehensive comparison report** | A visual comparison of the whole selection — see below. Works equally for one phantom over time and for ten different phantoms side by side. |
+| **Single-metric trend chart** | One metric across the selection, baseline starred, dashed green band at ±20 % of baseline. |
+| **CSV export, long or wide** | *Long* = one row per metric per analysis (pivot-ready). *Wide* = one row per metric, one column per analysis (readable drift table). Both carry site, phantom, operator and acquisition time. |
+
+### The comparison report
+
+It is built from plots, not tables. Every visual identifies entries by
+**Site / Phantom** (with the date appended only when the same phantom appears
+more than once), and a key at the top maps each label to its full record.
+
+- **Status grid** — every test × every analysis as a colour block.
+- **"Where the differences are"** — a ranked bar chart of the metrics that vary
+  most across the selection.
+- **Per-pattern panels** — one small plot per object (per line-pair group, per
+  low-contrast circle, per uniformity square, per wedge step), each analysis a
+  labelled point, coloured by site, with the selection median as a dashed
+  reference. Plus whole-curve comparisons for the wedge response and the
+  low-contrast CNR series.
+- **Per-pattern deviation heatmap** — a compact metric × analysis overview.
+  Metrics that are effectively identical across the selection are dropped and
+  counted rather than painted in misleading colour.
+- **Numeric detail** — still there, but collapsed behind a toggle per section.
+
+Two deliberate choices matter here:
+
+1. **The reference is the median of the selection, not the first entry.** When
+   you are comparing ten phantoms there is no meaningful "first", so "change
+   since the first scan" would be an arbitrary framing. For a single phantom
+   over time the median is still a sensible baseline, so one layout serves both.
+2. **Metrics that are already percentages** (pitch deviation, ΔSNR) are compared
+   in *percentage points*, never as a ratio. Their median sits near zero, so a
+   relative comparison produces meaningless five-figure numbers.
+
+Analyses are grouped by site and phantom, and ordered by **acquisition time from
+the DICOM header** within a phantom — so re-analysing an old scan does not
+distort the ordering.
 
 Because pixel values of processed radiographs are not dose-proportional, all
-tests are **constancy tests**: compare against the baseline of the same
-signature. The app warns (via separate signature groups) when scans were
-acquired with different parameters, machines, or processing.
+tests remain **constancy tests**: compare against the baseline of the same
+signature. Filtering by protocol signature alongside site/phantom is how you
+keep that honest — the comparison report shows each analysis's signature in its
+header row so a mixed series is obvious.
 
 ## Where things live
 
@@ -140,8 +197,9 @@ phantom_qa/                 the Python package
   phantom_def.py            phantom definition (JSON) loader
   analysis/                 one module per test (propose/compute split)
   pipeline.py               stage orchestration + overlay rendering
-  store.py                  SQLite persistence + CSV flattening
+  store.py                  SQLite persistence, labels/filtering, CSV export
   report.py                 printable HTML report, one section per pattern
+  comparison_report.py      multi-analysis comparison report (trends + drift)
   config.py                 .env loading, production safety checks
   security.py               password hashing, signed sessions, CSRF, throttling
   manage.py                 admin CLI (gen-secret, set-password, check)
@@ -150,7 +208,7 @@ phantom_qa/                 the Python package
 data/phantom_definitions/msf_v1.json   calibrated phantom geometry (see below)
 data/phantom_qa.sqlite3     analysis database (created on first run)
 data/uploads/               original uploaded files (traceability)
-tests/                      pytest suite (73 tests)
+tests/                      pytest suite (95 tests)
 docs/ALGORITHMS.md          how every number is computed + validation results
 docs/DEPLOYMENT.md          server deployment, TLS, and the security model
 .env.example                configuration template (copy to .env)

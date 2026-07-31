@@ -9,7 +9,7 @@ import io
 import os
 
 import numpy as np
-from fastapi import (FastAPI, File, HTTPException, Request, Response,
+from fastapi import (FastAPI, File, Form, HTTPException, Request, Response,
                      UploadFile)
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from .. import ALGO_VERSION
 from .. import ingest, pipeline
 from ..analysis.common import roi_center_from_px
+from ..comparison_report import build_comparison_report
 from ..config import get_config
 from ..phantom_def import load_default
 from ..registration import Registration, Transform
@@ -25,7 +26,7 @@ from ..report import build_report
 from ..security import (CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, LoginThrottle,
                         csrf_ok, issue_session, new_csrf_token, read_session,
                         verify_password)
-from ..store import Store, csv_export, flatten_results
+from ..store import Store, csv_export, flatten_results, wide_csv_export
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 cfg = get_config()
@@ -261,19 +262,24 @@ def _do_register(aid: str, corners_hint=None):
 # ------------------------------------------------------------------ endpoints
 
 @app.post("/api/analyses")
-async def upload(file: UploadFile = File(...)):
+async def upload(file: UploadFile = File(...),
+                 site: str = Form(""), phantom: str = Form(""),
+                 operator: str = Form(""), notes: str = Form("")):
     data = await file.read()
     try:
         scans = ingest.load_any_bytes(data, file.filename or "upload")
     except Exception as e:
         raise HTTPException(400, f"Could not read file: {e}")
+    labels = {"site": site, "phantom": phantom,
+              "operator": operator, "notes": notes}
     created = []
     for scan in scans:
         aid = store.new_analysis(scan, data, ingest.protocol_signature(scan.meta),
-                                 ALGO_VERSION, pdef.version)
+                                 ALGO_VERSION, pdef.version, labels=labels)
         _scans[aid] = scan
         store.audit(aid, "A", "uploaded",
-                    {"source": scan.source_name, "kind": scan.kind})
+                    {"source": scan.source_name, "kind": scan.kind,
+                     **{k: v for k, v in labels.items() if v}})
         try:
             reg = _do_register(aid)
             created.append({"id": aid, "source_name": scan.source_name,
@@ -286,8 +292,34 @@ async def upload(file: UploadFile = File(...)):
 
 
 @app.get("/api/analyses")
-def list_analyses():
-    return {"analyses": store.list_all()}
+def list_analyses(site: str = "", phantom: str = "", signature: str = "",
+                  completed_only: bool = False):
+    return {"analyses": store.list_all(site=site or None,
+                                       phantom=phantom or None,
+                                       signature=signature or None,
+                                       completed_only=completed_only)}
+
+
+@app.get("/api/labels")
+def labels():
+    return store.labels()
+
+
+class LabelBody(BaseModel):
+    site: str | None = None
+    phantom: str | None = None
+    operator: str | None = None
+    notes: str | None = None
+
+
+@app.post("/api/analyses/{aid}/labels")
+def set_labels(aid: str, body: LabelBody):
+    if store.get(aid) is None:
+        raise HTTPException(404, "not found")
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    store.set_labels(aid, fields)
+    store.audit(aid, "F", "labels edited", fields)
+    return {"ok": True, **fields}
 
 
 @app.get("/api/analyses/{aid}")
@@ -298,7 +330,9 @@ def get_analysis(aid: str):
     payload = {k: rec[k] for k in ("id", "created_at", "source_name", "sha256",
                                    "kind", "reduced_precision", "signature",
                                    "stage", "status", "sid_mm", "is_baseline",
-                                   "algo_version", "pdef_version")}
+                                   "algo_version", "pdef_version",
+                                   "site", "phantom", "operator", "notes",
+                                   "acquired_at")}
     payload["meta"] = rec.get("meta")
     payload["geometry"] = rec.get("geometry")
     payload["results"] = rec.get("results")
@@ -576,10 +610,42 @@ def export_csv_one(aid: str):
     return csv_export([rec])
 
 
+def _selected_records(ids: str = "", site: str = "", phantom: str = "",
+                      signature: str = "") -> list[dict]:
+    """Records for an explicit id list, or for a label filter."""
+    if ids:
+        out = []
+        for a in ids.split(","):
+            rec = store.get(a.strip())
+            if rec:
+                out.append(rec)
+        return out
+    listing = store.list_all(site=site or None, phantom=phantom or None,
+                             signature=signature or None, completed_only=True)
+    return [store.get(item["id"]) for item in listing]
+
+
 @app.get("/api/export.csv", response_class=PlainTextResponse)
-def export_csv_many(ids: str):
-    recs = [store.get(a) for a in ids.split(",") if store.get(a)]
-    return csv_export(recs)
+def export_csv_many(ids: str = "", site: str = "", phantom: str = "",
+                    signature: str = "", layout: str = "long"):
+    recs = _selected_records(ids, site, phantom, signature)
+    if not recs:
+        raise HTTPException(404, "no matching analyses")
+    return wide_csv_export(recs) if layout == "wide" else csv_export(recs)
+
+
+@app.get("/api/comparison_report.html", response_class=HTMLResponse)
+def comparison_report(ids: str = "", site: str = "", phantom: str = "",
+                      signature: str = ""):
+    recs = _selected_records(ids, site, phantom, signature)
+    if not recs:
+        raise HTTPException(404, "no matching analyses")
+    suffix = ""
+    if site or phantom:
+        suffix = " — " + " / ".join(x for x in (site, phantom) if x)
+    return build_comparison_report(
+        recs, title_suffix=suffix,
+        filters={"site": site, "phantom": phantom, "signature": signature})
 
 
 @app.get("/api/analyses/{aid}/report.html", response_class=HTMLResponse)
@@ -599,18 +665,31 @@ def report_html(aid: str):
 
 
 @app.get("/api/trends")
-def trends(signature: str):
+def trends(signature: str = "", site: str = "", phantom: str = "",
+           ids: str = ""):
+    """Trend data for a label filter, a signature, or an explicit id list."""
+    if ids:
+        listing = [{"id": a.strip()} for a in ids.split(",") if a.strip()]
+    else:
+        listing = store.list_all(site=site or None, phantom=phantom or None,
+                                 signature=signature or None,
+                                 completed_only=True)
     out = []
-    for item in store.list_all():
-        if item["signature"] != signature:
-            continue
+    for item in listing:
         rec = store.get(item["id"])
         if not rec or not rec.get("results"):
             continue
         out.append({"id": rec["id"], "created_at": rec["created_at"],
+                    "acquired_at": rec.get("acquired_at") or rec["created_at"],
+                    "site": rec.get("site", ""), "phantom": rec.get("phantom", ""),
+                    "signature": rec.get("signature", ""),
+                    "status": rec.get("status", ""),
                     "is_baseline": rec["is_baseline"],
                     "rows": flatten_results(rec["results"])})
-    return pipeline.to_jsonable({"signature": signature, "analyses": out})
+    out.sort(key=lambda a: a["acquired_at"])
+    return pipeline.to_jsonable({
+        "filter": {"signature": signature, "site": site, "phantom": phantom},
+        "analyses": out})
 
 
 @app.get("/api/signatures")
