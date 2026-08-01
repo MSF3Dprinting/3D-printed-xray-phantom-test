@@ -44,7 +44,7 @@ async function api(path, opts = {}) {
   }
   const r = await fetch(path, o);
   if (r.status === 401) {
-    window.location = "/login";
+    window.location = "login";
     throw new Error("Session expired — signing in again");
   }
   if (!r.ok) {
@@ -113,7 +113,7 @@ function loadImage(params = "") {
     S.imgScale = img.width / S.nativeCols;
     if (first) zoomFit(); else draw();
   };
-  img.src = `/api/analyses/${S.aid}/image.png${params}`;
+  img.src = `api/analyses/${S.aid}/image.png${params}`;
 }
 
 let wlTimer = null;
@@ -327,7 +327,7 @@ canvas.addEventListener("mouseup", async (ev) => {
     const roi = S.dragRoi.roi;
     S.dragRoi = null;
     try {
-      const r = await postJSON(`/api/analyses/${S.aid}/roi`,
+      const r = await postJSON(`api/analyses/${S.aid}/roi`,
         { roi_id: roi.id, center_px: roi.center_px });
       replaceRoi(roi.id, r.roi);
       showRoiDetails(r.roi, r.stats);
@@ -344,7 +344,7 @@ canvas.addEventListener("mouseup", async (ev) => {
       if (hit) {
         S.selectedRoi = hit.roi.id;
         try {
-          const r = await api(`/api/analyses/${S.aid}/roi_stats?roi_id=` +
+          const r = await api(`api/analyses/${S.aid}/roi_stats?roi_id=` +
                               encodeURIComponent(hit.roi.id));
           showRoiDetails(r.roi, r.stats);
         } catch (e) { /* noop */ }
@@ -471,7 +471,7 @@ function renderIdentityBar() {
     const vals = await editLabelsDialog(r, `Identification — ${r.id}`);
     if (!vals) return;
     try {
-      await postJSON(`/api/analyses/${S.aid}/labels`, vals);
+      await postJSON(`api/analyses/${S.aid}/labels`, vals);
       Object.assign(S.record, vals);
       renderIdentityBar();
       status("Identification updated.");
@@ -491,7 +491,7 @@ function editLabelsDialog(rec, title = "Edit identification") {
     ["site", "phantom", "operator", "notes"].forEach(
       k => { $("#m-" + k).value = rec[k] || ""; });
     try {
-      const lab = await api("/api/labels");
+      const lab = await api("api/labels");
       const opts = (items) => (items || [])
         .map(s => `<option value="${s.value.replace(/"/g, "&quot;")}">`).join("");
       $("#dl-site-m").innerHTML = opts(lab.site);
@@ -592,7 +592,7 @@ function validationDialog(rec) {
 
 async function setValidation(rec, onDone) {
   let policy = { enabled: true };
-  try { policy = await api("/api/validation_policy"); } catch (e) { /* noop */ }
+  try { policy = await api("api/validation_policy"); } catch (e) { /* noop */ }
   if (!policy.enabled) {
     alert("Validation requires an administrator password.\n\nAn administrator "
       + "must set PHANTOMQA_ADMIN_PASSWORD_HASH in .env\n"
@@ -602,7 +602,7 @@ async function setValidation(rec, onDone) {
   const vals = await validationDialog(rec);
   if (!vals) return;
   try {
-    const r = await postJSON(`/api/analyses/${rec.id}/validation`, vals);
+    const r = await postJSON(`api/analyses/${rec.id}/validation`, vals);
     status(`Recorded: ${VAL_LABEL[r.validation_status] || "pending review"}`
            + (r.validated_by ? ` (${r.validated_by})` : ""));
     if (onDone) onDone(r);
@@ -614,7 +614,7 @@ async function setValidation(rec, onDone) {
 async function verifyAnalysis(aid) {
   status("Re-hashing the stored source file…");
   try {
-    const r = await api(`/api/analyses/${aid}/verify`);
+    const r = await api(`api/analyses/${aid}/verify`);
     const msg = {
       ok: `✔ Verified — the stored file still matches the SHA-256 recorded at `
         + `analysis time.\n\nSHA-256:\n${r.stored_sha256}\n\n`
@@ -635,7 +635,7 @@ async function verifyAnalysis(aid) {
    needs the ADMIN password plus the analysis id typed back. */
 async function deleteAnalysis(aid) {
   let policy = { enabled: true };
-  try { policy = await api("/api/deletion_policy"); } catch (e) { /* noop */ }
+  try { policy = await api("api/deletion_policy"); } catch (e) { /* noop */ }
   if (!policy.enabled) {
     alert("Deletion is disabled on this installation.\n\nAn administrator must "
       + "set PHANTOMQA_ADMIN_PASSWORD_HASH in .env\n"
@@ -651,7 +651,7 @@ async function deleteAnalysis(aid) {
   if (pw === null) return;
   const reason = prompt("Reason for deletion (recorded in the audit log):", "") || "";
   try {
-    await postJSON(`/api/analyses/${aid}/delete`,
+    await postJSON(`api/analyses/${aid}/delete`,
                    { admin_password: pw, confirm_id: confirmId.trim(), reason });
     status(`Analysis ${aid} deleted.`);
     if (S.aid === aid) {
@@ -719,7 +719,7 @@ async function stageU(c) {
     <button class="secondary" id="btn-clear-file">Clear file</button>`;
 
   try {
-    const lab = await api("/api/labels");
+    const lab = await api("api/labels");
     const opts = (items) => (items || [])
       .map(s => `<option value="${s.value.replace(/"/g, "&quot;")}">`).join("");
     $("#dl-site").innerHTML = opts(lab.site);
@@ -784,7 +784,7 @@ async function uploadFile(file) {
   fd.append("file", file);
   Object.entries(labels).forEach(([k, v]) => fd.append(k, v));
   try {
-    const r = await api("/api/analyses", { method: "POST", body: fd });
+    const r = await api("api/analyses", { method: "POST", body: fd });
     const ok = r.analyses.filter(a => a.registered);
     if (!r.analyses.length) throw new Error("no images found");
     if (r.analyses.length > 1)
@@ -803,7 +803,7 @@ async function openAnalysis(aid) {
   S.imgEl = null;
   S.geometry = null; S.results = null; S.selectedRoi = null;
   S.manualCorners = []; S.mode = "normal";
-  const rec = await api(`/api/analyses/${aid}`);
+  const rec = await api(`api/analyses/${aid}`);
   S.record = rec;
   S.reg = rec.registration;
   S.geometry = rec.geometry;
@@ -843,8 +843,8 @@ function stageA(c) {
   $("#btn-confirm-a").addEventListener("click", async () => {
     status("Generating pattern proposals…");
     try {
-      await postJSON(`/api/analyses/${S.aid}/confirm`, { stage: "A" });
-      const r = await postJSON(`/api/analyses/${S.aid}/propose`, {});
+      await postJSON(`api/analyses/${S.aid}/confirm`, { stage: "A" });
+      const r = await postJSON(`api/analyses/${S.aid}/propose`, {});
       S.geometry = r.geometry;
       setStage("B");
       status("");
@@ -861,7 +861,7 @@ async function submitManualCorners() {
   S.mode = "normal";
   status("Re-registering with manual corners…");
   try {
-    S.reg = await postJSON(`/api/analyses/${S.aid}/register`,
+    S.reg = await postJSON(`api/analyses/${S.aid}/register`,
       { corners_px: S.manualCorners });
     S.manualCorners = [];
     S.geometry = null;
@@ -916,7 +916,7 @@ function stageB(c) {
     <button class="primary" id="btn-confirm-b">All patterns correct ✓</button>
     <button class="secondary" id="btn-back-a">Back to registration</button>`;
   $("#btn-confirm-b").addEventListener("click", async () => {
-    await postJSON(`/api/analyses/${S.aid}/confirm`, { stage: "B" });
+    await postJSON(`api/analyses/${S.aid}/confirm`, { stage: "B" });
     setStage("C");
   });
   $("#btn-back-a").addEventListener("click", () => setStage("A"));
@@ -942,7 +942,7 @@ function stageC(c) {
       status(`Click the radiation-field edge on the ${b.dataset.side} side.`);
     }));
   $("#btn-confirm-c").addEventListener("click", async () => {
-    await postJSON(`/api/analyses/${S.aid}/confirm`, { stage: "C" });
+    await postJSON(`api/analyses/${S.aid}/confirm`, { stage: "C" });
     setStage("D");
   });
   $("#btn-back-b").addEventListener("click", () => setStage("B"));
@@ -951,7 +951,7 @@ function stageC(c) {
 async function submitFieldEdge(natPoint) {
   S.mode = "normal";
   try {
-    const f = await postJSON(`/api/analyses/${S.aid}/field_edge`,
+    const f = await postJSON(`api/analyses/${S.aid}/field_edge`,
       { side: S.fieldEdgeSide, point_px: natPoint });
     S.geometry.geometry.field_edges[S.fieldEdgeSide] = f;
     status(`Field edge ${S.fieldEdgeSide} set (${fmt(f.offset_from_edge_mm, 1)} mm outside phantom edge).`);
@@ -967,7 +967,7 @@ async function stageD(c) {
     <p class="hint">Computing dimensions…</p>`;
   let gr;
   try {
-    const r = await postJSON(`/api/analyses/${S.aid}/compute_preview`,
+    const r = await postJSON(`api/analyses/${S.aid}/compute_preview`,
       { tests: ["geometry"], sid_mm: S.sid });
     gr = r.geometry;
     S.dimPreview = gr;
@@ -1042,7 +1042,7 @@ async function stageD(c) {
   });
   $("#btn-confirm-d").addEventListener("click", async () => {
     S.sid = +$("#sid-input").value || 1000;
-    await postJSON(`/api/analyses/${S.aid}/confirm`, { stage: "D" });
+    await postJSON(`api/analyses/${S.aid}/confirm`, { stage: "D" });
     setStage("E");
   });
   $("#btn-back-c").addEventListener("click", () => setStage("C"));
@@ -1053,7 +1053,7 @@ async function stageE(c) {
   c.innerHTML = `<h2>Stage E — Analysis</h2><p class="hint">Computing…</p>`;
   let r;
   try {
-    r = await postJSON(`/api/analyses/${S.aid}/compute`, { sid_mm: S.sid });
+    r = await postJSON(`api/analyses/${S.aid}/compute`, { sid_mm: S.sid });
   } catch (e) {
     c.innerHTML = `<h2>Stage E — Analysis</h2>
       <p style="color:var(--fail)">${e.message}</p>`;
@@ -1138,7 +1138,7 @@ async function stageE(c) {
   drawLpCharts(res);
 
   $("#btn-confirm-e").addEventListener("click", async () => {
-    await postJSON(`/api/analyses/${S.aid}/confirm`, { stage: "E" });
+    await postJSON(`api/analyses/${S.aid}/confirm`, { stage: "E" });
     setStage("F");
   });
   $("#btn-back-d").addEventListener("click", () => setStage("D"));
@@ -1173,9 +1173,9 @@ function stageF(c) {
     <button class="primary" id="btn-finalize">Finalize</button>
     <h3>Export</h3>
     <p>
-      <a href="/api/analyses/${S.aid}/report.html" target="_blank">📄 Printable report</a><br>
-      <a href="/api/analyses/${S.aid}/export.csv" download="phantom_qa_${S.aid}.csv">⬇ CSV (flat metrics)</a><br>
-      <a href="/api/analyses/${S.aid}/export.json" target="_blank">⬇ JSON (full record)</a>
+      <a href="api/analyses/${S.aid}/report.html" target="_blank">📄 Printable report</a><br>
+      <a href="api/analyses/${S.aid}/export.csv" download="phantom_qa_${S.aid}.csv">⬇ CSV (flat metrics)</a><br>
+      <a href="api/analyses/${S.aid}/export.json" target="_blank">⬇ JSON (full record)</a>
     </p>
     <h3>Source file integrity</h3>
     <p class="hint">The SHA-256 below fingerprints the exact file these results
@@ -1188,7 +1188,7 @@ function stageF(c) {
     <button class="secondary" id="btn-new">New analysis</button>`;
   $("#btn-finalize").addEventListener("click", async () => {
     try {
-      await postJSON(`/api/analyses/${S.aid}/finalize`,
+      await postJSON(`api/analyses/${S.aid}/finalize`,
         { baseline: $("#cb-baseline").checked });
       status("Finalized.");
     } catch (e) { status(e.message, true); }
@@ -1333,7 +1333,7 @@ function updateSelectionNote() {
 }
 
 async function loadHistory() {
-  const lab = await api("/api/labels");
+  const lab = await api("api/labels");
   const fill = (sel, items, cur) => {
     sel.innerHTML = '<option value="">(all)</option>' + items.map(s =>
       `<option value="${s.value.replace(/"/g, "&quot;")}"${s.value === cur ? " selected" : ""}>` +
@@ -1341,14 +1341,14 @@ async function loadHistory() {
   };
   fill($("#f-site"), lab.site || [], H.filter.site);
   fill($("#f-phantom"), lab.phantom || [], H.filter.phantom);
-  const sigs = await api("/api/signatures");
+  const sigs = await api("api/signatures");
   fill($("#f-signature"),
        sigs.signatures.map(s => ({ value: s.signature, count: s.count })),
        H.filter.signature);
 
   const q = new URLSearchParams();
   Object.entries(H.filter).forEach(([k, v]) => { if (v) q.set(k, v); });
-  const r = await api("/api/analyses?" + q.toString());
+  const r = await api("api/analyses?" + q.toString());
   H.rows = r.analyses;
   $("#filter-count").textContent =
     `${r.analyses.length} analysis(es) match`;
@@ -1368,7 +1368,7 @@ async function loadHistory() {
             ? `<br><span class="hint">${a.validated_by}</span>` : ""}</td>
       <td>${a.is_baseline ? "★" : ""}</td>
       <td><a href="#" class="open" data-id="${a.id}">open</a> ·
-          <a href="/api/analyses/${a.id}/report.html" target="_blank">report</a> ·
+          <a href="api/analyses/${a.id}/report.html" target="_blank">report</a> ·
           <a href="#" class="edit" data-id="${a.id}">label</a> ·
           <a href="#" class="validate" data-id="${a.id}">validate</a> ·
           <a href="#" class="verify" data-id="${a.id}">verify</a> ·
@@ -1401,7 +1401,7 @@ async function loadHistory() {
     const vals = await editLabelsDialog(rec, `Identification — ${rec.id}`);
     if (!vals) return;
     try {
-      await postJSON(`/api/analyses/${a.dataset.id}/labels`, vals);
+      await postJSON(`api/analyses/${a.dataset.id}/labels`, vals);
       if (S.aid === a.dataset.id && S.record) {
         Object.assign(S.record, vals);
         renderIdentityBar();
@@ -1437,20 +1437,20 @@ $("#sel-all").addEventListener("change", (e) => {
 $("#btn-comparison").addEventListener("click", () => {
   const q = filterQuery();
   if (!q) { alert("Pick a site/phantom filter or tick some rows first."); return; }
-  window.open("/api/comparison_report.html?" + q, "_blank");
+  window.open("api/comparison_report.html?" + q, "_blank");
 });
 $("#btn-export-long").addEventListener("click", () => {
-  window.location = "/api/export.csv?" + filterQuery({ layout: "long" });
+  window.location = "api/export.csv?" + filterQuery({ layout: "long" });
 });
 $("#btn-export-wide").addEventListener("click", () => {
-  window.location = "/api/export.csv?" + filterQuery({ layout: "wide" });
+  window.location = "api/export.csv?" + filterQuery({ layout: "wide" });
 });
 
 let trendData = null;
 async function loadTrends() {
   const q = filterQuery();
   try {
-    trendData = await api("/api/trends?" + q);
+    trendData = await api("api/trends?" + q);
   } catch (e) { trendData = null; }
   const msel = $("#trend-metric");
   if (!trendData || !trendData.analyses.length) {
@@ -1542,14 +1542,14 @@ function drawTrend() {
 
 async function initAuth() {
   try {
-    const a = await api("/api/auth");
+    const a = await api("api/auth");
     if (a.auth_enabled) {
-      if (!a.authenticated) { window.location = "/login"; return; }
+      if (!a.authenticated) { window.location = "login"; return; }
       const btn = el("button", { id: "logout-btn", class: "tab" },
                      `Sign out (${a.user || ""})`);
       btn.addEventListener("click", async () => {
-        await postJSON("/api/logout", {});
-        window.location = "/login";
+        await postJSON("api/logout", {});
+        window.location = "login";
       });
       $("header nav").appendChild(btn);
     }

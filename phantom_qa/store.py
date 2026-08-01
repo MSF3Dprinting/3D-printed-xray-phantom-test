@@ -6,6 +6,7 @@ One row per analysis. The original upload bytes are kept on disk
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -95,10 +96,61 @@ class Store:
             if col not in have:
                 conn.execute(f"ALTER TABLE analyses ADD COLUMN {col} {decl}")
 
-    def _conn(self):
-        c = sqlite3.connect(self.db_path)
+    def _connect(self) -> sqlite3.Connection:
+        """A configured connection. The caller owns it and must close it.
+
+        WAL lets gunicorn's worker processes read while another writes, which
+        plain rollback-journal mode does not. It is a persistent property of
+        the database file and creates two runtime companions next to it
+        (-wal, -shm) that SQLite recreates automatically and that must never be
+        committed or backed up on their own — see docs/DEPLOYMENT.md.
+        busy_timeout makes a worker wait for a lock instead of failing the
+        request with "database is locked"."""
+        c = sqlite3.connect(self.db_path, timeout=15)
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA busy_timeout=15000")
+        c.execute("PRAGMA synchronous=NORMAL")
         c.row_factory = sqlite3.Row
         return c
+
+    @contextlib.contextmanager
+    def _conn(self):
+        """Commit-or-rollback AND close.
+
+        `with sqlite3.connect(...)` only commits — it leaves the connection
+        open, which leaks a file handle per request in a long-running server."""
+        c = self._connect()
+        try:
+            with c:
+                yield c
+        finally:
+            c.close()
+
+    def checkpoint(self):
+        """Fold the write-ahead log back into the main database file.
+
+        Call before copying the .sqlite3 file, so the copy is complete on its
+        own and does not depend on a -wal file that was not copied with it."""
+        c = self._connect()
+        try:
+            c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            c.commit()
+        finally:
+            c.close()
+
+    def backup_to(self, dest_path: str):
+        """Consistent copy of the whole database while the app is running."""
+        os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
+        src = self._connect()
+        try:
+            dst = sqlite3.connect(dest_path)
+            try:
+                src.backup(dst)
+            finally:
+                dst.close()
+        finally:
+            src.close()
+        return dest_path
 
     # ------------------------------------------------------------- lifecycle
 

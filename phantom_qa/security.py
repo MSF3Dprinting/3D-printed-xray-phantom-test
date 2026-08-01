@@ -7,10 +7,12 @@ there is no extra dependency to keep patched in a hospital deployment.
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import hmac
 import json
 import secrets
+import sqlite3
 import time
 
 PBKDF2_ROUNDS = 240_000
@@ -77,7 +79,12 @@ def read_session(secret_key: str, token: str | None) -> dict | None:
 # ---------------------------------------------------------------- rate limits
 
 class LoginThrottle:
-    """Per-client failed-login throttle (in-process; single-worker deployment)."""
+    """Per-client failed-attempt throttle, in process memory.
+
+    Only correct for a SINGLE worker. Under gunicorn with N workers each
+    process keeps its own counter, so an attacker effectively gets N times the
+    allowed attempts. Use :class:`SharedThrottle` for a multi-worker deployment.
+    """
 
     def __init__(self, max_attempts: int, lockout_minutes: int):
         self.max_attempts = max_attempts
@@ -97,6 +104,66 @@ class LoginThrottle:
 
     def reset(self, key: str):
         self._fails.pop(key, None)
+
+
+class SharedThrottle:
+    """Failed-attempt throttle shared across processes via SQLite.
+
+    Gunicorn runs several worker processes, so an in-memory counter would give
+    an attacker `max_attempts x workers` guesses. This keeps the counter in the
+    same SQLite file the rest of the app uses, so every worker sees the same
+    state. Writes are tiny and rare (only on failure), so the extra I/O is
+    irrelevant next to the image analysis this app does."""
+
+    def __init__(self, db_path: str, scope: str, max_attempts: int,
+                 lockout_minutes: int):
+        self.db_path = db_path
+        self.scope = scope
+        self.max_attempts = max_attempts
+        self.lockout = lockout_minutes * 60
+        with self._conn() as c:
+            c.execute("""CREATE TABLE IF NOT EXISTS auth_failures (
+                            scope TEXT, client TEXT, ts REAL)""")
+            c.execute("""CREATE INDEX IF NOT EXISTS idx_auth_failures
+                         ON auth_failures(scope, client, ts)""")
+
+    @contextlib.contextmanager
+    def _conn(self):
+        # Same file and therefore the same WAL mode the Store sets; the
+        # busy_timeout matters here because several workers may record a failed
+        # attempt at once. Closed explicitly — `with sqlite3.connect(...)` only
+        # commits, so relying on it would leak a handle per login attempt.
+        c = sqlite3.connect(self.db_path, timeout=15)
+        c.execute("PRAGMA busy_timeout=15000")
+        try:
+            with c:
+                yield c
+        finally:
+            c.close()
+
+    def _purge(self, c, now: float):
+        c.execute("DELETE FROM auth_failures WHERE ts < ?", (now - self.lockout,))
+
+    def locked_for(self, key: str) -> int:
+        now = time.time()
+        with self._conn() as c:
+            self._purge(c, now)
+            rows = c.execute(
+                "SELECT ts FROM auth_failures WHERE scope=? AND client=?"
+                " ORDER BY ts", (self.scope, key)).fetchall()
+        if len(rows) >= self.max_attempts:
+            return int(self.lockout - (now - rows[0][0]))
+        return 0
+
+    def record_failure(self, key: str):
+        with self._conn() as c:
+            c.execute("INSERT INTO auth_failures (scope, client, ts)"
+                      " VALUES (?,?,?)", (self.scope, key, time.time()))
+
+    def reset(self, key: str):
+        with self._conn() as c:
+            c.execute("DELETE FROM auth_failures WHERE scope=? AND client=?",
+                      (self.scope, key))
 
 
 def new_csrf_token() -> str:

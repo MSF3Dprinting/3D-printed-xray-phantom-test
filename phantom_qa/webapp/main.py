@@ -5,10 +5,13 @@ Run with:  python run_app.py   (or: uvicorn phantom_qa.webapp.main:app)
 
 from __future__ import annotations
 
+import html as _html
 import io
 import logging
 import os
 import time
+
+html_escape = _html.escape
 
 import numpy as np
 from fastapi import (FastAPI, File, Form, HTTPException, Request, Response,
@@ -26,7 +29,7 @@ from ..logging_setup import audit, get_logger, setup_logging
 from ..phantom_def import load_default
 from ..registration import Registration, Transform
 from ..report import build_report
-from ..security import (CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, LoginThrottle,
+from ..security import (CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, SharedThrottle,
                         csrf_ok, issue_session, new_csrf_token, read_session,
                         verify_password)
 from ..store import (VALIDATION_LABELS, VALIDATION_STATES, Store, csv_export,
@@ -46,12 +49,17 @@ if not cfg.deletion_enabled:
     log.warning("deletion is DISABLED (no PHANTOMQA_ADMIN_PASSWORD_HASH set)")
 
 app = FastAPI(title="MSF Phantom QA", docs_url=None, redoc_url=None,
-              openapi_url=None)
+              openapi_url=None, root_path=cfg.root_path)
 store = Store(ROOT)
 pdef = load_default()
-throttle = LoginThrottle(cfg.max_login_attempts, cfg.lockout_minutes)
-admin_throttle = LoginThrottle(max(cfg.max_login_attempts // 2, 3),
-                               cfg.lockout_minutes)
+
+# Shared across gunicorn workers — an in-process counter would give an attacker
+# max_attempts x worker_count guesses.
+throttle = SharedThrottle(store.db_path, "login", cfg.max_login_attempts,
+                          cfg.lockout_minutes)
+admin_throttle = SharedThrottle(store.db_path, "admin",
+                                max(cfg.max_login_attempts // 2, 3),
+                                cfg.lockout_minutes)
 
 _scans: dict[str, ingest.ScanData] = {}       # id -> ScanData cache
 _regs: dict[str, Registration] = {}
@@ -60,8 +68,29 @@ _img_cache: dict[tuple, bytes] = {}
 
 # ------------------------------------------------------------- security layer
 
-_PUBLIC_PATHS = {"/login", "/api/login", "/api/auth", "/style.css",
-                 "/login.js", "/favicon.ico"}
+# Everything else requires a session. Kept as an explicit allow-list so a new
+# route is private by default — adding an endpoint can never accidentally
+# publish it.
+_PUBLIC_PATHS = frozenset({"/login", "/api/login", "/api/auth", "/style.css",
+                           "/login.js", "/favicon.ico"})
+
+
+def _app_path(request: Request) -> str:
+    """Path relative to the mount point, normalised.
+
+    Behind nginx at /x-ray/ the incoming path may or may not carry the prefix
+    depending on how proxy_pass is written, so strip it if present. Duplicate
+    slashes are collapsed and a trailing slash removed so that '/api/login/'
+    or '//api/login' cannot dodge the allow-list comparison."""
+    p = request.url.path
+    rp = (request.scope.get("root_path") or "")
+    if rp and p.startswith(rp):
+        p = p[len(rp):] or "/"
+    while "//" in p:
+        p = p.replace("//", "/")
+    if len(p) > 1 and p.endswith("/"):
+        p = p.rstrip("/") or "/"
+    return p
 
 
 def _client_key(request: Request) -> str:
@@ -93,7 +122,7 @@ async def security_middleware(request: Request, call_next):
         return JSONResponse(
             {"detail": f"Upload exceeds {cfg.max_upload_mb} MB"}, status_code=413)
 
-    path = request.url.path
+    path = _app_path(request)
     if cfg.auth_enabled and path not in _PUBLIC_PATHS:
         session = read_session(cfg.secret_key,
                                request.cookies.get(SESSION_COOKIE))
@@ -147,15 +176,23 @@ async def security_middleware(request: Request, call_next):
 def _set_auth_cookies(response, username: str, csrf: str) -> None:
     token = issue_session(cfg.secret_key, username, cfg.session_hours)
     common = dict(secure=cfg.https_only, samesite="strict",
-                  max_age=cfg.session_hours * 3600, path="/")
+                  max_age=cfg.session_hours * 3600, path=cfg.cookie_path)
     response.set_cookie(SESSION_COOKIE, token, httponly=True, **common)
     # readable by JS on purpose: the frontend echoes it in the CSRF header
     response.set_cookie(CSRF_COOKIE, csrf, httponly=False, **common)
 
 
+def _base_href() -> str:
+    """URL prefix the browser must use. Everything the frontend requests is
+    relative to this, so the app works at / and at /x-ray/ unchanged."""
+    return (cfg.root_path + "/") if cfg.root_path else "/"
+
+
 def _login_page() -> str:
-    return """<!doctype html><html><head><meta charset="utf-8">
-<title>MSF Phantom QA — sign in</title><link rel="stylesheet" href="/style.css">
+    base = html_escape(_base_href())
+    return f"""<!doctype html><html><head><meta charset="utf-8">
+<base href="{base}">
+<title>MSF Phantom QA — sign in</title><link rel="stylesheet" href="style.css">
 </head><body class="login-body">
 <form id="login-form" class="login-card">
   <h1>MSF Phantom QA</h1>
@@ -165,7 +202,7 @@ def _login_page() -> str:
   <button class="primary" type="submit">Sign in</button>
   <p id="login-error" class="login-error"></p>
 </form>
-<script src="/login.js"></script></body></html>"""
+<script src="login.js"></script></body></html>"""
 
 
 class LoginBody(BaseModel):
@@ -219,8 +256,8 @@ def login(body: LoginBody, request: Request):
 def logout(request: Request):
     audit("logout", user=_current_user(request), client=_client_key(request))
     resp = JSONResponse({"ok": True})
-    resp.delete_cookie(SESSION_COOKIE, path="/")
-    resp.delete_cookie(CSRF_COOKIE, path="/")
+    resp.delete_cookie(SESSION_COOKIE, path=cfg.cookie_path)
+    resp.delete_cookie(CSRF_COOKIE, path=cfg.cookie_path)
     return resp
 
 
@@ -235,9 +272,23 @@ def _scan(aid: str) -> ingest.ScanData:
     rec = store.get(aid)
     if rec is None:
         raise HTTPException(404, "analysis not found")
-    with open(store.upload_path(aid), "rb") as f:
+    path = store.upload_path(aid)
+    if not os.path.exists(path):
+        log.error("stored source file missing for analysis=%s", aid)
+        raise HTTPException(
+            410, "The stored source file for this analysis is missing, so the "
+                 "image can no longer be loaded. Run 'verify' for details.")
+    with open(path, "rb") as f:
         data = f.read()
-    scans = ingest.load_any_bytes(data, rec["source_name"])
+    try:
+        scans = ingest.load_any_bytes(data, rec["source_name"])
+    except Exception as e:
+        # A stored file that no longer decodes is a data problem, not a bug —
+        # answer with a clear status instead of an unhandled 500.
+        log.error("stored file for analysis=%s could not be decoded: %s", aid, e)
+        raise HTTPException(
+            422, "The stored source file could not be decoded as an image. "
+                 "It may be corrupted — run 'verify' to check its SHA-256.")
     match = next((s for s in scans if s.sha256 == rec["sha256"]), scans[0])
     _scans[aid] = match
     return match
@@ -924,6 +975,16 @@ def login_page():
     return _login_page()
 
 
-app.mount("/", StaticFiles(
-    directory=os.path.join(os.path.dirname(os.path.abspath(__file__)), "static"),
-    html=True), name="static")
+_STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+
+
+@app.get("/", response_class=HTMLResponse)
+def index():
+    """index.html with the mount prefix injected, so the single-page app builds
+    its URLs correctly whether it is served from / or from /x-ray/."""
+    with open(os.path.join(_STATIC_DIR, "index.html"), encoding="utf-8") as f:
+        page = f.read()
+    return page.replace("<head>", f'<head>\n<base href="{html_escape(_base_href())}">', 1)
+
+
+app.mount("/", StaticFiles(directory=_STATIC_DIR, html=False), name="static")

@@ -13,8 +13,13 @@ DICOMDIR
 
 # Uploaded scans + analysis database created at runtime by the web app.
 # (data/phantom_definitions/ IS tracked — it is the phantom geometry config.)
+# The -wal and -shm companions are SQLite's write-ahead log and its shared
+# memory index: runtime-only, recreated automatically, never committed.
 /data/uploads/
+/data/backup/
 /data/*.sqlite3
+/data/*.sqlite3-wal
+/data/*.sqlite3-shm
 /data/*.sqlite3-journal
 
 # Headless CLI output

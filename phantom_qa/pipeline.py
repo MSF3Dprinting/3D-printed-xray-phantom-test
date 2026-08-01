@@ -59,6 +59,33 @@ def run_stage_a(scan: ScanData, pdef: PhantomDef,
     return register(scan.pixels, pdef, corners_hint=corners_hint)
 
 
+def registration_to_dict(reg: Registration) -> dict:
+    return to_jsonable({
+        "transform": reg.transform.to_dict(),
+        "corners_px": reg.corners_px,
+        "coarse_angle_deg": reg.coarse_angle_deg,
+        "score": reg.score,
+        "candidate_scores": reg.candidate_scores,
+        "landmarks": reg.landmarks,
+        "residual_rms_mm": reg.residual_rms_mm,
+    })
+
+
+def registration_from_dict(d: dict) -> Registration:
+    """Rebuild a stored registration, so results can be recomputed from the
+    geometry the user confirmed instead of detecting it again."""
+    from .registration import Transform
+    return Registration(
+        transform=Transform.from_dict(d["transform"]),
+        corners_px=np.asarray(d["corners_px"], float),
+        coarse_angle_deg=d.get("coarse_angle_deg", float("nan")),
+        score=d.get("score", {}),
+        candidate_scores=d.get("candidate_scores", []),
+        landmarks=d.get("landmarks", {}),
+        residual_rms_mm=d.get("residual_rms_mm", float("nan")),
+    )
+
+
 def propose_all(ctx: Ctx) -> dict:
     out = {}
     for name in TESTS:

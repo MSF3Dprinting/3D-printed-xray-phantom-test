@@ -62,6 +62,15 @@ class Config:
         # --- transport / cookies
         self.https_only = _bool("PHANTOMQA_HTTPS_ONLY", self.is_production)
         self.behind_proxy = _bool("PHANTOMQA_BEHIND_PROXY", self.is_production)
+        # Sub-path mount, e.g. "/x-ray" for https://host/x-ray/. Normalised to
+        # a leading slash and no trailing slash; "" means mounted at the root.
+        rp = (os.environ.get("PHANTOMQA_ROOT_PATH", "") or "").strip().rstrip("/")
+        if rp and not rp.startswith("/"):
+            rp = "/" + rp
+        self.root_path = rp
+        # Cookies are scoped to the mount so a different app on the same domain
+        # never receives this session cookie.
+        self.cookie_path = (rp + "/") if rp else "/"
         self.allowed_hosts = [
             h.strip() for h in os.environ.get("PHANTOMQA_ALLOWED_HOSTS", "").split(",")
             if h.strip()]
@@ -115,6 +124,7 @@ class Config:
                 f"hosts={self.allowed_hosts or '*'} "
                 f"max_upload={self.max_upload_mb}MB "
                 f"deletion={'admin-password' if self.deletion_enabled else 'DISABLED'} "
+                f"root_path={self.root_path or '/'} "
                 f"logs={self.log_dir}")
 
 

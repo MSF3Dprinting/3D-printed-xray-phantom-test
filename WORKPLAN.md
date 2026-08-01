@@ -109,6 +109,83 @@ See [README.md](README.md) for the user guide,
   History, the identity bar, Stage F, and both CSV exports.
 - Test suite grown to **151 tests**.
 
+### Rev. 9 — pre-deployment review (2026-08-01)
+
+Target: Linux VM, nginx + gunicorn, served from `https://something.example.org/x-ray/`.
+
+- **Sub-path mounting** (`PHANTOMQA_ROOT_PATH=/x-ray`): `<base href>` injected
+  into the app and login pages, all 38 frontend URLs made relative, session and
+  CSRF cookies scoped to `Path=/x-ray/` so another app on the domain never
+  receives them. Works whether or not nginx strips the prefix.
+- **Throttle moved to SQLite** so gunicorn's workers share one counter — an
+  in-process counter would have given an attacker `max_attempts × workers`
+  guesses.
+- **Path matching hardened**: the public allow-list is compared against a
+  normalised path, so duplicate/trailing slashes and the mount prefix cannot
+  dodge it.
+- **Error handling**: a corrupt stored file now answers 422 and a missing one
+  410, instead of an unhandled 500; verified that no traceback or source path
+  reaches the client.
+- **`gunicorn.conf.py`** with uvicorn workers, 900 s timeout (the 30 s default
+  would kill a worker mid-analysis), worker recycling, loopback binding.
+- **`manage check`** additionally warns on a short secret key and on
+  `BEHIND_PROXY=false` in production.
+- **147-test authorization suite** enumerating every route × anonymous / user /
+  admin, including a completeness guard that fails if a new endpoint is added
+  without being classified. Total suite: **298 tests**.
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) rewritten for this target.
+
+### Rev. 10 — coexisting deployment (2026-08-01)
+
+- **Runtime files documented and ignored.** `phantom_qa.sqlite3-wal` / `-shm`
+  are SQLite's write-ahead log and shared-memory index, created when a
+  connection is open and removed when the last one closes. Added them (and
+  `data/backup/`) to `.gitignore`; a test asserts git tracks no runtime file.
+- **Fixed a connection leak** found by those tests: `with sqlite3.connect(...)`
+  commits but does not close, so a long-running worker leaked one handle per
+  request. Both the store and the throttle now close explicitly.
+- **WAL made deliberate** in `Store` rather than a side effect of the throttle,
+  with `busy_timeout` so a worker waits for a lock instead of failing the
+  request with "database is locked".
+- **`manage backup` / `manage checkpoint`** so the documented backup is safe
+  while the app is running (SQLite online-backup API, no dependency on `-wal`).
+- **Deployment made additive** for a VM already running other apps: an nginx
+  `location` block added to the existing site rather than a new `server` block,
+  `client_max_body_size` scoped to that block, guidance on picking a free port
+  and avoiding prefix collisions, a note on why `add_header` must not be added
+  there, and a post-deploy check that the other apps still respond.
+- **No new system user**: runs as the existing account; `ProtectHome` dropped
+  from the unit (it would hide the install directory) with `ProtectSystem=strict`
+  plus explicit `ReadWritePaths` doing the confinement instead.
+- Total suite: **315 tests**.
+
+### Rev. 11 — data lifecycle (2026-08-01)
+
+Triggered by a good question: "if I change the code, do I lose all the data?"
+
+- **Answer: no.** Verified with a real scan that a full record — labels,
+  validation, approver, comment, baseline, results, confirmed geometry, audit
+  trail and SHA-256 — survives a schema migration and a restart. `data/` is
+  git-ignored so `git pull` cannot touch it, and the only deletion path is the
+  admin-gated one. The losses during development were caused by the smoke-test
+  cleanup commands, not by the application.
+- **Real gap found and closed:** results are stored, not recomputed, so after
+  an algorithm or definition change they are stale — and there was no way to
+  refresh them without re-uploading. Added `phantom_qa/reanalyze.py` plus
+  `manage outdated` and `manage reanalyze`, which recompute from the source
+  files the app already keeps.
+  - default mode replays the user's confirmed geometry (manual ROI adjustments
+    survive) — right after an **algorithm** change;
+  - `--full` re-detects everything — right after a **definition** change;
+  - `--dry-run` previews with the metrics that move most;
+  - signed-off analyses are skipped unless `--include-validated`;
+  - refuses to run when the SHA-256 no longer matches, and reports rather than
+    crashes on a missing/undecodable file so one bad record cannot abort a
+    batch.
+- [docs/DATA_LIFECYCLE.md](docs/DATA_LIFECYCLE.md) explains what survives, what
+  goes stale, and when re-analysis is actually worth doing.
+- Total suite: **337 tests**.
+
 ---
 
 ## 1. What we have (data survey findings)

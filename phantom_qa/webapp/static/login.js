@@ -6,7 +6,7 @@ document.getElementById("login-form").addEventListener("submit", async (e) => {
   const err = document.getElementById("login-error");
   err.textContent = "";
   try {
-    const r = await fetch("/api/login", {
+    const r = await fetch("api/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -20,7 +20,7 @@ document.getElementById("login-form").addEventListener("submit", async (e) => {
       err.textContent = msg;
       return;
     }
-    window.location = "/";
+    window.location = "./";
   } catch (ex) {
     err.textContent = "Network error: " + ex.message;
   }
