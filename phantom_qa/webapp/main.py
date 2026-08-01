@@ -94,10 +94,19 @@ def _app_path(request: Request) -> str:
 
 
 def _client_key(request: Request) -> str:
-    if cfg.behind_proxy:
-        fwd = request.headers.get("x-forwarded-for", "")
-        if fwd:
-            return fwd.split(",")[0].strip()
+    """The client address used for throttling and the audit log.
+
+    Deliberately does NOT read X-Forwarded-For itself. The ASGI server already
+    does that — uvicorn's ProxyHeadersMiddleware (the equivalent of WSGI's
+    ProxyFix) rewrites the client address from the header, but ONLY when the
+    immediate peer is listed in `forwarded_allow_ips`. Parsing the header here
+    as well would throw that trust boundary away: anything able to reach
+    gunicorn directly on the loopback — another app on the same VM, a local
+    user, an SSRF in a colocated service — could then forge an address per
+    request and get unlimited password guesses.
+
+    So: trust the server's answer, and make sure the server is configured with
+    the right `forwarded_allow_ips` (see gunicorn.conf.py)."""
     return request.client.host if request.client else "unknown"
 
 

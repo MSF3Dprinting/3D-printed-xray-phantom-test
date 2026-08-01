@@ -1,127 +1,106 @@
-# Deploying on a Linux server
+# Deployment
 
-Target: a Linux VM running **nginx** in front of **gunicorn**, served from a
+Installing on a Linux server running nginx in front of gunicorn, served from a
 sub-path such as `https://something.example.org/x-ray/`.
 
-**This server already runs other applications.** Everything below is written to
-be additive: a new `location` block inside the existing nginx site, its own
-systemd unit, its own port, running as the account you already use. Nothing
-here modifies global nginx settings or touches another app's configuration. The
-two things to get right are the **port** (must be free) and the **location
-prefix** (must not overlap another app's).
+Everything here is scoped to this application: a `location` block added to an
+existing nginx site, its own systemd unit, its own port, running as an existing
+account. No global configuration is modified, so other applications on the same
+server are unaffected.
 
-Nothing here is optional for an internet-facing deployment. Run
-`python -m phantom_qa.manage check` before going live — it exits non-zero if
+Run `python -m phantom_qa.manage check` before going live; it exits non-zero if
 anything important is missing.
 
 ---
 
 ## 1. Install
 
-Deploy as the account you already use — no new system user is created. Adjust
-the path to wherever you keep applications.
+Deploy as the account you already use. Adjust the path to suit.
 
 ```bash
-cd ~/apps                       # or wherever you deploy
+cd ~/apps
 git clone <repo> phantomqa
 cd phantomqa
 python3 -m venv venv
 venv/bin/pip install -r requirements.txt
-venv/bin/pip install gunicorn
+venv/bin/pip install gunicorn uvicorn-worker
 ```
 
-`data/` and `logs/` are created on first run inside this directory, owned by
-the same account. Nothing is written outside it.
+`uvicorn-worker` supplies `uvicorn_worker.UvicornWorker`; the older
+`uvicorn.workers.UvicornWorker` is deprecated upstream. `gunicorn.conf.py`
+prefers the new one and falls back if it is absent.
 
-### Pick a free port
+`data/` and `logs/` are created on first run inside this directory. Nothing is
+written outside it.
 
-Gunicorn binds to loopback only, but the port must not clash with the other
-apps on this VM:
+### Choose a free port
+
+Gunicorn binds to loopback only, but the port must not clash with another
+service:
 
 ```bash
-ss -ltnp | grep 127.0.0.1        # what is already listening
+ss -ltnp | grep 127.0.0.1
 ```
 
-Choose an unused one (this guide uses **8777**) and set `PHANTOMQA_BIND`
-accordingly in step 2.
+This guide uses **8777**.
 
-## 2. Configure secrets
+## 2. Configure
 
 ```bash
 cp .env.example .env
 chmod 600 .env
-python -m phantom_qa.manage gen-secret          # -> PHANTOMQA_SECRET_KEY
-python -m phantom_qa.manage set-password        # -> PHANTOMQA_PASSWORD_HASH
-python -m phantom_qa.manage set-admin-password  # -> PHANTOMQA_ADMIN_PASSWORD_HASH
+venv/bin/python -m phantom_qa.manage gen-secret          # PHANTOMQA_SECRET_KEY
+venv/bin/python -m phantom_qa.manage set-password        # user login
+venv/bin/python -m phantom_qa.manage set-admin-password  # delete + validate
 ```
 
-Minimum `.env` for this deployment:
+Minimum `.env`:
 
 ```ini
 PHANTOMQA_ENV=production
 PHANTOMQA_ROOT_PATH=/x-ray
 PHANTOMQA_ALLOWED_HOSTS=something.example.org
-PHANTOMQA_BIND=127.0.0.1:8777          # the free port from step 1
+PHANTOMQA_BIND=127.0.0.1:8777
 PHANTOMQA_SECRET_KEY=<from gen-secret>
 PHANTOMQA_PASSWORD_HASH=<from set-password>
 PHANTOMQA_ADMIN_PASSWORD_HASH=<from set-admin-password>
 ```
 
-`PHANTOMQA_ENV=production` makes the app **refuse to start** without a secret
-key, and **refuse** a plain-text password. A misconfiguration should stop the
-deployment, not quietly weaken it.
+`PHANTOMQA_ENV=production` makes the application refuse to start without a
+secret key, and refuse a plain-text password.
+
+Leaving `PHANTOMQA_ADMIN_PASSWORD_HASH` empty disables **both** deletion and
+validation sign-off.
 
 ```bash
-venv/bin/python -m phantom_qa.manage check      # must exit 0
+venv/bin/python -m phantom_qa.manage check    # must exit 0
 ```
 
-## 3. The two privilege levels
+All settings are listed in `.env.example`.
 
-| Level | Credential | Can do |
-|---|---|---|
-| **User** | `PHANTOMQA_USERNAME` + `PHANTOMQA_PASSWORD_HASH` | Sign in, upload, run the analysis wizard, edit labels, read reports, verify integrity, export |
-| **Admin** | additionally `PHANTOMQA_ADMIN_PASSWORD_HASH` | **Delete** an analysis, **validate** one (validated / conditionally validated / not validated) |
+## 3. Sub-path mounting
 
-There is one shared user login and one admin password. The admin password is
-entered per action, not at sign-in — so an admin uses the app as an ordinary
-user and only supplies it when deleting or signing off. Set the two passwords
-**different**; `manage check` warns if they match, because then the admin gate
-protects nothing.
+Set `PHANTOMQA_ROOT_PATH=/x-ray`. The application then:
 
-`tests/test_authorization.py` enumerates every route and asserts which level it
-enforces. It fails if a new endpoint is added without being classified, so the
-matrix cannot silently drift.
-
-## 4. Sub-path: `PHANTOMQA_ROOT_PATH`
-
-Set `PHANTOMQA_ROOT_PATH=/x-ray`. The app then:
-
-- injects `<base href="/x-ray/">` into the app and login pages, so the
-  single-page frontend builds every URL under the mount (all its URLs are
-  relative — a test enforces that);
-- scopes the session and CSRF cookies to `Path=/x-ray/`, so a different app on
-  the same domain never receives them;
+- injects `<base href="/x-ray/">` into its pages, so the frontend builds every
+  URL under the mount;
+- scopes the session and CSRF cookies to `Path=/x-ray/`, so another application
+  on the same domain never receives them;
 - accepts requests whether or not nginx strips the prefix.
 
-Both nginx styles work, so use the simpler one:
+Both nginx styles work:
 
 ```nginx
-# forwards /x-ray/api/... unchanged — the app strips the prefix itself
-location /x-ray/ { proxy_pass http://127.0.0.1:8777; }
+location /x-ray/ { proxy_pass http://127.0.0.1:8777; }    # forwards the prefix
+location /x-ray/ { proxy_pass http://127.0.0.1:8777/; }   # strips the prefix
 ```
 
-```nginx
-# strips the prefix (note the trailing slash); also fine
-location /x-ray/ { proxy_pass http://127.0.0.1:8777/; }
-```
+Leave `PHANTOMQA_ROOT_PATH` empty when serving from the domain root.
 
-## 5. nginx — add two location blocks, change nothing else
+## 4. nginx
 
-The server already has a TLS site for `something.example.org` serving other
-apps. **Add these two blocks inside that existing `server { ... }`.** Do not
-create a second `server` block for the same name, and do not edit
-`nginx.conf` — every setting below is scoped to this location only, so the
-other apps are unaffected.
+Add these two blocks inside the existing `server { … }` for the domain. Do not
+create a second `server` block for the same name, and do not edit `nginx.conf`.
 
 ```nginx
     # ---- MSF Phantom QA -------------------------------------------------
@@ -132,46 +111,37 @@ other apps are unaffected.
         proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header   X-Forwarded-Proto $scheme;
 
-        client_max_body_size 210M;   # local to this block; must exceed
-                                     # PHANTOMQA_MAX_UPLOAD_MB
+        client_max_body_size 210M;   # must exceed PHANTOMQA_MAX_UPLOAD_MB
         proxy_read_timeout   900s;   # a large DICOM takes minutes to analyse
         proxy_send_timeout   900s;
-        proxy_buffering      off;    # reports stream out as multi-MB HTML
+        proxy_buffering      off;    # reports are multi-megabyte HTML
     }
 
-    # /x-ray without the trailing slash would otherwise 404
     location = /x-ray { return 301 /x-ray/; }
     # ---------------------------------------------------------------------
 ```
 
 ```bash
-sudo nginx -t && sudo systemctl reload nginx    # -t first: never reload a bad config
+sudo nginx -t && sudo systemctl reload nginx
 ```
 
-Points that matter when apps share a server:
+Points to observe when applications share a server:
 
-- **`client_max_body_size` is set inside the location**, so raising it to 210 MB
-  applies only to this app. Setting it at `server` or `http` level would raise
-  the limit for everything else too.
-- **Do not add `add_header` for CSP or HSTS here.** The app sets its own
-  security headers. An `add_header` inside a `location` block *replaces* the
-  whole inherited set, so adding one here would silently drop the headers the
-  other apps rely on from the server block — and vice versa: if the server
-  block already sets `add_header`, this location still gets the app's headers
-  because they arrive in the proxied response, which nginx passes through.
-- **The prefix must not overlap** another app's location. Check first:
-  `grep -rn 'location' /etc/nginx/sites-enabled/ | grep -i 'x-ray\|/x'`.
-- If HTTP→HTTPS redirection already exists for this domain, leave it alone.
+- **`client_max_body_size` is set inside the location**, so the 210 MB limit
+  applies to this application only.
+- **Do not add `add_header` for CSP or HSTS here.** The application sets its own
+  security headers, and an `add_header` inside a `location` replaces the whole
+  inherited set — which would drop the headers other applications rely on from
+  the server block.
+- **Check the prefix does not overlap** another application's location:
+  `grep -rn 'location' /etc/nginx/sites-enabled/`.
+- Leave any existing HTTP-to-HTTPS redirect alone.
 
-## 6. gunicorn + systemd
+## 5. gunicorn and systemd
 
-`gunicorn.conf.py` in the repo sets uvicorn workers, a 900 s timeout (the
-default 30 s would kill a worker mid-analysis), worker recycling to bound
-memory growth from the image pipeline, and loopback binding.
-
-Its own unit, running as **your existing account** — substitute your username
-and the path you cloned into. The name `phantomqa` must not collide with an
-existing unit (`systemctl list-units | grep phantomqa`).
+`gunicorn.conf.py` sets uvicorn workers, a 900-second timeout (the 30-second
+default would kill a worker mid-analysis), worker recycling to bound memory
+growth, and loopback binding.
 
 ```ini
 # /etc/systemd/system/phantomqa.service
@@ -190,7 +160,6 @@ ExecStart=/home/YOUR_USER/apps/phantomqa/venv/bin/gunicorn \
 Restart=on-failure
 RestartSec=5
 
-# hardening — scoped to this service only
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -210,29 +179,72 @@ sudo systemctl enable --now phantomqa
 systemctl status phantomqa
 ```
 
-`ProtectHome` is deliberately **not** set: it would hide the home directory the
-app is installed in. `ProtectSystem=strict` plus an explicit `ReadWritePaths`
-already prevents writes anywhere except this app's own `data/` and `logs/`.
+`ProtectHome` is deliberately omitted: it would hide the directory the
+application is installed in. `ProtectSystem=strict` with an explicit
+`ReadWritePaths` provides the confinement instead.
 
-`MemoryMax=4G` caps this service alone, so a large analysis cannot starve the
-other applications on the VM. Lower it if the box is small; raise it if 4 GB
-proves tight for your image sizes.
+`MemoryMax=4G` caps this service alone, so a large analysis cannot starve other
+applications. Adjust to suit the machine.
+
+### Isolation from other applications
+
+A gunicorn configuration is per-invocation: `gunicorn -c gunicorn.conf.py …`
+reads only that file, into its own process tree. There is no global gunicorn
+configuration, and each application has its own unit, virtualenv, port and
+config.
+
+Two things could couple them, and both are avoided:
+
+- **Environment variables.** Every variable `gunicorn.conf.py` reads is prefixed
+  `PHANTOMQA_`. In particular it does not read `WEB_CONCURRENCY`, the
+  conventional worker-count variable that may already be set for another
+  service; worker count comes from `PHANTOMQA_WORKERS`.
+- **The port**, the only genuinely shared resource. Choose a free one in step 1.
 
 ### Workers and shared state
 
-Gunicorn runs several worker processes. Two consequences were designed for:
+Gunicorn runs several worker processes:
 
-- **The login/admin throttle is stored in SQLite, not process memory**, so all
-  workers share one counter. An in-memory counter would have given an attacker
-  `max_attempts × workers` guesses. A test asserts a second "worker" sees
-  failures recorded by the first.
-- The decoded-image cache is per worker, so a scan may be re-read once per
-  worker. That costs a little I/O, nothing more.
+- The login and administrator throttles are stored in SQLite, so all workers
+  share one counter. An in-memory counter would give an attacker
+  `max_attempts × workers` guesses.
+- The decoded-image cache is per worker, so a scan may be read once per worker.
+  This costs a little I/O and nothing else.
 
-SQLite handles this fine at QA-team concurrency (WAL mode, small writes). If
-you ever outgrow it, the store is the only thing that would need replacing.
+SQLite in WAL mode handles this at QA-team concurrency.
 
-## 7. Verify the deployment
+## 6. Proxy headers
+
+Behind a reverse proxy the application must see the real client address rather
+than the proxy's. In WSGI applications this is the job of
+`werkzeug.middleware.proxy_fix.ProxyFix`. **ProxyFix is WSGI-only and cannot be
+used here** — this is an ASGI application, where the equivalent is uvicorn's
+`ProxyHeadersMiddleware`, which is enabled by default.
+
+| | WSGI (`ProxyFix`) | ASGI (uvicorn) |
+|---|---|---|
+| Real client IP | `REMOTE_ADDR` from `X-Forwarded-For` | `scope["client"]` from `X-Forwarded-For` |
+| Scheme | `wsgi.url_scheme` from `X-Forwarded-Proto` | `scope["scheme"]` from `X-Forwarded-Proto` |
+| Trust model | `x_for=N` hop count | `forwarded_allow_ips` |
+| Sub-path | `X-Forwarded-Prefix` → `SCRIPT_NAME` | `PHANTOMQA_ROOT_PATH` (configuration, not a header) |
+
+No additional middleware is required, but **`forwarded_allow_ips` must be
+correct**. `gunicorn.conf.py` passes it to uvicorn and defaults it to
+`127.0.0.1`, the address nginx connects from. Widening it to `*` would let
+anything able to reach the port forge a client address.
+
+The application does not parse `X-Forwarded-For` itself. Doing so would discard
+uvicorn's peer check, allowing any process able to reach the loopback port to
+forge an address per request and evade the login throttle.
+
+The sub-path is configured rather than read from `X-Forwarded-Prefix`: a header
+the client controls should not determine where the application believes it is
+mounted.
+
+If every log entry shows `127.0.0.1`, `forwarded_allow_ips` does not include the
+address nginx actually connects from.
+
+## 7. Verify
 
 ```bash
 curl -sI  https://something.example.org/x-ray/login | head -1        # 200
@@ -242,181 +254,93 @@ venv/bin/python -m phantom_qa.manage check
 venv/bin/python -m pytest tests/test_authorization.py -q
 ```
 
-The login page should render, the API should refuse anonymous access, and the
-security headers should be present.
-
-Then confirm the **other applications still work** — the point of keeping every
-change scoped:
+Then confirm the other applications still respond:
 
 ```bash
-sudo nginx -t                       # config still valid
+sudo nginx -t
 curl -sI https://something.example.org/<other-app>/ | head -1
-systemctl status nginx --no-pager | head -3
 ```
 
 ---
 
-## What the app enforces
+## Security model
 
 | Control | Implementation |
 |---|---|
-| **Authentication** | Username + password; stored only as a PBKDF2-HMAC-SHA256 hash (240 000 rounds, per-password salt). Plain-text passwords rejected in production. |
-| **Authorization** | Private by default: an explicit allow-list of five public paths, everything else needs a session. Admin actions additionally verify the admin password in the handler. |
-| **Sessions** | HMAC-SHA256-signed cookie, `HttpOnly`, `SameSite=Strict`, `Secure` under HTTPS, scoped to the mount path. Expiry inside the signed payload (default 12 h). |
-| **Brute force** | Shared per-client throttle: 8 failed sign-ins or 4 failed admin attempts lock that client out for 15 minutes (HTTP 429). |
-| **CSRF** | Double-submit token; every `POST`/`PUT`/`PATCH`/`DELETE` is rejected without a matching `X-CSRF-Token`. |
-| **Path handling** | The allow-list is compared against a normalised path — duplicate slashes, trailing slashes and the mount prefix cannot dodge it. |
-| **Host header** | `PHANTOMQA_ALLOWED_HOSTS` allow-list; anything else gets 400. |
-| **Upload size** | Rejected with 413 before the body is read. |
-| **Response headers** | CSP, `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`, COOP, `Permissions-Policy`, HSTS under HTTPS. |
-| **API caching** | All `/api/` responses are `Cache-Control: no-store`. |
-| **Attack surface** | `/docs`, `/redoc` and the OpenAPI schema are disabled. |
-| **Error handling** | Unhandled exceptions return a bare 500 — no traceback, no source paths. A corrupt or missing stored file answers 422/410 with an explanation. |
-| **Deletion** | Admin password **plus** typing the analysis id; throttled; disabled entirely when unconfigured. |
-| **Validation** | Admin password; records the approver's name and comment. |
-| **Integrity** | SHA-256 per analysis, re-checked in every report ([INTEGRITY.md](INTEGRITY.md)). |
-| **Logging** | Rotating app/error/audit logs with secrets redacted. |
+| Authentication | Username and password; stored only as a PBKDF2-HMAC-SHA256 hash (240 000 rounds, per-password salt). Plain-text passwords are rejected in production |
+| Authorization | Private by default: an explicit allow-list of five public paths; everything else requires a session. Administrator actions verify the administrator password in the handler |
+| Sessions | HMAC-SHA256-signed cookie, `HttpOnly`, `SameSite=Strict`, `Secure` under HTTPS, scoped to the mount path. Expiry is inside the signed payload, default 12 hours |
+| Brute force | Shared per-client throttle: 8 failed sign-ins or 4 failed administrator attempts lock that client out for 15 minutes |
+| CSRF | Double-submit token; `POST`, `PUT`, `PATCH` and `DELETE` are rejected without a matching `X-CSRF-Token` |
+| Path handling | The allow-list is compared against a normalised path, so duplicate slashes, trailing slashes and the mount prefix cannot bypass it |
+| Host header | `PHANTOMQA_ALLOWED_HOSTS` allow-list; anything else receives 400 |
+| Upload size | Rejected with 413 before the body is read |
+| Response headers | CSP, `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`, COOP, `Permissions-Policy`, and HSTS under HTTPS |
+| API caching | All `/api/` responses are `Cache-Control: no-store` |
+| Attack surface | `/docs`, `/redoc` and the OpenAPI schema are disabled |
+| Error handling | Unhandled exceptions return a bare 500 with no traceback. A corrupt or missing stored file returns 422 or 410 with an explanation |
+| Deletion | Administrator password plus typing the analysis id; throttled; disabled entirely when unconfigured |
+| Validation | Administrator password; records the approver's name and comment |
+| Integrity | SHA-256 per analysis, re-checked in every report |
+| Logging | Rotating application, error and audit logs with secrets redacted |
 
-## Protecting records from accidental deletion
+`tests/test_authorization.py` enumerates every route and asserts the level it
+enforces. It fails if an endpoint is added without being classified as public,
+user or admin, so the matrix cannot drift.
 
-Deleting an analysis (which also removes its stored source file) needs **all**
-of: the administrator password, the analysis id typed back as confirmation, and
+### Deletion
+
+Deleting an analysis also removes its stored source file. It requires all of:
+the administrator password, the analysis id typed back as confirmation, and
 passing a throttle stricter than sign-in. With no administrator password
-configured, deletion is refused outright and the UI explains how to enable it.
-Every attempt — refusals, wrong passwords, successful deletions with the site,
-phantom, source name and SHA-256 of what was removed — goes to `logs/audit.log`.
+configured, deletion is refused and the interface explains how to enable it.
 
-Nothing is soft-deleted: when a deletion succeeds, the row and the file are
-gone. The audit log is the record that it happened.
+Every attempt — refusals, wrong passwords, and successful deletions with the
+site, phantom, source name and SHA-256 of what was removed — is written to
+`logs/audit.log`. Nothing is soft-deleted.
 
-## Validation sign-off
+### Validation
 
-Marking an analysis validated / conditionally validated / not validated uses the
-same administrator password, and additionally records the **name** of the person
-approving plus an optional comment.
+Marking an analysis validated, conditionally validated or not validated uses the
+same administrator password, and records the **name** of the person approving
+plus an optional comment.
 
-The name matters: the password is shared, so it establishes only that someone
-entitled to sign off did so. The typed name is what attributes the decision, and
-it appears in the report, the exports and the audit log. If your process needs
-that name to be *proven* rather than declared, that requires per-user accounts.
+The password is shared, so it establishes only that someone entitled to sign off
+did so. The typed name attributes the decision, and appears in the report, the
+exports and the audit log. If the name must be proven rather than declared, that
+requires per-user accounts.
 
-A ruling can be changed or withdrawn; the audit log keeps the history including
-the previous state, so a reversal is traceable.
+### Not provided
 
-## Logging
+- **TLS termination** — nginx does this.
+- **Multi-user accounts or roles.** One shared user login, one administrator
+  password. `audit.log` records the username used and the client address, so you
+  can identify the machine but not the person.
+- **Rate limiting on analysis endpoints.** An authenticated user can start any
+  number of CPU-heavy analyses. Add nginx `limit_req` if this matters.
+- **Antivirus scanning of uploads.** Files are parsed as DICOM or images and
+  stored, never executed, but they are attacker-controlled input to pydicom and
+  Pillow. Keep those dependencies patched.
 
-Three files under `PHANTOMQA_LOG_DIR` (default `logs/`), all size-rotated:
-
-| File | Contents | Default retention |
-|---|---|---|
-| `phantomqa.log` | Every request (method, path, status, duration, client, user) and application activity | 10 × 10 MB |
-| `errors.log` | Warnings and errors only, with tracebacks | 10 × 10 MB |
-| `audit.log` | Who did what: sign-ins, uploads, computes, label edits, validation rulings, integrity checks, deletions | 30 × 10 MB |
-
-```bash
-grep 'event=delete'          logs/audit.log   # every deletion attempt
-grep 'event=validation'      logs/audit.log   # every sign-off and reversal
-grep 'outcome=denied'        logs/audit.log   # failed admin/login attempts
-grep 'event=verify.*FAILED'  logs/audit.log   # integrity problems
-```
-
-Passwords, tokens and cookies are redacted before writing; the redaction is
-recursive and covered by a test.
-
-**Client IPs.** With `PHANTOMQA_BEHIND_PROXY=true` the app trusts
-`X-Forwarded-For` for the throttle key and the logs. That is correct behind
-nginx, and it is why `forwarded_allow_ips` in `gunicorn.conf.py` is limited to
-`127.0.0.1` — a client must not be able to spoof the header directly.
-
-**Retention.** Logs contain site names, operator names and client addresses.
-Treat them like `data/`: restrict permissions, back them up, and set a retention
-period. Rotation caps disk use (~100 MB app + ~300 MB audit) but does not expire
-by date — use logrotate if you need time-based deletion.
-
-## What lives in `data/`, and what to back up
-
-Everything is created at runtime except the phantom definition. **Nothing in
-`data/` needs to be in git**, and the `.gitignore` already excludes it:
-
-| Path | What it is | In git? | Backup? |
-|---|---|---|---|
-| `data/phantom_definitions/*.json` | Calibrated phantom geometry — source, not runtime data | **yes** | with the code |
-| `data/phantom_qa.sqlite3` | The analyses database | no | **yes** |
-| `data/phantom_qa.sqlite3-wal` | SQLite write-ahead log | no | not on its own |
-| `data/phantom_qa.sqlite3-shm` | SQLite shared-memory index | no | no |
-| `data/uploads/*.bin` | The original scans, kept for traceability | no | **yes** |
-| `logs/*` | Application, error and audit logs | no | per your retention policy |
-
-The `-wal` and `-shm` files are created by SQLite whenever a connection is open
-and removed again when the last one closes, so you will see them come and go as
-the app is used. The database runs in **WAL mode** so gunicorn's workers can
-read while another writes.
-
-You never need to manage them:
-
-- **Do not commit them** — already excluded by `.gitignore`.
-- **Do not delete them while the app is running.** With it stopped they are
-  gone anyway, and removing any leftovers loses nothing.
-- **Do not copy the `.sqlite3` on its own while the app is live** — recent
-  commits may still be in the `-wal`, so the copy would be stale. Use the
-  backup command below, which handles this.
-
-### Taking a backup
-
-Use the built-in command, which produces a single self-contained file with the
-app running:
-
-```bash
-cd ~/apps/phantomqa
-venv/bin/python -m phantom_qa.manage backup data/backup/phantomqa-$(date +%F).sqlite3
-tar czf ~/backups/phantomqa-$(date +%F).tar.gz \
-        data/backup/phantomqa-$(date +%F).sqlite3 data/uploads .env
-```
-
-Or stop the service and copy everything, which is equally safe:
-
-```bash
-sudo systemctl stop phantomqa
-tar czf ~/backups/phantomqa-$(date +%F).tar.gz data/ logs/ .env
-sudo systemctl start phantomqa
-```
-
-The database alone is not enough — `data/uploads/` holds the scans the SHA-256
-values refer to, so restore both or integrity checks will report missing files.
-
-`manage checkpoint` folds the write-ahead log back into the main file if you
-need the `.sqlite3` to be complete on its own for some other tool.
-
-The schema migrates itself in place on startup, so an upgrade preserves existing
-analyses — take the copy first anyway.
+---
 
 ## Upgrading
 
 ```bash
 cd ~/apps/phantomqa
-venv/bin/python -m phantom_qa.manage backup           # first
+venv/bin/python -m phantom_qa.manage backup
 git pull
 venv/bin/pip install -r requirements.txt
-venv/bin/python -m pytest tests -q                    # must be green
+venv/bin/python -m pytest tests -q                    # must pass
 venv/bin/python -m phantom_qa.manage check            # must exit 0
 sudo systemctl restart phantomqa
 ```
 
-Restarting this unit does not touch the other applications on the VM.
+The database schema migrates itself on startup; existing analyses are preserved.
+Restarting this unit does not affect other applications.
 
-Rotating `PHANTOMQA_SECRET_KEY` signs everybody out — the fastest way to
-invalidate all sessions if a laptop goes missing.
+Rotating `PHANTOMQA_SECRET_KEY` signs everyone out, which is the fastest way to
+invalidate all sessions.
 
-## What it deliberately does not do
-
-- **No TLS termination.** nginx does that.
-- **No multi-user accounts or roles.** One shared user login, one admin
-  password. `audit.log` records the username used and the client address, so
-  you can tell which machine acted, not which person. The approver's name on a
-  validation is typed, not authenticated.
-- **No rate limiting on analysis endpoints.** An authenticated user can start as
-  many analyses as they like, each CPU-heavy. Fine for a trusted QA team; if you
-  need protection, add `limit_req` in nginx.
-- **No antivirus scanning of uploads.** Files are parsed as DICOM/images and
-  stored, never executed — but they are attacker-controlled input to pydicom and
-  Pillow. Keep those dependencies patched.
+See [MAINTENANCE.md](MAINTENANCE.md) for backups, integrity checks, re-analysis
+after an upgrade, and log retention.

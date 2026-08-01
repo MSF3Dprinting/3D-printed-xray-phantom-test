@@ -10,3 +10,8 @@ fastapi>=0.110
 uvicorn>=0.29
 python-multipart>=0.0.9
 pytest>=8.0
+httpx>=0.27          # required by fastapi.testclient for the auth test suite
+
+# --- server deployment only (not needed to run locally via run_app.py)
+# gunicorn>=22.0
+# uvicorn-worker>=0.2   # replaces the deprecated uvicorn.workers.UvicornWorker
