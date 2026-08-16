@@ -210,6 +210,57 @@ comparable throughout, whereas one spanning an algorithm change is not.
 
 ---
 
+## A phantom that differs from the definition
+
+Automatic placement is seeded from `data/phantom_definitions/msf_v1.json`.
+Runtime measurement absorbs a few millimetres of variation between phantom
+units, but not a different layout. On a substantially different build the
+patterns are usually still *found* — the strip axis, the block positions and
+their frequencies are measured correctly — but they may be *labelled* wrongly.
+
+Symptoms in Stage B:
+
+| Symptom | Meaning |
+|---|---|
+| Groups detected, but offsets from nominal of tens of millimetres | The strip runs in the opposite frequency order, or the groups sit elsewhere |
+| A group's measured frequency far from its nominal | That block is not the group it has been labelled as |
+| Fewer or more blocks than the definition expects | This build has a different number of groups |
+| Uniformity squares "NOT refined (nominal used)" | The squares were not found; the nominal positions are being used |
+
+### Working with it now
+
+Correct the placement by hand in Stage C: drag each ROI onto the right object
+and rotate it to match. Every measurement is taken from where you put the ROI,
+and the profile line follows the square. This is enough for a one-off scan.
+
+Bear in mind that a hand-placed series is only comparable with itself if the
+placement is consistent, so record what you did in the analysis notes.
+
+### Calibrating a definition for that build
+
+For a phantom you will use regularly, give it its own definition rather than
+correcting every scan:
+
+1. Acquire several scans of that phantom, in at least two or three orientations,
+   on the device you will use.
+2. Run each one and note the measured geometry reported in Stage B and D — strip
+   angle, block centres and frequencies, block count, low-contrast block centre
+   and angle, wedge extent, uniformity square centres.
+3. Copy `msf_v1.json` to a new file, e.g. `msf_v2.json`, bump its `version`, and
+   replace the nominal values with the means of your measurements. Record how
+   each value was obtained in its `provenance` section, as `msf_v1.json` does.
+4. Check the group list matches that build: the number of line-pair groups, and
+   their frequencies **in the order they appear along the strip**.
+5. Re-run the scans and confirm Stage B labels every pattern correctly.
+
+Loading a definition per phantom is not yet exposed in the interface; the
+application reads `msf_v1.json`. Until it is, point the loader at the new file
+for that phantom's scans, or keep the definition that matches the phantom you
+scan most often.
+
+After changing or replacing a definition, bring stored analyses up to date with
+`python -m phantom_qa.manage reanalyze --full` (see *Recomputing* above).
+
 ## Logs
 
 Three files under `PHANTOMQA_LOG_DIR` (default `logs/`), all size-rotated:

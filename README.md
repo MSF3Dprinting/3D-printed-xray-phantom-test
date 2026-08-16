@@ -124,14 +124,19 @@ phantom's own millimetre coordinate system, calibrated from six reference scans
 covering three orientations. Its `provenance` section records how each value was
 obtained.
 
-Two points matter when reading it:
+Three points matter when reading it:
 
 - **Line-pair blocks are measured in every scan.** The stored positions are
-  search seeds only, so the ROIs land correctly even on a phantom that differs
-  from the reference.
+  search seeds only, so small differences between phantom units are absorbed
+  automatically.
 - **The reference set contains two different phantom units.** Their internal
   features sit up to 12 mm apart and their strip angles differ by about 2°. The
   stored values are the mean of the two, so they are not design intent.
+- **A substantially different build needs its own definition.** Runtime
+  measurement handles a few millimetres of variation, not a different layout.
+  A phantom whose resolution strip runs in the opposite frequency order, or
+  which has a different number of groups, will be found but mislabelled. See
+  [docs/MAINTENANCE.md](docs/MAINTENANCE.md#a-phantom-that-differs-from-the-definition).
 
 `nominal_side_mm` (300.0) is an assumed design dimension; no drawing was
 available. Measured side lengths are 299.3–300.4 mm.
@@ -140,6 +145,10 @@ available. Measured side lengths are 299.3–300.4 mm.
 
 - The viewer displays a downscaled rendering; all measurements are made on the
   full-resolution data.
+- **Automatic placement is seeded from the stored phantom definition.** On a
+  different phantom build some patterns will be placed wrongly. Every ROI can be
+  moved and rotated by hand, and the measurement follows it; for a build you use
+  regularly, calibrate its own definition.
 - Field-edge detection requires a visible collimation edge. Where the phantom
   nearly fills the detector, the test reports "not measurable" rather than
   guessing.

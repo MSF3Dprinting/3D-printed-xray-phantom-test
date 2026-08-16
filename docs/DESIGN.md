@@ -76,6 +76,51 @@ features sit up to 12 mm apart. Stored coordinates cannot track that, and a
 future phantom would differ again. Measuring per scan means the ROIs land
 correctly regardless.
 
+## The ROI is the handle; everything else follows it
+
+A measurement region is rarely a single shape. A low-contrast circle has a
+background ring and an object outline; a line-pair square has a profile line
+that samples across the printed lines. Only one of them is what the user grabs.
+
+When an ROI is moved or rotated, every shape attached to it is updated with it,
+found by id prefix rather than a hard-coded list so a new companion cannot be
+forgotten. The server returns all of them and the interface redraws all of them.
+
+The rule this enforces: **what is drawn is what is measured.** A companion left
+behind would put the displayed region in one place and the number it produced in
+another, which is worse than an obviously wrong result because it looks right.
+
+For the same reason the line-pair profile is derived from its ROI rather than
+stored independently: the square is the handle, so the profile is rebuilt at the
+new centre and its direction re-measured against the pattern actually there. A
+direction the user sets by hand is marked as such and no longer overridden.
+
+## Manual correction is a first-class path
+
+Automatic placement is seeded from the stored phantom definition, so a
+different phantom build will place some patterns wrongly. That is expected and
+cannot be fully engineered away — the software cannot know a layout it has never
+seen.
+
+What it can do is make correction reliable: every ROI can be moved and rotated,
+the measurement follows, and the change is recorded in the audit trail with both
+the automatic and the manual position. Detection quality determines how much
+work the user does, not whether the result can be trusted.
+
+## Fixed ROI sizes where results are compared
+
+Wedge step ROIs are a fixed size for every step rather than fitted to each
+step's height. The printed steps are not equal heights, so per-step sizing would
+average a different area in each one and make the same step incomparable between
+phantoms. Each step reports its measured height and whether the fixed ROI fits.
+
+## Display scaling relative to the image
+
+Window width and centre are expressed as a fraction of each image's own measured
+value range, not as absolute pixel values. Detectors differ in bit depth — 12
+bits on one unit, 14 on another — so a control calibrated to one blanks out an
+image from the other entirely.
+
 ## Detectors report failure rather than guessing
 
 Where a feature cannot be found reliably, the software says so and requests
@@ -185,3 +230,14 @@ SQLite in WAL mode is appropriate at QA-team concurrency. Should that change,
 - **Per-user accounts.** There is one shared login and one administrator
   password. The approver's name is typed rather than authenticated. If
   attribution must be provable, per-user accounts are a genuine feature to add.
+- **One phantom definition at a time.** The application loads `msf_v1.json`.
+  Supporting several phantom builds in one installation means selecting the
+  definition per phantom — recording it on the analysis, and grouping trends by
+  it as protocol signature already does.
+- **Identity assignment when a build differs.** Line-pair groups are matched to
+  the definition by order along the strip, falling back to nearest measured
+  frequency. On a build whose strip runs in the opposite frequency order the
+  fallback still identifies the groups, but a tolerant frequency match can
+  mislabel one. Declining to label a block whose frequency or spacing is
+  inconsistent with its neighbours would be truer to the "report failure rather
+  than guess" rule applied elsewhere.
