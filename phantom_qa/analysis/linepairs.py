@@ -300,18 +300,26 @@ def propose(ctx: Ctx) -> dict:
     if strip_angle is None:
         strip_angle = nominal_angle
 
+    # The guide places the ROI with its CORNERS on the nub markers of the two
+    # frame lines and on the strip's centre line, i.e. rotated 45 deg from the
+    # strip axis rather than square to it.
+    roi_offset = lp.get("roi_angle_offset_deg", 45.0)
+
     groups = []
     for g in lp["groups"]:
         b = assigned.get(g["id"])
         detected = b is not None
         center = b["center_mm"] if detected else list(g["center_mm"])
-        # ROI is square, so aligning it to the strip axis and to the modulation
-        # direction are equivalent; use the per-block measurement when we have it
-        angle = b["mod_dir_deg"] if detected else strip_angle
-        u = np.array([np.cos(np.deg2rad(angle)), np.sin(np.deg2rad(angle))])
+        # The profile must cross the printed lines, so it follows the measured
+        # modulation direction. The ROI is a separate thing: it is placed the
+        # way the guide specifies, offset from the strip axis.
+        mod_dir = b["mod_dir_deg"] if detected else (strip_angle + 90.0)
+        roi_angle = (strip_angle + roi_offset) % 180.0
+        u = np.array([np.cos(np.deg2rad(mod_dir)), np.sin(np.deg2rad(mod_dir))])
         half_len = roi_mm / 2 + 2.0
         p0 = np.asarray(center, float) - half_len * u
         p1 = np.asarray(center, float) + half_len * u
+        angle = roi_angle
         entry = {
             "id": g["id"], "freq_lp_mm": g["freq_lp_mm"],
             "nominal_center_mm": list(g["center_mm"]), "detected": detected,
@@ -327,7 +335,31 @@ def propose(ctx: Ctx) -> dict:
             }
         groups.append(entry)
     return {"groups": groups, "strip_angle_deg": float(strip_angle),
-            "roi_size_mm": roi_mm, "n_blocks_detected": len(blocks)}
+            "roi_size_mm": roi_mm, "roi_angle_offset_deg": float(roi_offset),
+            "n_blocks_detected": len(blocks)}
+
+
+def profile_for_center(ctx: Ctx, center_mm, roi_size_mm: float, seg_id: str,
+                       fallback_dir_deg: float | None = None) -> dict:
+    """Profile segment for a group ROI centred at ``center_mm``.
+
+    Used when the user drags a line-pair ROI: the profile follows the square and
+    its direction is re-measured at the new position, so it still crosses the
+    printed lines there."""
+    measured = _measure_pattern_2dfft(ctx, center_mm)
+    if measured is not None:
+        _, dir_px = measured
+        # the FFT works in image space; express the direction in phantom mm
+        d = np.linalg.solve(ctx.T.A, np.asarray(dir_px, float))
+        n = float(np.linalg.norm(d))
+        direction = d / n if n > 1e-9 else np.array([1.0, 0.0])
+    else:
+        a = np.deg2rad(fallback_dir_deg if fallback_dir_deg is not None else 0.0)
+        direction = np.array([np.cos(a), np.sin(a)])
+    half_len = roi_size_mm / 2 + 2.0
+    c = np.asarray(center_mm, float)
+    return segment(ctx, c - half_len * direction, c + half_len * direction,
+                   seg_id)
 
 
 def _measure_pattern_2dfft(ctx: Ctx, center_mm, half_mm: float = 5.0):
@@ -376,18 +408,28 @@ def _analyze_profile(ctx: Ctx, seg: dict, freq_lp_mm: float,
     T = ctx.T
     p0 = np.asarray(seg["p0_px"], float)
     p1 = np.asarray(seg["p1_px"], float)
+    half_len = float(np.linalg.norm(p1 - p0)) / 2.0
+
+    # The ROI is the handle the user drags, so it decides WHERE the profile is
+    # sampled. Sampling at the segment's own centre would leave the numbers
+    # behind at the old position whenever an ROI is moved.
+    c_px = np.asarray(T.mm_to_px(center_mm), float) if center_mm is not None \
+        else (p0 + p1) / 2.0
+
     measured = None
-    if center_mm is not None:
+    if center_mm is not None and not seg.get("manually_adjusted"):
         measured = _measure_pattern_2dfft(ctx, center_mm)
     if measured is not None:
         freq_meas, direction = measured
-        half_len = float(np.linalg.norm(p1 - p0)) / 2.0
-        c_px = (p0 + p1) / 2.0
         # keep the profile pointing the same general way as the nominal segment
         if np.dot(direction, p1 - p0) < 0:
             direction = -direction
-        p0 = c_px - direction * half_len
-        p1 = c_px + direction * half_len
+    else:
+        # no usable spectral peak, or the user set the direction by hand
+        d = p1 - p0
+        direction = d / max(float(np.linalg.norm(d)), 1e-9)
+    p0 = c_px - direction * half_len
+    p1 = c_px + direction * half_len
     length_px = float(np.linalg.norm(p1 - p0))
     n = max(int(length_px * 2), 64)          # ~0.5 px sampling
     ts, vals = sample_profile(ctx.pixels, p0, p1, n,

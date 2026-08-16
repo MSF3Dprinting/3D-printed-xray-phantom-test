@@ -105,22 +105,29 @@ def propose(ctx: Ctx) -> dict:
         detected = False
 
     edges = [y_top_ref] + boundaries + [y_bot_ref]
-    margin = w.get("roi_margin_mm", 3.0)
     roi_w = w.get("roi_w_mm", 10.0)
+    # Every step ROI is the SAME fixed size, so a mean from one phantom is
+    # directly comparable with the same step on another. Sizing each ROI to its
+    # own step would make the areas differ (the steps are not equal heights) and
+    # quietly change how much of each step is averaged.
+    roi_h = w.get("roi_h_mm", 10.0)
     steps = []
     for i, st in enumerate(w["steps"]):
         yc = (edges[i] + edges[i + 1]) / 2.0
-        h = max(abs(edges[i] - edges[i + 1]) - 2 * margin, 4.0)
+        step_h = abs(edges[i] - edges[i + 1])
         steps.append({
             "step": st["step"],
-            "roi": rect_roi(ctx, (cx_ref, yc), (roi_w, h), 0.0,
+            "step_height_mm": float(step_h),
+            "fits": bool(step_h >= roi_h + 2.0),
+            "roi": rect_roi(ctx, (cx_ref, yc), (roi_w, roi_h), 0.0,
                             roi_id=f"wedge/S{st['step']}"),
         })
     axis = segment(ctx, (cx_ref, y_top_ref + 4), (cx_ref, y_bot_ref - 4),
                    "wedge/axis")
     return {"center_x_mm": cx_ref, "boundaries_y_mm": boundaries,
             "y_top_mm": y_top_ref, "y_bottom_mm": y_bot_ref,
-            "detected": detected, "steps": steps, "axis": axis}
+            "detected": detected, "steps": steps, "axis": axis,
+            "roi_size_mm": [roi_w, roi_h]}
 
 
 def compute(ctx: Ctx, geometry: dict) -> dict:

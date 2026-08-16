@@ -19,9 +19,12 @@
 <main id="view-analyze">
   <section id="viewer-pane">
     <div id="viewer-toolbar">
-      <label>W <input type="range" id="wl-width" min="16" max="4096" value="4096"></label>
-      <label>C <input type="range" id="wl-center" min="0" max="4096" value="2048"></label>
-      <button id="wl-reset" title="auto window">auto</button>
+      <label title="window width, % of this image's own value range">
+        W <input type="range" id="wl-width" min="2" max="150" value="100"></label>
+      <label title="window centre, % across this image's own value range">
+        C <input type="range" id="wl-center" min="0" max="100" value="50"></label>
+      <span id="wl-readout" class="mono hint"></span>
+      <button id="wl-reset" title="reset to the automatic window">auto</button>
       <button id="zoom-fit">fit</button>
       <span id="cursor-mm" class="mono"></span>
     </div>

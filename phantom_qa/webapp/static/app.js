@@ -116,17 +116,45 @@ function loadImage(params = "") {
   img.src = `api/analyses/${S.aid}/image.png${params}`;
 }
 
+/* Window/level is expressed RELATIVE to the image's own value range, because
+   detectors differ in bit depth: a fixed 0..4095 slider whites out a 14-bit
+   image completely. 0-100 on the sliders maps into [lo, hi] measured from the
+   data, and width can exceed the range so the image can be flattened. */
+function wlAbsolute() {
+  const r = (S.reg && S.reg.display_range) || null;
+  if (!r) return null;
+  const span = Math.max(r.hi - r.lo, 1e-6);
+  const cPct = +$("#wl-center").value / 100;       // 0..1 across the range
+  const wPct = +$("#wl-width").value / 100;        // 0..1.5 of the range
+  const wc = r.lo + cPct * span;
+  const ww = Math.max(wPct * span, span * 0.01);
+  return { wc, ww };
+}
+
+function updateWLReadout() {
+  const a = wlAbsolute();
+  $("#wl-readout").textContent = a
+    ? `W ${Math.round(a.ww)}  C ${Math.round(a.wc)}`
+    : "";
+}
+
 let wlTimer = null;
 function onWL() {
+  updateWLReadout();
   clearTimeout(wlTimer);
   wlTimer = setTimeout(() => {
-    const c = +$("#wl-center").value, w = +$("#wl-width").value;
-    loadImage(`?wc=${c}&ww=${w}`);
-  }, 250);
+    const a = wlAbsolute();
+    if (a) loadImage(`?wc=${a.wc.toFixed(1)}&ww=${a.ww.toFixed(1)}`);
+  }, 200);
 }
 $("#wl-center").addEventListener("input", onWL);
 $("#wl-width").addEventListener("input", onWL);
-$("#wl-reset").addEventListener("click", () => loadImage());
+$("#wl-reset").addEventListener("click", () => {
+  $("#wl-center").value = 50;
+  $("#wl-width").value = 100;
+  updateWLReadout();
+  loadImage();                       // server default: 1-99 percentile stretch
+});
 $("#zoom-fit").addEventListener("click", zoomFit);
 
 function drawRoi(roi, color, opts = {}) {
@@ -329,10 +357,14 @@ canvas.addEventListener("mouseup", async (ev) => {
     try {
       const r = await postJSON(`api/analyses/${S.aid}/roi`,
         { roi_id: roi.id, center_px: roi.center_px });
-      replaceRoi(roi.id, r.roi);
+      applyChanged(r);
       showRoiDetails(r.roi, r.stats);
+      status(`${roi.id} moved — measurement updated`);
       draw();
-    } catch (e) { status("ROI update failed: " + e.message, true); }
+    } catch (e) {
+      status("ROI update failed: " + e.message, true);
+      openAnalysis(S.aid);            // resync rather than show a stale ROI
+    }
     return;
   }
   if (panning) {
@@ -386,11 +418,24 @@ function replaceRoi(roiId, fresh) {
   const walk = (node) => {
     if (Array.isArray(node)) { node.forEach(walk); return; }
     if (node && typeof node === "object") {
-      if (node.id === roiId && node.type) Object.assign(node, fresh);
-      else Object.values(node).forEach(walk);
+      if (node.id === roiId && node.type) {
+        Object.keys(node).forEach(k => { delete node[k]; });
+        Object.assign(node, fresh);
+      } else {
+        Object.values(node).forEach(walk);
+      }
     }
   };
   walk(S.geometry);
+}
+
+/* The server returns every ROI a move or rotation touched — the dragged one
+   plus its companions (background ring, object outline, profile line). All of
+   them must be redrawn, or the display shows a measurement in one place while
+   the number comes from another. */
+function applyChanged(response) {
+  const list = response.changed || (response.roi ? [response.roi] : []);
+  list.forEach(r => { if (r && r.id) replaceRoi(r.id, r); });
 }
 
 function showRoiDetails(roi, stats) {
@@ -399,12 +444,99 @@ function showRoiDetails(roi, stats) {
     d = el("div", { id: "roi-details", class: "roi-details" });
     $("#wizard-pane").appendChild(d);
   }
+  S.selectedRoi = roi.id;
   const mm = roi.center_mm || [];
+  const rotatable = roi.type === "rect";
+  const ang = rotatable ? (roi.angle_deg || 0) : null;
   d.innerHTML = `<b>${roi.id}</b>${roi.manually_adjusted ?
       ' <span class="chip warn">manually adjusted</span>' : ""}<br>
-    center (${fmt(mm[0])}, ${fmt(mm[1])}) mm &nbsp;
-    μ=${fmt(stats.mean, 1)} σ=${fmt(stats.std, 1)} n=${stats.n}`;
+    centre (${fmt(mm[0])}, ${fmt(mm[1])}) mm &nbsp;
+    μ=${fmt(stats.mean, 1)} σ=${fmt(stats.std, 1)} n=${stats.n}
+    ${rotatable ? `
+    <div class="rot-row">
+      <label>angle
+        <input type="range" id="roi-angle" min="-90" max="90" step="0.5"
+               value="${ang.toFixed(1)}">
+      </label>
+      <span id="roi-angle-val" class="mono">${ang.toFixed(1)}°</span>
+      <button class="secondary-sm" id="roi-angle-minus">−1°</button>
+      <button class="secondary-sm" id="roi-angle-plus">+1°</button>
+    </div>
+    <span class="hint">Drag the dot to move · rotate here or with [ and ]</span>`
+    : ""}`;
+  if (!rotatable) return;
+  const slider = $("#roi-angle");
+  const show = (v) => { $("#roi-angle-val").textContent = (+v).toFixed(1) + "°"; };
+  slider.addEventListener("input", () => {
+    show(slider.value);
+    previewRotation(roi.id, +slider.value);
+  });
+  slider.addEventListener("change", () => commitRotation(roi.id, +slider.value));
+  $("#roi-angle-minus").addEventListener("click", () => nudgeRotation(-1));
+  $("#roi-angle-plus").addEventListener("click", () => nudgeRotation(+1));
 }
+
+function findRoi(roiId) {
+  let found = null;
+  const walk = (n) => {
+    if (found) return;
+    if (Array.isArray(n)) { n.forEach(walk); return; }
+    if (n && typeof n === "object") {
+      if (n.id === roiId && n.type) { found = n; return; }
+      Object.values(n).forEach(walk);
+    }
+  };
+  walk(S.geometry);
+  return found;
+}
+
+/* Rotate locally for instant feedback; the server has the final word. */
+function previewRotation(roiId, angleDeg) {
+  const roi = findRoi(roiId);
+  if (!roi || roi.type !== "rect" || !roi.corners_px) return;
+  const delta = (angleDeg - (roi.angle_deg || 0));
+  // phantom +y is up while image y is down, so a positive phantom rotation is
+  // clockwise on screen
+  const a = -delta * Math.PI / 180;
+  const c = roi.center_px;
+  roi.corners_px = roi.corners_px.map(p => {
+    const dx = p[0] - c[0], dy = p[1] - c[1];
+    return [c[0] + dx * Math.cos(a) - dy * Math.sin(a),
+            c[1] + dx * Math.sin(a) + dy * Math.cos(a)];
+  });
+  roi.angle_deg = angleDeg;
+  draw();
+}
+
+async function commitRotation(roiId, angleDeg) {
+  try {
+    const r = await postJSON(`api/analyses/${S.aid}/roi_rotate`,
+                             { roi_id: roiId, angle_deg: angleDeg });
+    applyChanged(r);
+    showRoiDetails(r.roi, r.stats);
+    status(`${roiId} rotated to ${angleDeg.toFixed(1)}° — measurement updated`);
+    draw();
+  } catch (e) {
+    status("Rotation failed: " + e.message, true);
+    openAnalysis(S.aid);
+  }
+}
+
+function nudgeRotation(delta) {
+  const slider = $("#roi-angle");
+  if (!slider) return;
+  slider.value = (+slider.value + delta).toFixed(1);
+  $("#roi-angle-val").textContent = (+slider.value).toFixed(1) + "°";
+  previewRotation(S.selectedRoi, +slider.value);
+  commitRotation(S.selectedRoi, +slider.value);
+}
+
+document.addEventListener("keydown", (e) => {
+  if (S.stage !== "C" || !S.selectedRoi) return;
+  if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+  if (e.key === "[") { e.preventDefault(); nudgeRotation(-1); }
+  if (e.key === "]") { e.preventDefault(); nudgeRotation(+1); }
+});
 
 /* ================= overlay toggles ================= */
 

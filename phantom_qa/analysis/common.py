@@ -129,9 +129,73 @@ def refresh_px_geometry(ctx: Ctx, roi: dict) -> dict:
     return roi
 
 
+def roi_center_mm(roi: dict):
+    """Centre of any ROI type in phantom mm, including segments."""
+    if roi.get("type") == "segment":
+        p0, p1 = roi["p0_mm"], roi["p1_mm"]
+        return [(p0[0] + p1[0]) / 2.0, (p0[1] + p1[1]) / 2.0]
+    return list(roi.get("center_mm", []))
+
+
 def roi_center_from_px(ctx: Ctx, roi: dict, new_center_px) -> dict:
-    """Apply a UI drag (new center in px) to an ROI: update mm, refresh px."""
+    """Apply a UI drag (new centre in px) to an ROI: update mm, refresh px.
+
+    Segments are translated as a whole so their length and direction survive
+    the move; every other type simply gets a new centre."""
     mm = ctx.T.px_to_mm(new_center_px)
     r = dict(roi)
-    r["center_mm"] = [float(mm[0]), float(mm[1])]
+    if r.get("type") == "segment":
+        old = roi_center_mm(roi)
+        dx, dy = float(mm[0]) - old[0], float(mm[1]) - old[1]
+        r["p0_mm"] = [roi["p0_mm"][0] + dx, roi["p0_mm"][1] + dy]
+        r["p1_mm"] = [roi["p1_mm"][0] + dx, roi["p1_mm"][1] + dy]
+    else:
+        r["center_mm"] = [float(mm[0]), float(mm[1])]
     return refresh_px_geometry(ctx, r)
+
+
+def roi_translate_mm(ctx: Ctx, roi: dict, dx_mm: float, dy_mm: float) -> dict:
+    """Move an ROI by a phantom-frame offset, whatever its type."""
+    r = dict(roi)
+    if r.get("type") == "segment":
+        r["p0_mm"] = [roi["p0_mm"][0] + dx_mm, roi["p0_mm"][1] + dy_mm]
+        r["p1_mm"] = [roi["p1_mm"][0] + dx_mm, roi["p1_mm"][1] + dy_mm]
+    elif "center_mm" in r:
+        r["center_mm"] = [roi["center_mm"][0] + dx_mm,
+                          roi["center_mm"][1] + dy_mm]
+    return refresh_px_geometry(ctx, r)
+
+
+def roi_rotate(ctx: Ctx, roi: dict, angle_deg: float) -> dict:
+    """Set the absolute phantom-frame angle of a rotatable ROI.
+
+    Rectangles carry their own angle. Segments are rotated about their own
+    centre, keeping their length — that is what lets a user line a profile up
+    with a pattern the automatic direction search got wrong."""
+    r = dict(roi)
+    if r.get("type") == "rect":
+        r["angle_deg"] = float(angle_deg)
+        return refresh_px_geometry(ctx, r)
+    if r.get("type") == "segment":
+        c = roi_center_mm(roi)
+        p0 = np.asarray(roi["p0_mm"], float)
+        p1 = np.asarray(roi["p1_mm"], float)
+        half = float(np.linalg.norm(p1 - p0)) / 2.0
+        a = np.deg2rad(float(angle_deg))
+        u = np.array([np.cos(a), np.sin(a)])
+        r["p0_mm"] = [c[0] - half * u[0], c[1] - half * u[1]]
+        r["p1_mm"] = [c[0] + half * u[0], c[1] + half * u[1]]
+        return refresh_px_geometry(ctx, r)
+    return roi                      # circles and annuli have no orientation
+
+
+def roi_angle_deg(roi: dict) -> float | None:
+    """Current phantom-frame angle, or None for shapes without one."""
+    if roi.get("type") == "rect":
+        return float(roi.get("angle_deg", 0.0))
+    if roi.get("type") == "segment":
+        p0 = np.asarray(roi["p0_mm"], float)
+        p1 = np.asarray(roi["p1_mm"], float)
+        d = p1 - p0
+        return float(np.degrees(np.arctan2(d[1], d[0])))
+    return None

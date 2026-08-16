@@ -156,7 +156,16 @@ frequency. A block whose frequency contradicts its assigned identity is dropped
 rather than reported.
 
 **SD metric.** Standard deviation inside the 12.6 × 12.6 mm ROI — the guide's
-constancy metric.
+constancy metric. The ROI is placed at `roi_angle_offset_deg` (45°) to the strip
+axis, so its corners meet the nub markers on the two frame lines and the strip's
+centre line, as the guide specifies. The ROI orientation and the profile
+direction are independent: the square follows the guide's placement, the profile
+follows the printed lines.
+
+**Manual correction.** The ROI is the handle. When it is moved, the profile is
+rebuilt at the new centre and its direction re-measured there, so the reported
+numbers always come from where the square is. A profile whose direction the user
+set by hand is marked and no longer overridden by the FFT.
 
 **Linearity.** The pattern's frequency and direction come from a 2-D FFT of a
 10 mm patch, whose peak must exceed 8× the band median. The profile is sampled
@@ -211,7 +220,11 @@ of each square, taking the median. The ROI is 30 × 30 mm centred in each square
   axis, each searched ±3 mm around the measured boundaries stored in the
   definition. The steps are about 19 mm with a ~26 mm bottom step; these are
   measured, not assumed.
-- Step ROIs are 10 mm wide, boundary to boundary minus 3 mm margins.
+- Step ROIs are a **fixed** `roi_w_mm` × `roi_h_mm` (10 × 10 mm) centred in
+  every step. The printed steps are not equal heights, so sizing each ROI to its
+  own step would average a different area per step and make the same step
+  incomparable between phantoms. Each step reports its measured height and
+  whether the fixed ROI fits inside it.
 - Reported: mean and standard deviation per step S1…S7 (positional labels only),
   monotonicity, dynamic-range ratio (S1/S7), the axis profile, and a
   least-squares fit of mean against step index with R² and per-step residuals as

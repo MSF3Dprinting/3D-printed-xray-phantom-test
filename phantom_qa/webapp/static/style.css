@@ -97,6 +97,11 @@ button:disabled { opacity: 0.45; cursor: default; }
 
 .roi-details { position: sticky; bottom: 0; background: var(--panel2);
   border-top: 2px solid var(--accent); padding: 8px 12px; font-size: 12px; }
+.rot-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.rot-row label { display: flex; align-items: center; gap: 5px; flex: 1;
+  color: var(--muted); font-size: 11px; }
+.rot-row input[type="range"] { flex: 1; }
+.rot-row .secondary-sm { padding: 3px 8px; font-size: 11px; }
 
 canvas.mini-chart { background: #fff; border-radius: 6px; width: 100%; margin: 4px 0; }
 

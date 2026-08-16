@@ -15,9 +15,14 @@ which is entered at the moment of the action rather than at sign-in.
 The wizard has seven steps. Nothing is measured from geometry you have not
 confirmed, and you can move back at any point.
 
-Throughout, the image viewer supports mouse-wheel zoom, drag to pan, and the
-**W** and **C** sliders for window width and level. Overlay layers can be
-toggled individually below the image.
+Throughout, the image viewer supports mouse-wheel zoom and drag to pan. Overlay
+layers can be toggled individually below the image.
+
+The **W** (width) and **C** (centre) sliders are **relative to the image's own
+value range**, shown as a percentage with the resulting absolute values beside
+them. Detectors differ in bit depth — 12-bit on one unit, 14-bit on another — so
+a fixed absolute scale would white out an image from the wrong device entirely.
+**auto** returns to the automatic window.
 
 ### Upload — choose the file and identify the scan
 
@@ -60,19 +65,38 @@ a 180° mix-up must be caught here.
 ### C — Measuring points
 
 The actual measurement ROIs are shown. Click an ROI's centre dot to read its
-mean, standard deviation and pixel count. Drag the dot to adjust it; adjusted
-ROIs turn orange, and both the automatic and the manual position are kept in the
-audit trail.
+mean, standard deviation and pixel count.
+
+**Moving.** Drag the centre dot. Everything attached to that ROI moves with it —
+the low-contrast background ring and object outline, and the line-pattern
+profile line — so what you see is always what is measured. Adjusted ROIs turn
+orange, and both the automatic and the manual position are kept in the audit
+trail.
+
+**Rotating.** Select an ROI and use the angle slider in the details panel at the
+bottom, the ±1° buttons, or the `[` and `]` keys. This matters when a phantom
+differs from the definition and the automatic orientation is wrong.
+
+For a line-pattern group, rotating the square also sets the profile direction by
+hand, overriding the automatic one. Move the square first, then rotate only if
+the automatic direction did not follow the pattern.
 
 If a radiation-field edge was not detected automatically, select a side and
 click the visible field edge on the image.
+
+> **A phantom that differs from the definition.** Automatic placement is seeded
+> from the stored phantom geometry, so on a different build — or a different
+> X-ray unit — some patterns will be found in the wrong place. That is expected.
+> Correct them here by dragging and rotating; every measurement is taken from
+> where you put the ROI.
 
 #### Reading the overlays
 
 | Marking | Meaning |
 |---|---|
 | Red dashed square | Detected phantom outline |
-| Yellow squares on the diagonal strip | Line-pair group ROIs, aligned to the measured strip axis |
+| Yellow squares on the diagonal strip | Line-pair group ROIs, set 45° to the strip so their corners meet the nub markers and the strip centre line |
+| Short yellow line through each square | The profile sampled for pitch and linearity; it crosses the printed lines |
 | Pink dashed circle | Low-contrast object outline (10 mm) |
 | Pink solid circle | Low-contrast measurement ROI (7 mm) |
 | Pink dotted ring | Local background ring for that same circle |

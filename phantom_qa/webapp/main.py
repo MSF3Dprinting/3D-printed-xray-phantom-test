@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 from .. import ALGO_VERSION
 from .. import ingest, pipeline
+from ..analysis import linepairs
 from ..analysis.common import roi_center_from_px
 from ..comparison_report import build_comparison_report
 from ..config import get_config
@@ -331,11 +332,26 @@ def _ctx(aid: str):
                                "sid_mm": rec.get("sid_mm") or 1000.0})
 
 
+def _display_range(aid: str) -> dict:
+    """Value range the viewer should map to black..white.
+
+    Detectors differ in bit depth — 12-bit on one unit, 14-bit on another — so
+    a fixed 0..4095 slider range whites out a 14-bit image entirely. The
+    window/level controls work relative to this measured range instead."""
+    img = _scan(aid).pixels
+    lo, hi = (float(x) for x in np.percentile(img, [0.5, 99.5]))
+    if hi - lo < 1e-6:
+        lo, hi = float(img.min()), float(img.max()) or 1.0
+    return {"lo": lo, "hi": hi,
+            "min": float(img.min()), "max": float(img.max())}
+
+
 def _reg_payload(aid: str, reg: Registration) -> dict:
     scan = _scan(aid)
     return pipeline.to_jsonable({
         "summary": reg.summary(),
         "transform": reg.transform.to_dict(),
+        "display_range": _display_range(aid),
         "landmarks": reg.landmarks,
         "candidates": reg.candidate_scores[:4],
         "image": {"rows": scan.shape[0], "cols": scan.shape[1]},
@@ -519,20 +535,46 @@ class RoiMove(BaseModel):
     center_px: list[float]
 
 
-def _walk_find(node, roi_id):
+_ROI_TYPES = ("rect", "circle", "annulus", "segment")
+
+
+def _walk_find(node, roi_id, types=("rect", "circle", "annulus", "segment")):
     if isinstance(node, dict):
-        if node.get("id") == roi_id and node.get("type") in ("rect", "circle"):
+        if node.get("id") == roi_id and node.get("type") in types:
             return node
         for v in node.values():
-            r = _walk_find(v, roi_id)
+            r = _walk_find(v, roi_id, types)
             if r is not None:
                 return r
     elif isinstance(node, list):
         for v in node:
-            r = _walk_find(v, roi_id)
+            r = _walk_find(v, roi_id, types)
             if r is not None:
                 return r
     return None
+
+
+def _walk_children(node, roi_id, out=None):
+    """Every ROI whose id is '<roi_id>/…' — the companions of one handle."""
+    if out is None:
+        out = []
+    prefix = roi_id + "/"
+    if isinstance(node, dict):
+        if (isinstance(node.get("id"), str) and node["id"].startswith(prefix)
+                and node.get("type") in _ROI_TYPES):
+            out.append(node)
+        else:
+            for v in node.values():
+                _walk_children(v, roi_id, out)
+    elif isinstance(node, list):
+        for v in node:
+            _walk_children(v, roi_id, out)
+    return out
+
+
+def _seg_angle(seg: dict):
+    from ..analysis.common import roi_angle_deg
+    return roi_angle_deg(seg)
 
 
 @app.post("/api/analyses/{aid}/roi")
@@ -545,27 +587,98 @@ def move_roi(aid: str, body: RoiMove):
     node = _walk_find(geom, body.roi_id)
     if node is None:
         raise HTTPException(404, f"ROI {body.roi_id} not found")
-    old_center = list(node.get("center_mm", []))
+    from ..analysis.common import (roi_center_mm, roi_translate_mm,
+                                   stats_for_roi)
+
+    old_center = roi_center_mm(node)
     updated = roi_center_from_px(ctx, node, body.center_px)
     node.clear()
     node.update(pipeline.to_jsonable(updated))
     node["manually_adjusted"] = True
     node["auto_center_mm"] = node.get("auto_center_mm", old_center)
-    # companions that must stay concentric with the ROI the user dragged
-    # (low-contrast background ring and object outline)
-    for suffix in ("/bg", "/outline"):
-        comp = _walk_find(geom, body.roi_id + suffix)
-        if comp is not None:
-            moved = roi_center_from_px(ctx, comp, body.center_px)
-            comp.clear()
-            comp.update(pipeline.to_jsonable(moved))
-    from ..analysis.common import stats_for_roi
+    new_center = roi_center_mm(node)
+    dx = new_center[0] - old_center[0]
+    dy = new_center[1] - old_center[1]
+
+    # Everything attached to this ROI has to travel with it, or the numbers
+    # keep coming from where the companion was left behind. Found by prefix so
+    # a new companion cannot be forgotten here.
+    companions = _walk_children(geom, body.roi_id)
+    changed = [node]
+    for comp in companions:
+        if comp.get("type") == "segment" and body.roi_id.startswith("linepairs/"):
+            # the profile is re-derived at the new position, so its direction is
+            # re-measured against the pattern that is actually there now
+            fresh = linepairs.profile_for_center(
+                ctx, new_center,
+                (rec["geometry"].get("linepairs") or {}).get("roi_size_mm", 12.6),
+                comp.get("id", ""),
+                fallback_dir_deg=_seg_angle(comp))
+        else:
+            fresh = roi_translate_mm(ctx, comp, dx, dy)
+        comp.clear()
+        comp.update(pipeline.to_jsonable(fresh))
+        changed.append(comp)
+
     stats = stats_for_roi(ctx, node)
     store.update(aid, geometry=geom)
     store.audit(aid, "C", "roi moved",
                 {"roi": body.roi_id, "from_mm": old_center,
-                 "to_mm": node["center_mm"]})
-    return pipeline.to_jsonable({"roi": node, "stats": stats})
+                 "to_mm": new_center})
+    return pipeline.to_jsonable({"roi": node, "stats": stats,
+                                 "changed": changed})
+
+
+class RoiRotate(BaseModel):
+    roi_id: str
+    angle_deg: float
+
+
+@app.post("/api/analyses/{aid}/roi_rotate")
+def rotate_roi(aid: str, body: RoiRotate, request: Request):
+    """Set an ROI's phantom-frame angle.
+
+    Needed when automatic placement gets the orientation wrong on a phantom
+    that differs from the definition: the user aligns the square with the
+    pattern by hand."""
+    rec = store.get(aid)
+    if not rec or not rec.get("geometry"):
+        raise HTTPException(400, "no geometry yet")
+    ctx = _ctx(aid)
+    geom = rec["geometry"]
+    node = _walk_find(geom, body.roi_id)
+    if node is None:
+        raise HTTPException(404, f"ROI {body.roi_id} not found")
+
+    from ..analysis.common import roi_angle_deg, roi_rotate, stats_for_roi
+    old_angle = roi_angle_deg(node)
+    if old_angle is None:
+        raise HTTPException(400, "this ROI has no orientation to set")
+
+    rotated = roi_rotate(ctx, node, body.angle_deg)
+    node.clear()
+    node.update(pipeline.to_jsonable(rotated))
+    node["manually_adjusted"] = True
+    if node.get("auto_angle_deg") is None:
+        node["auto_angle_deg"] = old_angle
+
+    changed = [node]
+    # a rotated profile segment is the user overriding the measured direction
+    for comp in _walk_children(geom, body.roi_id):
+        if comp.get("type") == "segment":
+            fresh = roi_rotate(ctx, comp, body.angle_deg)
+            comp.clear()
+            comp.update(pipeline.to_jsonable(fresh))
+            comp["manually_adjusted"] = True
+            changed.append(comp)
+
+    stats = stats_for_roi(ctx, node)
+    store.update(aid, geometry=geom)
+    store.audit(aid, "C", "roi rotated",
+                {"roi": body.roi_id, "from_deg": old_angle,
+                 "to_deg": body.angle_deg})
+    return pipeline.to_jsonable({"roi": node, "stats": stats,
+                                 "changed": changed})
 
 
 @app.get("/api/analyses/{aid}/roi_stats")

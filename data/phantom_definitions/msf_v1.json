@@ -5,40 +5,140 @@
   "nominal_side_mm": 300.0,
   "rulers": {
     "top": {
-      "first_line_from_edge_mm": 10.0, "pitch_mm": 5.0, "n_lines": 6,
-      "central_long_index": 2, "long_indices": [0, 2, 4],
-      "center_line_mid_mm": [0.0, 129.75], "side_dir_mm": [1, 0],
-      "normal_inward_mm": [0, -1]
+      "first_line_from_edge_mm": 10.0,
+      "pitch_mm": 5.0,
+      "n_lines": 6,
+      "central_long_index": 2,
+      "long_indices": [
+        0,
+        2,
+        4
+      ],
+      "center_line_mid_mm": [
+        0.0,
+        129.75
+      ],
+      "side_dir_mm": [
+        1,
+        0
+      ],
+      "normal_inward_mm": [
+        0,
+        -1
+      ]
     },
     "right": {
-      "first_line_from_edge_mm": 10.0, "pitch_mm": 5.0, "n_lines": 6,
-      "central_long_index": 2, "long_indices": [0, 2, 4],
-      "center_line_mid_mm": [129.75, 0.0], "side_dir_mm": [0, 1],
-      "normal_inward_mm": [-1, 0]
+      "first_line_from_edge_mm": 10.0,
+      "pitch_mm": 5.0,
+      "n_lines": 6,
+      "central_long_index": 2,
+      "long_indices": [
+        0,
+        2,
+        4
+      ],
+      "center_line_mid_mm": [
+        129.75,
+        0.0
+      ],
+      "side_dir_mm": [
+        0,
+        1
+      ],
+      "normal_inward_mm": [
+        -1,
+        0
+      ]
     },
     "bottom": {
-      "first_line_from_edge_mm": 10.0, "pitch_mm": 5.0, "n_lines": 6,
-      "central_long_index": 2, "long_indices": [0, 2, 4],
-      "center_line_mid_mm": [0.0, -129.75], "side_dir_mm": [1, 0],
-      "normal_inward_mm": [0, 1]
+      "first_line_from_edge_mm": 10.0,
+      "pitch_mm": 5.0,
+      "n_lines": 6,
+      "central_long_index": 2,
+      "long_indices": [
+        0,
+        2,
+        4
+      ],
+      "center_line_mid_mm": [
+        0.0,
+        -129.75
+      ],
+      "side_dir_mm": [
+        1,
+        0
+      ],
+      "normal_inward_mm": [
+        0,
+        1
+      ]
     },
     "left": {
-      "first_line_from_edge_mm": 10.0, "pitch_mm": 5.0, "n_lines": 6,
-      "central_long_index": 2, "long_indices": [0, 2, 4],
-      "center_line_mid_mm": [-129.75, 0.0], "side_dir_mm": [0, 1],
-      "normal_inward_mm": [1, 0]
+      "first_line_from_edge_mm": 10.0,
+      "pitch_mm": 5.0,
+      "n_lines": 6,
+      "central_long_index": 2,
+      "long_indices": [
+        0,
+        2,
+        4
+      ],
+      "center_line_mid_mm": [
+        -129.75,
+        0.0
+      ],
+      "side_dir_mm": [
+        0,
+        1
+      ],
+      "normal_inward_mm": [
+        1,
+        0
+      ]
     }
   },
-  "corner_marks": { "type": "outline_corners" },
+  "corner_marks": {
+    "type": "outline_corners"
+  },
   "uniformity": {
     "size_mm": 50.1,
     "roi_size_mm": 30.0,
     "squares": [
-      { "id": "TL", "center_mm": [-94.95, 94.66] },
-      { "id": "TR", "center_mm": [94.67, 94.53] },
-      { "id": "BR", "center_mm": [94.37, -95.0] },
-      { "id": "BL", "center_mm": [-94.58, -94.66] },
-      { "id": "C", "center_mm": [0.35, -0.5] }
+      {
+        "id": "TL",
+        "center_mm": [
+          -94.95,
+          94.66
+        ]
+      },
+      {
+        "id": "TR",
+        "center_mm": [
+          94.67,
+          94.53
+        ]
+      },
+      {
+        "id": "BR",
+        "center_mm": [
+          94.37,
+          -95.0
+        ]
+      },
+      {
+        "id": "BL",
+        "center_mm": [
+          -94.58,
+          -94.66
+        ]
+      },
+      {
+        "id": "C",
+        "center_mm": [
+          0.35,
+          -0.5
+        ]
+      }
     ]
   },
   "linepairs": {
@@ -46,43 +146,151 @@
     "roi_size_mm": 12.6,
     "search_pad_mm": 28.0,
     "groups": [
-      { "id": "G2.0", "freq_lp_mm": 2.0, "center_mm": [-84.64, -1.31] },
-      { "id": "G1.6", "freq_lp_mm": 1.6, "center_mm": [-63.34, 19.56] },
-      { "id": "G1.4", "freq_lp_mm": 1.4, "center_mm": [-41.77, 40.31] },
-      { "id": "G1.2", "freq_lp_mm": 1.2, "center_mm": [-20.39, 61.30] },
-      { "id": "G1.1", "freq_lp_mm": 1.1, "center_mm": [0.92, 81.67] }
-    ]
+      {
+        "id": "G2.0",
+        "freq_lp_mm": 2.0,
+        "center_mm": [
+          -84.64,
+          -1.31
+        ]
+      },
+      {
+        "id": "G1.6",
+        "freq_lp_mm": 1.6,
+        "center_mm": [
+          -63.34,
+          19.56
+        ]
+      },
+      {
+        "id": "G1.4",
+        "freq_lp_mm": 1.4,
+        "center_mm": [
+          -41.77,
+          40.31
+        ]
+      },
+      {
+        "id": "G1.2",
+        "freq_lp_mm": 1.2,
+        "center_mm": [
+          -20.39,
+          61.3
+        ]
+      },
+      {
+        "id": "G1.1",
+        "freq_lp_mm": 1.1,
+        "center_mm": [
+          0.92,
+          81.67
+        ]
+      }
+    ],
+    "roi_angle_offset_deg": 45.0
   },
   "lowcontrast": {
-    "center_mm": [-45.86, -48.62],
+    "center_mm": [
+      -45.86,
+      -48.62
+    ],
     "angle_deg": -45.1,
-    "size_mm": [84.5, 44.45],
+    "size_mm": [
+      84.5,
+      44.45
+    ],
     "circle_dia_mm": 10.0,
     "roi_dia_mm": 7.0,
     "bg_inner_dia_mm": 12.0,
     "bg_outer_dia_mm": 16.0,
     "circles": [
-      { "id": "L1", "level": 1, "u_mm": 30.0, "v_mm": 9.4 },
-      { "id": "L2", "level": 2, "u_mm": 10.0, "v_mm": 9.4 },
-      { "id": "L3", "level": 3, "u_mm": -10.0, "v_mm": 9.4 },
-      { "id": "L4", "level": 4, "u_mm": -30.0, "v_mm": 9.4 },
-      { "id": "L5", "level": 5, "u_mm": -30.0, "v_mm": -10.2 },
-      { "id": "L6", "level": 6, "u_mm": -10.0, "v_mm": -10.2 },
-      { "id": "L7", "level": 7, "u_mm": 10.0, "v_mm": -10.2 },
-      { "id": "L8", "level": 8, "u_mm": 30.0, "v_mm": -10.2 }
+      {
+        "id": "L1",
+        "level": 1,
+        "u_mm": 30.0,
+        "v_mm": 9.4
+      },
+      {
+        "id": "L2",
+        "level": 2,
+        "u_mm": 10.0,
+        "v_mm": 9.4
+      },
+      {
+        "id": "L3",
+        "level": 3,
+        "u_mm": -10.0,
+        "v_mm": 9.4
+      },
+      {
+        "id": "L4",
+        "level": 4,
+        "u_mm": -30.0,
+        "v_mm": 9.4
+      },
+      {
+        "id": "L5",
+        "level": 5,
+        "u_mm": -30.0,
+        "v_mm": -10.2
+      },
+      {
+        "id": "L6",
+        "level": 6,
+        "u_mm": -10.0,
+        "v_mm": -10.2
+      },
+      {
+        "id": "L7",
+        "level": 7,
+        "u_mm": 10.0,
+        "v_mm": -10.2
+      },
+      {
+        "id": "L8",
+        "level": 8,
+        "u_mm": 30.0,
+        "v_mm": -10.2
+      }
     ]
   },
   "wedge": {
     "center_x_mm": 49.8,
     "y_top_mm": 69.4,
     "y_bottom_mm": -70.2,
-    "nominal_boundaries_y_mm": [50.5, 31.5, 12.5, -6.4, -25.3, -44.4],
+    "nominal_boundaries_y_mm": [
+      50.5,
+      31.5,
+      12.5,
+      -6.4,
+      -25.3,
+      -44.4
+    ],
     "roi_w_mm": 10.0,
-    "roi_margin_mm": 3.0,
     "steps": [
-      { "step": 1 }, { "step": 2 }, { "step": 3 }, { "step": 4 },
-      { "step": 5 }, { "step": 6 }, { "step": 7 }
-    ]
+      {
+        "step": 1
+      },
+      {
+        "step": 2
+      },
+      {
+        "step": 3
+      },
+      {
+        "step": 4
+      },
+      {
+        "step": 5
+      },
+      {
+        "step": 6
+      },
+      {
+        "step": 7
+      }
+    ],
+    "roi_h_mm": 10.0
   },
   "tolerances": {
     "field_pct_sid": 2.0,
@@ -105,7 +313,9 @@
       "Line-pair group positions/frequencies are MEASURED per scan at runtime (band-limited periodicity map); the values here are nominal search seeds only.",
       "Wedge step boundaries measured (steps are ~19 mm, bottom step ~26 mm; not uniform).",
       "IMPORTANT - two phantom variants observed. The scans split into two groups (detector labels HmmEi and A8Tgg) whose internal features sit up to ~12 mm apart and whose strip angle differs by ~3 deg (44.9 vs 48.2). Positions stored here are the mean of the two; per-scan measurement absorbs the difference. Do not treat these nominals as design intent.",
-      "Wedge response is reproducibly S-shaped (linear R^2 ~0.92 in all six scans with a near-identical residual pattern). R^2 is therefore a shape descriptor with a soft 0.85 warn threshold; the hard criteria are monotonicity and non-saturation."
+      "Wedge response is reproducibly S-shaped (linear R^2 ~0.92 in all six scans with a near-identical residual pattern). R^2 is therefore a shape descriptor with a soft 0.85 warn threshold; the hard criteria are monotonicity and non-saturation.",
+      "Line-pair ROIs are placed at roi_angle_offset_deg (45 deg) from the strip axis, so their corners align with the nub markers on the frame lines and the strip centre line, as the guide specifies.",
+      "Wedge step ROIs are a FIXED roi_w_mm x roi_h_mm for every step, so the same step is comparable between phantoms; the printed steps are not equal heights."
     ]
   }
 }

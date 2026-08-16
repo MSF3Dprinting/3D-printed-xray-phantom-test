@@ -2,6 +2,7 @@
 # Never commit image exports. They are large, they are the measurement input
 # rather than source, and they may carry site/patient-identifying DICOM tags.
 /20260727 MSF/
+/New Phantom/
 Export_*/
 # Future scan drops are dated folders (YYYYMMDD ...) — ignored by pattern.
 # If you ever add a NON-scan folder whose name starts with 8 digits, rename it
