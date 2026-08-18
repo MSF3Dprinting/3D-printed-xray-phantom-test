@@ -216,6 +216,7 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
     nominal_first = pdef.rulers["top"]["first_line_from_edge_mm"]
     nominal_pitch = pdef.rulers["top"]["pitch_mm"]
     central_idx = pdef.rulers["top"]["central_long_index"]
+    ruler_rms_max = tol.get("ruler_linearity_rms_max_mm", 0.5)
 
     # ---- per-side ruler analysis -------------------------------------------
     ruler_rows = {}
@@ -231,19 +232,38 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
         coef, *_ = np.linalg.lstsq(A, off, rcond=None)
         pitch = float(coef[0])
         resid = off - A @ coef
-        pitches.append(pitch)
+        rms = float(np.sqrt(np.mean(resid ** 2)))
+        # Evenly spaced marks are what makes a ruler a ruler. When the fitted
+        # mark positions scatter by an appreciable fraction of the pitch, the
+        # detector locked onto something that is not the ruler, and its pitch
+        # must not be allowed to set the scale for the whole image.
+        reliable = rms <= ruler_rms_max
+        if reliable:
+            pitches.append(pitch)
         central_from_edge[side] = float(off[central_idx])
         ruler_rows[side] = {
             "detected": True,
+            "reliable": bool(reliable),
             "line_offsets_mm": off.tolist(),
             "pitch_mm": pitch,
             "first_line_from_edge_mm": float(off[0]),
             "central_line_from_edge_mm": float(off[central_idx]),
             "linearity_residuals_mm": resid.tolist(),
-            "linearity_rms_mm": float(np.sqrt(np.mean(resid ** 2))),
+            "linearity_rms_mm": rms,
             "nominal_pitch_mm": nominal_pitch,
             "pitch_dev_pct": 100.0 * (pitch - nominal_pitch) / nominal_pitch,
         }
+
+    # Fall back to every detected ruler when the quality gate rejected them
+    # all: a bad scale that is flagged as bad beats no result at all.
+    used_sides = [s for s, r in ruler_rows.items() if r.get("reliable")]
+    rejected = [s for s, r in ruler_rows.items()
+                if r.get("detected") and not r.get("reliable")]
+    scale_reliable = len(used_sides) >= 2
+    if not pitches:
+        pitches = [r["pitch_mm"] for r in ruler_rows.values()
+                   if r.get("detected")]
+        used_sides = [s for s, r in ruler_rows.items() if r.get("detected")]
 
     pitch_T = float(np.mean(pitches)) if pitches else float("nan")
     k = nominal_pitch / pitch_T if pitches else 1.0   # absolute-scale correction
@@ -296,6 +316,10 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
         "transform_mm_per_px": ctx.T.mm_per_px,
         "absolute_mm_per_px": ctx.T.mm_per_px * k,
         "dicom_spacings_mm_per_px": meta_spacings,
+        "reliable": bool(scale_reliable),
+        "rulers_used": sorted(used_sides),
+        "rulers_rejected": sorted(rejected),
+        "ruler_linearity_rms_max_mm": ruler_rms_max,
     }
     if "ImagerPixelSpacing" in meta_spacings:
         m = meta_spacings["ImagerPixelSpacing"] / (ctx.T.mm_per_px * k)
@@ -337,11 +361,83 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
         field_status = ("pass" if worst_pct <= tol.get("field_pct_sid", 2.0)
                         else "fail")
 
+    dim_reasons = []
+    if dims:
+        dev = dims["dev_from_nominal_pct"]
+        if dim_status == "pass":
+            dim_reasons.append(
+                f"mean side {dims['mean_side_mm']:.2f} mm is {dev:+.2f}% from "
+                f"the assumed nominal {dims['nominal_side_mm']:g} mm "
+                f"(tolerance +/-{dim_tol:g}%).")
+        else:
+            dim_reasons.append(
+                f"mean side {dims['mean_side_mm']:.2f} mm is {dev:+.2f}% from "
+                f"the assumed nominal {dims['nominal_side_mm']:g} mm, outside "
+                f"+/-{dim_tol:g}%. Note the nominal is assumed design intent, "
+                f"not a measured drawing, so a small offset may be the nominal "
+                f"rather than the phantom.")
+    else:
+        dim_reasons.append("corner marks were not measured, so no dimension "
+                           "check was possible.")
+
+    # Every length in this report is scaled by the ruler-derived mm/px, so if
+    # the rulers are unreliable the dimensions are meaningless rather than
+    # merely out of tolerance. Say which rulers were thrown out and why -
+    # without this the operator sees only "-22%" and cannot tell whether the
+    # phantom, the geometry, or the scale is at fault.
+    if rejected:
+        detail = ", ".join(
+            f"{s} (mark spacing scatters by "
+            f"{ruler_rows[s]['linearity_rms_mm']:.2f} mm rms)"
+            for s in sorted(rejected))
+        dim_reasons.append(
+            f"ruler(s) excluded from the scale: {detail}; the limit is "
+            f"{ruler_rms_max:g} mm rms. Evenly spaced marks are what makes a "
+            f"ruler usable, so these were not measuring the ruler. Check the "
+            f"ruler ROIs in step C.")
+    if not scale_reliable:
+        used = ", ".join(sorted(used_sides)) or "none"
+        dim_reasons.append(
+            f"the mm/px scale rests on {len(used_sides)} usable ruler(s) "
+            f"({used}); at least 2 are needed to cross-check it. Every "
+            f"dimension below is scaled by that number, so treat the values "
+            f"as indicative until the rulers are corrected.")
+    elif pitches and abs(k - 1.0) > 0.02:
+        dim_reasons.append(
+            f"measured mark pitch {pitch_T:.3f} mm vs nominal "
+            f"{nominal_pitch:g} mm implies the phantom is imaged "
+            f"{1.0 / k:.2f}x magnified; lengths are corrected by that factor "
+            f"(absolute scale {ctx.T.mm_per_px * k:.5f} mm/px).")
+
+    field_reasons = []
+    if not any_field:
+        why = {side: f.get("reason") for side, f in field_rows.items()
+               if f.get("reason")}
+        field_reasons.append(
+            "no radiation-field edge could be measured on any side, so "
+            "alignment was not assessed.")
+        for side, r in why.items():
+            field_reasons.append(f"{side}: {r}")
+    else:
+        for side, f in field_rows.items():
+            if f.get("detected") and f.get("status") != "pass":
+                field_reasons.append(
+                    f"{side}: field edge is {f['deviation_from_central_line_mm']:+.1f} mm "
+                    f"from the central line, {f['pct_of_sid']:+.2f}% of SID "
+                    f"(tolerance +/-{tol.get('field_pct_sid', 2.0):g}%).")
+        if not field_reasons:
+            field_reasons.append(
+                f"every measurable side is within "
+                f"+/-{tol.get('field_pct_sid', 2.0):g}% of SID "
+                f"(worst {worst_pct:.2f}%).")
+
     return {
         "rulers": ruler_rows,
         "dimensions": dims, "dimension_status": dim_status,
+        "dimension_reasons": dim_reasons,
         "central_line_separations": seps,
         "scale": scale,
         "field_alignment": field_rows, "field_status": field_status,
+        "field_reasons": field_reasons,
         "sid_mm": sid_mm,
     }

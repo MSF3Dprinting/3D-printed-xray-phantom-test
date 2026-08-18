@@ -22,6 +22,10 @@ guide*:
 identified by position and design order only; every reported value is a direct
 measurement.
 
+Every test reports **why** it passed, warned or failed — the measured value, the
+limit it was compared against, and where to correct it — so a result can be
+acted on rather than merely recorded.
+
 ## Documentation
 
 | Document | Contents |
@@ -147,8 +151,13 @@ available. Measured side lengths are 299.3–300.4 mm.
   full-resolution data.
 - **Automatic placement is seeded from the stored phantom definition.** On a
   different phantom build some patterns will be placed wrongly. Every ROI can be
-  moved and rotated by hand, and the measurement follows it; for a build you use
-  regularly, calibrate its own definition.
+  moved and rotated by hand — and the low-contrast block as a whole, by dragging
+  it, setting its angle, or clicking its four corners — with the measurement
+  following it. For a build you use regularly, calibrate its own definition.
+- **The millimetre scale comes from the printed 5 mm ruler marks.** A ruler
+  whose marks are not evenly spaced is excluded from the scale and named in the
+  results; with fewer than two usable rulers the scale cannot be cross-checked
+  and the dimensions are reported as indicative.
 - Field-edge detection requires a visible collimation edge. Where the phantom
   nearly fills the detector, the test reports "not measurable" rather than
   guessing.

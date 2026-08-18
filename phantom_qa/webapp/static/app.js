@@ -14,7 +14,7 @@ const S = {
   visible: { geometry: true, linepairs: true, lowcontrast: true,
              uniformity: true, wedge: true },
   labels: true, selectedRoi: null, mode: "normal", manualCorners: [],
-  fieldEdgeSide: null, dragRoi: null, dimPreview: null,
+  fieldEdgeSide: null, dragRoi: null, dimPreview: null, lcCorners: [],
   pendingFile: null,
 };
 
@@ -48,9 +48,11 @@ async function api(path, opts = {}) {
     throw new Error("Session expired — signing in again");
   }
   if (!r.ok) {
-    let msg = r.statusText;
-    try { msg = (await r.json()).detail || msg; } catch (e) { /* noop */ }
-    throw new Error(msg);
+    let msg = r.statusText, body = null;
+    try { body = await r.json(); msg = body.detail || msg; } catch (e) { /* noop */ }
+    const err = new Error(msg);
+    if (body && body.duplicate_of) err.duplicateOf = body.duplicate_of;
+    throw err;
   }
   return r.json();
 }
@@ -223,7 +225,8 @@ function activeRois() {
       out.push({ roi: gr.profile_seg, test: "linepairs" });
     });
   if (g.lowcontrast && !g.lowcontrast._error && S.visible.lowcontrast) {
-    out.push({ roi: g.lowcontrast.block, test: "lowcontrast" });
+    out.push({ roi: g.lowcontrast.block, test: "lowcontrast",
+               label: "block", drag: true, block: true });
     g.lowcontrast.circles.forEach(c => {
       out.push({ roi: c.full_circle, test: "lowcontrast", dash: [4, 3] });
       out.push({ roi: c.bg_roi, test: "lowcontrast" });
@@ -294,6 +297,15 @@ function draw() {
     });
   }
 
+  /* low-contrast block corner clicks */
+  (S.lcCorners || []).forEach((p, i) => {
+    const c = nat2scr(p);
+    ctx2d.fillStyle = COLORS.lowcontrast;
+    ctx2d.beginPath(); ctx2d.arc(c[0], c[1], 5, 0, Math.PI * 2); ctx2d.fill();
+    ctx2d.font = "12px Segoe UI";
+    ctx2d.fillText(String(i + 1), c[0] + 8, c[1]);
+  });
+
   /* manual corner clicks */
   S.manualCorners.forEach((p, i) => {
     const s = nat2scr(p);
@@ -307,7 +319,7 @@ function draw() {
 let panning = null;
 canvas.addEventListener("mousedown", (ev) => {
   const pos = [ev.offsetX, ev.offsetY];
-  if (S.mode === "corners" || S.mode === "fieldedge") return;
+  if (S.mode === "corners" || S.mode === "fieldedge" || S.mode === "lccorners") return;
   if (S.stage === "C") {
     const hit = hitRoi(pos);
     if (hit && hit.drag) {
@@ -347,8 +359,25 @@ canvas.addEventListener("mouseup", async (ev) => {
     if (S.manualCorners.length === 4) await submitManualCorners();
     return;
   }
+  if (S.mode === "lccorners") {
+    S.lcCorners.push(scr2nat(pos));
+    draw();
+    if (S.lcCorners.length === 4) {
+      S.mode = "normal";
+      const corners = S.lcCorners.slice();
+      S.lcCorners = [];
+      await placeBlock({ corners_px: corners });
+    }
+    return;
+  }
   if (S.mode === "fieldedge" && S.fieldEdgeSide) {
     await submitFieldEdge(scr2nat(pos));
+    return;
+  }
+  if (S.dragRoi && S.dragRoi.block) {
+    const roi = S.dragRoi.roi;
+    S.dragRoi = null;
+    await placeBlock({ center_px: roi.center_px });
     return;
   }
   if (S.dragRoi) {
@@ -653,6 +682,56 @@ function editLabelsDialog(rec, title = "Edit identification") {
   });
 }
 
+
+/* Three-way choice for a re-uploaded file.
+
+   Deliberately not a confirm(): with two buttons, "Cancel" would have to mean
+   "analyse it again", so an operator dismissing the dialog would create the
+   very duplicate this check exists to prevent. Cancel must mean cancel. */
+function duplicateDialog(d) {
+  return new Promise((resolve) => {
+    // textContent, not innerHTML: site / phantom / notes are operator-supplied
+    $("#dup-id").textContent = d.id;
+    $("#dup-who").textContent =
+      [d.site, d.phantom].filter(Boolean).join(" / ") || "unlabelled";
+    $("#dup-when").textContent =
+      (d.acquired_at || d.created_at || "").slice(0, 16).replace("T", " ");
+    $("#dup-status").textContent = d.status || "-";
+
+    const back = $("#dup-backdrop");
+    back.classList.remove("hidden");
+    $("#dup-open").focus();
+
+    const done = (result) => {
+      back.classList.add("hidden");
+      $("#dup-open").onclick = null;
+      $("#dup-again").onclick = null;
+      $("#dup-cancel").onclick = null;
+      back.onclick = null;
+      document.onkeydown = null;
+      resolve(result);
+    };
+    $("#dup-open").onclick = () => done("open");
+    $("#dup-again").onclick = () => done("again");
+    $("#dup-cancel").onclick = () => done("cancel");
+    back.onclick = (e) => { if (e.target === back) done("cancel"); };
+    document.onkeydown = (e) => { if (e.key === "Escape") done("cancel"); };
+  });
+}
+
+
+/* The low-contrast circles are a rigid grid inside the block, so the block is
+   the natural handle: place it once and all eight circles follow. */
+async function placeBlock(payload) {
+  try {
+    const r = await postJSON(`api/analyses/${S.aid}/lowcontrast_block`, payload);
+    S.geometry.lowcontrast = r.lowcontrast;
+    status(`Low-contrast block placed at ${r.angle_deg.toFixed(1)}° — `
+           + `all 8 circles moved with it`);
+    draw();
+  } catch (e) { status("Could not place block: " + e.message, true); }
+}
+
 /* ================= validation (administrator sign-off) ================= */
 
 const VAL_LABEL = {
@@ -901,7 +980,7 @@ async function stageU(c) {
   refresh();
 }
 
-async function uploadFile(file) {
+async function uploadFile(file, opts = {}) {
   const labels = {
     site: ($("#up-site") || {}).value.trim() || "",
     phantom: ($("#up-phantom") || {}).value.trim() || "",
@@ -915,6 +994,7 @@ async function uploadFile(file) {
   const fd = new FormData();
   fd.append("file", file);
   Object.entries(labels).forEach(([k, v]) => fd.append(k, v));
+  if (opts.allowDuplicate) fd.append("allow_duplicate", "true");
   try {
     const r = await api("api/analyses", { method: "POST", body: fd });
     const ok = r.analyses.filter(a => a.registered);
@@ -925,6 +1005,17 @@ async function uploadFile(file) {
     const first = ok[0] || r.analyses[0];
     await openAnalysis(first.id);
   } catch (e) {
+    if (e.duplicateOf && e.duplicateOf.length) {
+      const choice = await duplicateDialog(e.duplicateOf[0]);
+      if (choice === "open") { await openAnalysis(e.duplicateOf[0].id); return; }
+      if (choice === "again") {
+        await uploadFile(file, { allowDuplicate: true });
+        return;
+      }
+      status("Upload cancelled — the file was already analysed.");
+      if ($("#btn-upload")) $("#btn-upload").disabled = false;
+      return;
+    }
     status("Upload failed: " + e.message, true);
     if ($("#btn-upload")) $("#btn-upload").disabled = false;
   }
@@ -1045,8 +1136,11 @@ function stageB(c) {
     Verify each is the right object with the right label (zoom in!). A 180°
     mix-up or mislabeled group must be caught here.</p>
     <table><tr><th>pattern</th><th>detection</th><th></th></tr>${rows.join("")}</table>
-    <button class="primary" id="btn-confirm-b">All patterns correct ✓</button>
-    <button class="secondary" id="btn-back-a">Back to registration</button>`;
+    <button class="primary" id="btn-confirm-b">Verify measuring points →</button>
+    <button class="secondary" id="btn-back-a">Back to registration</button>
+    <p class="hint">Patterns that were not found, or were labelled wrongly, are
+    corrected in the next step by dragging and rotating their measuring areas —
+    you do not have to fix them here.</p>`;
   $("#btn-confirm-b").addEventListener("click", async () => {
     await postJSON(`api/analyses/${S.aid}/confirm`, { stage: "B" });
     setStage("C");
@@ -1062,12 +1156,30 @@ function stageC(c) {
     <p class="hint">Click an ROI center dot to inspect μ/σ; drag it to adjust.
     Adjusted ROIs turn orange and are recorded in the audit trail. Low-contrast:
     solid = object ROI, dotted = background ROI, dashed = full circle outline.</p>
+    <h3>Low-contrast block</h3>
+    <p class="hint">The eight circles sit on a fixed grid inside the block, so
+    correcting the block once moves them all. Drag the block outline like any
+    ROI, set its angle, or click its four corners.</p>
+    <button class="secondary" id="btn-block-corners">Click 4 block corners…</button>
+    <button class="secondary" id="btn-block-rotate">Set block angle…</button>
+
     <h3>Manual field-edge placement</h3>
     <p class="hint">If a field edge was not auto-detected (or looks wrong),
     choose a side and click the visible radiation-field edge on the image.</p>
     <div>${fieldBtns}</div>
     <button class="primary" id="btn-confirm-c">Measuring points confirmed ✓</button>
     <button class="secondary" id="btn-back-b">Back to patterns</button>`;
+  $("#btn-block-corners").addEventListener("click", () => {
+    S.mode = "lccorners"; S.lcCorners = [];
+    status("Click the 4 corners of the low-contrast block, in any order.");
+    draw();
+  });
+  $("#btn-block-rotate").addEventListener("click", async () => {
+    const cur = ((S.geometry.lowcontrast || {}).angle_deg) || 0;
+    const v = prompt("Block angle in degrees (phantom frame):", cur.toFixed(1));
+    if (v === null) return;
+    await placeBlock({ angle_deg: parseFloat(v) });
+  });
   document.querySelectorAll(".btn-field").forEach(b =>
     b.addEventListener("click", () => {
       S.mode = "fieldedge"; S.fieldEdgeSide = b.dataset.side;
@@ -1180,6 +1292,18 @@ async function stageD(c) {
   $("#btn-back-c").addEventListener("click", () => setStage("C"));
 }
 
+
+/* Why a test passed, warned or failed. The status chip alone is not enough to
+   troubleshoot with — especially on a phantom the definition does not match. */
+function reasonsBlock(reasons, status) {
+  const list = (reasons || []).filter(Boolean);
+  if (!list.length) return "";
+  const cls = status === "pass" ? "reasons-pass" : "reasons-why";
+  return `<div class="${cls}"><b>Why ${status || ""}:</b><ul>`
+    + list.map(r => `<li>${html_escape(r)}</li>`).join("")
+    + `</ul></div>`;
+}
+
 /* ---- Stage E ---- */
 async function stageE(c) {
   c.innerHTML = `<h2>Stage E — Analysis</h2><p class="hint">Computing…</p>`;
@@ -1205,9 +1329,13 @@ async function stageE(c) {
         <td class="num">${lin.measured_pitch_mm ? lin.measured_pitch_mm.toFixed(4) : "—"}</td>
         <td class="num">${lin.pitch_dev_pct !== undefined && lin.pitch_dev_pct !== null ? lin.pitch_dev_pct.toFixed(2) + " %" : "—"}</td>
         <td class="num">${lin.residual_rms_mm ? (lin.residual_rms_mm * 1000).toFixed(1) + " µm" : "—"}</td>
-        <td>${chip(row.status)}</td></tr>`;
+        <td>${chip(row.status)}</td></tr>
+        ${row.status !== "pass" && row.reason
+          ? `<tr class="reason-row"><td colspan="6">${html_escape(row.reason)}</td></tr>`
+          : ""}`;
     }).join("");
     cards.push(`<div class="card"><h3>Line patterns — SD &amp; linearity ${chip(lp.status)}</h3>
+      ${reasonsBlock(lp.reasons, lp.status)}
       <table><tr><th>group</th><th>SD</th><th>pitch [mm]</th><th>Δpitch</th>
       <th>grid RMS</th><th></th></tr>${rows}</table>
       <div id="lp-charts"></div></div>`);
@@ -1221,6 +1349,7 @@ async function stageE(c) {
        <td class="num">${fmt(row.std, 1)}</td>
        <td>${row.saturated ? '<span class="chip fail">saturated</span>' : ""}</td></tr>`).join("");
     cards.push(`<div class="card"><h3>Wedge (7 steps, positional) ${chip(w.status)}</h3>
+      ${reasonsBlock(w.reasons, w.status)}
       <div class="kv"><div>R² (fit vs step index)</div><div>${fmt(w.fit.r2, 4)}
       (min ${w.r2_min})</div><div>slope</div><div>${fmt(w.fit.slope, 1)} /step</div>
       <div>monotonic</div><div>${w.monotonic}</div></div>
@@ -1236,6 +1365,7 @@ async function stageE(c) {
        <td class="num">${fmt(row.obj_mean, 1)}</td>
        <td class="num">${fmt(row.bg_mean, 1)}</td></tr>`).join("");
     cards.push(`<div class="card"><h3>Low contrast — CNR ${chip(lc.status)}</h3>
+      ${reasonsBlock(lc.reasons, lc.status)}
       <canvas class="mini-chart" id="chart-lc" width="420" height="200"></canvas>
       <table><tr><th>circle</th><th>CNR</th><th>μ obj</th><th>μ bg</th></tr>${rows}</table>
       ${lc.ordering_ok ? "" : '<p class="hint" style="color:var(--warn)">|CNR| not monotone with design order — check ROI placement.</p>'}</div>`);
@@ -1249,9 +1379,27 @@ async function stageE(c) {
        <td class="num">${fmt(row.std, 2)}</td><td class="num">${fmt(row.snr, 1)}</td>
        <td class="num">${fmt(row.dsnr_pct, 2)} %</td><td>${chip(row.status)}</td></tr>`).join("");
     cards.push(`<div class="card"><h3>Uniformity — SNR ${chip(u.status)}</h3>
+      ${reasonsBlock(u.reasons, u.status)}
       <table><tr><th>square</th><th>μ</th><th>σ</th><th>SNR</th><th>ΔSNR</th><th></th></tr>
       ${rows}</table>
       <p class="hint">tolerance |ΔSNR| ≤ ${u.tolerance_pct}%</p></div>`);
+  }
+
+  /* geometry + field alignment had no card at all, so a "fail" overall could
+     come from a test the user could not see */
+  const gm = res.geometry || {};
+  if (gm.dimension_status || gm.field_status) {
+    const d = gm.dimensions || {};
+    cards.push(`<div class="card">
+      <h3>Geometry &amp; dimensions ${chip(gm.dimension_status)}</h3>
+      ${reasonsBlock(gm.dimension_reasons, gm.dimension_status)}
+      <div class="kv">
+        <div>mean side</div><div>${fmt(d.mean_side_mm)} mm</div>
+        <div>deviation</div><div>${fmt(d.dev_from_nominal_pct)} %</div>
+      </div>
+      <h3 style="margin-top:12px">Field alignment ${chip(gm.field_status)}</h3>
+      ${reasonsBlock(gm.field_reasons, gm.field_status)}
+    </div>`);
   }
 
   const base = r.baseline ?

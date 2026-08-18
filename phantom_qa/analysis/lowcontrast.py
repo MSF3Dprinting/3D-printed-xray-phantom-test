@@ -146,5 +146,76 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
     cnrs = [r["abs_cnr"] for r in rows]
     increasing = sum(1 for i in range(len(cnrs) - 1) if cnrs[i + 1] >= cnrs[i])
     ordering_ok = increasing >= max(len(cnrs) - 3, 1)
+    weak = [r["id"] for r in rows if abs(r["cnr"]) < 0.2]
+    if ordering_ok:
+        reasons = ["|CNR| increases with the design order of the circles, so "
+                   "the grid is on the right objects."]
+    else:
+        order = ' < '.join(r['id'] for r in rows)
+        reasons = [f"|CNR| does not increase with the circles' design order "
+                   f"({order} should run weakest to strongest). The usual "
+                   f"cause is that the block or the circle grid is not on the "
+                   f"printed objects — reposition the block in step C."]
+    if weak:
+        reasons.append(f"Very low contrast on {', '.join(weak)} "
+                       f"(|CNR| < 0.2): either genuinely at the limit of "
+                       f"detectability, or the ROI is off the disc.")
     return {"rows": rows, "ordering_ok": bool(ordering_ok),
-            "status": "pass" if ordering_ok else "warn"}
+            "status": "pass" if ordering_ok else "warn",
+            "reasons": reasons, "affected": weak}
+
+
+def circles_for_block(ctx: Ctx, center_mm, angle_deg: float,
+                      shift_mm=(0.0, 0.0)) -> list[dict]:
+    """Rebuild the eight circle ROIs from a block position and angle.
+
+    The circles sit on a rigid grid in the block's own frame, so once the user
+    has placed the block rectangle correctly every circle follows from it. This
+    is what makes the block draggable and rotatable as a whole: one correction
+    instead of eight."""
+    lc = ctx.pdef.lowcontrast
+    a = np.deg2rad(float(angle_deg))
+    u = np.array([np.cos(a), np.sin(a)])
+    v = np.array([-np.sin(a), np.cos(a)])
+    dia = lc["circle_dia_mm"]
+    roi_dia = lc.get("roi_dia_mm", 7.0)
+    bg_in = lc.get("bg_inner_dia_mm", 12.0)
+    bg_out = lc.get("bg_outer_dia_mm", 16.0)
+    du, dv = float(shift_mm[0]), float(shift_mm[1])
+
+    out = []
+    for c in lc["circles"]:
+        cc = (np.asarray(center_mm, float) + (c["u_mm"] + du) * u
+              + (c["v_mm"] + dv) * v)
+        out.append({
+            "id": c["id"], "level": c["level"],
+            "roi": circle_roi(ctx, cc, roi_dia, roi_id=f"lowcontrast/{c['id']}"),
+            "bg_roi": annulus_roi(ctx, cc, bg_in, bg_out,
+                                  roi_id=f"lowcontrast/{c['id']}/bg"),
+            "full_circle": circle_roi(ctx, cc, dia,
+                                      roi_id=f"lowcontrast/{c['id']}/outline"),
+        })
+    return out
+
+
+def block_from_corners(ctx: Ctx, corners_px) -> tuple[list, float]:
+    """Centre and angle of the block from four user-clicked corners.
+
+    Click order does not matter: the long axis is taken from the longer pair of
+    opposite edge midpoints, mirroring how the phantom outline is fitted."""
+    pts = np.array([ctx.T.px_to_mm(p) for p in corners_px], float)
+    if len(pts) != 4:
+        raise ValueError("exactly four corners are required")
+    centre = pts.mean(axis=0)
+    ordered = pts[np.argsort(np.arctan2(pts[:, 1] - centre[1],
+                                        pts[:, 0] - centre[0]))]
+    mids = [(ordered[i] + ordered[(i + 1) % 4]) / 2.0 for i in range(4)]
+    axis_a = mids[2] - mids[0]
+    axis_b = mids[3] - mids[1]
+    axis = axis_a if np.linalg.norm(axis_a) >= np.linalg.norm(axis_b) else axis_b
+    angle = float(np.degrees(np.arctan2(axis[1], axis[0])))
+    if angle > 90:
+        angle -= 180
+    if angle < -90:
+        angle += 180
+    return [float(centre[0]), float(centre[1])], angle

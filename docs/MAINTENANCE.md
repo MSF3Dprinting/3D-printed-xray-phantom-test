@@ -226,6 +226,12 @@ Symptoms in Stage B:
 | A group's measured frequency far from its nominal | That block is not the group it has been labelled as |
 | Fewer or more blocks than the definition expects | This build has a different number of groups |
 | Uniformity squares "NOT refined (nominal used)" | The squares were not found; the nominal positions are being used |
+| Step D names rulers "excluded from the scale" | Those ruler probes are not on the printed marks; the mm/px scale rests on the remaining sides |
+| Step D says the scale rests on fewer than two rulers | The scale could not be cross-checked — dimensions are indicative only |
+
+The dimension and per-test reasons in steps D and E name the specific
+measurement that failed and the limit it was compared against; read those first,
+since they distinguish a mis-placed ROI from a genuine detector problem.
 
 ### Working with it now
 
@@ -245,12 +251,18 @@ correcting every scan:
    on the device you will use.
 2. Run each one and note the measured geometry reported in Stage B and D — strip
    angle, block centres and frequencies, block count, low-contrast block centre
-   and angle, wedge extent, uniformity square centres.
+   and angle, wedge extent, uniformity square centres. Correct the placement by
+   hand first (step C) so the values you record come from ROIs that are on the
+   right objects; for the low-contrast grid, place the block by its four corners
+   rather than nudging eight circles.
 3. Copy `msf_v1.json` to a new file, e.g. `msf_v2.json`, bump its `version`, and
    replace the nominal values with the means of your measurements. Record how
    each value was obtained in its `provenance` section, as `msf_v1.json` does.
 4. Check the group list matches that build: the number of line-pair groups, and
    their frequencies **in the order they appear along the strip**.
+   Also check `tolerances.ruler_linearity_rms_max_mm` (default 0.5 mm) still
+   suits the build — it is the limit above which a ruler is judged mis-detected
+   and dropped from the scale.
 5. Re-run the scans and confirm Stage B labels every pattern correctly.
 
 Loading a definition per phantom is not yet exposed in the interface; the

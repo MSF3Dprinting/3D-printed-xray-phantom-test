@@ -80,6 +80,9 @@ VALIDATION_LABELS = {
 
 
 class Store:
+    #: JSON blob columns that :meth:`mutate_json` is allowed to touch.
+    JSON_FIELDS = frozenset({"meta", "reg", "geometry", "results", "audit"})
+
     def __init__(self, root: str):
         self.root = root
         os.makedirs(os.path.join(root, "data", "uploads"), exist_ok=True)
@@ -125,6 +128,62 @@ class Store:
                 yield c
         finally:
             c.close()
+
+    @contextlib.contextmanager
+    def write_transaction(self):
+        """A serialised read-modify-write.
+
+        BEGIN IMMEDIATE takes the write lock up front, so two requests editing
+        the same record queue instead of overlapping. Without it, read-whole-
+        blob / modify / write-whole-blob silently discards whichever change
+        was read first — a user moves an ROI and it springs back."""
+        c = self._connect()
+        c.isolation_level = None                 # we drive the transaction
+        try:
+            c.execute("BEGIN IMMEDIATE")
+            yield c
+            c.execute("COMMIT")
+        except Exception:
+            try:
+                c.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+        finally:
+            c.close()
+
+    def mutate_json(self, aid: str, field: str, fn):
+        """Apply ``fn`` to one stored JSON blob atomically.
+
+        ``fn`` receives the decoded value, mutates it **in place**, and may
+        return a result which is passed back to the caller. A value returned
+        by ``fn`` is not stored — only the in-place mutation is."""
+        # The column name cannot be a bound parameter, so it is interpolated.
+        # Every caller passes a literal today; the whitelist keeps it that way
+        # if one ever starts forwarding a request field.
+        if field not in self.JSON_FIELDS:
+            raise ValueError(f"not a mutable JSON field: {field!r}")
+        col = f"{field}_json"
+        with self.write_transaction() as c:
+            row = c.execute(f"SELECT {col} FROM analyses WHERE id=?",
+                            (aid,)).fetchone()
+            if row is None:
+                raise KeyError(aid)
+            value = json.loads(row[0]) if row[0] else None
+            out = fn(value)
+            c.execute(f"UPDATE analyses SET {col}=? WHERE id=?",
+                      (json.dumps(value), aid))
+            return out
+
+    def find_by_sha256(self, sha256: str, exclude_id: str | None = None):
+        """Analyses already holding this exact file."""
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT id, created_at, acquired_at, source_name, site, phantom,"
+                " status, validation_status FROM analyses"
+                " WHERE sha256=? AND id != ? ORDER BY created_at",
+                (sha256, exclude_id or "")).fetchall()
+        return [dict(r) for r in rows]
 
     def checkpoint(self):
         """Fold the write-ahead log back into the main database file.

@@ -43,6 +43,20 @@ appear in any grouped trend.
 
 Labels can be changed later at any time — see *Correcting the identification*.
 
+**A file that has already been analysed.** Every upload is fingerprinted with
+its SHA-256. If the same file is uploaded twice the program stops and shows the
+existing record instead of quietly creating a second one, because a duplicate
+would appear twice in History and count twice in every trend. Three choices are
+offered:
+
+| Choice | Effect |
+|---|---|
+| **Open the existing analysis** | Go to the record that already holds this file |
+| **Analyse again anyway** | Deliberately create a second record — for a re-analysis after a code or definition change |
+| **Cancel** | Do nothing |
+
+Re-uploading a file whose record was deleted is allowed and creates a new one.
+
 ### A — Registration
 
 The program locates the phantom, resolves its orientation (any rotation,
@@ -61,6 +75,15 @@ squares, the rulers and the field edges.
 
 Confirm each label sits on the correct object. Zoom in — a mislabelled group or
 a 180° mix-up must be caught here.
+
+Two ways on from here:
+
+- **Verify measuring points →** continues to step C, where every ROI can be
+  moved and rotated by hand. This is the way on whether or not the automatic
+  labels are right: a wrong pattern is corrected in step C, not by confirming
+  it here.
+- **Back to registration** returns to step A, for when the phantom outline
+  itself was found wrongly and everything downstream inherited the error.
 
 ### C — Measuring points
 
@@ -106,6 +129,26 @@ click the visible field edge on the image.
 
 Dragging a low-contrast circle moves its ring and outline with it.
 
+#### Repositioning the whole low-contrast block
+
+The eight circles sit on a fixed grid inside the block, so when the block as a
+whole is in the wrong place there is no need to drag eight circles. Move the
+block and all eight follow. Three ways, in the block's own panel in step C:
+
+| Action | How |
+|---|---|
+| **Move** | Drag the block rectangle itself (not a circle) |
+| **Rotate** | **Set block angle…** and type the angle in degrees |
+| **Redefine completely** | **Click 4 block corners…** then click the block's four corners on the image, in order around the rectangle |
+
+The four-corner method is the same idea as manual phantom corners in step A and
+is the one to use when the block is both shifted and rotated: the centre and the
+angle are both fitted from the four clicked points.
+
+Any of the three marks the block and all eight circles as manually adjusted, and
+discards the automatic grid refinement — that refinement was a correction to the
+*old* placement and would otherwise pull the circles back off the objects.
+
 ### D — Dimensions
 
 Verification of the millimetre calibration before any measurement depends on it:
@@ -119,6 +162,14 @@ Verification of the millimetre calibration before any measurement depends on it:
 
 Enter the **SID** here (default 1000 mm). Confirming this step locks the
 calibration used by every later number.
+
+**Unusable rulers are excluded.** The mm/px scale comes from the measured 5 mm
+mark pitch, so a ruler that was not actually found would corrupt every length in
+the report. A ruler whose marks are not evenly spaced — residual RMS above
+`ruler_linearity_rms_max_mm`, 0.5 mm by default — is dropped from the scale and
+named in the reasons. If fewer than two usable rulers remain the scale cannot be
+cross-checked, and the step says so: treat the dimensions as indicative and fix
+the ruler probes in step C before relying on them.
 
 ### E — Analysis
 
@@ -134,6 +185,21 @@ All tests are computed from the confirmed geometry:
 - **Uniformity** — SNR per square and ΔSNR against the mean, tolerance ±20 %.
 - **Field alignment** — deviation from each side's central long line, tolerance
   ±2 % of SID.
+
+#### Why a test passed, warned or failed
+
+Every test states its reasoning next to its result, so a bad result can be
+acted on rather than merely noted. A green box gives the reason the test
+passed; an amber box lists what went wrong, in the test's own terms, with the
+measured value, the limit it was compared against, and where to go to correct
+it. Line patterns additionally give a per-group reason so it is clear *which*
+group is at fault.
+
+Most reasons distinguish a genuine detector problem from a placement problem —
+for example, a low-contrast ordering failure says the grid may not be on the
+printed objects and points back to step C, and a non-monotonic wedge says a
+step ROI may be sitting on a boundary. Read the reason before repeating the
+exposure.
 
 ### F — Save and export
 

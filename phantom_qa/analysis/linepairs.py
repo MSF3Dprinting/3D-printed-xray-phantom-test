@@ -515,20 +515,49 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
         prof = _analyze_profile(ctx, g["profile_seg"], g["freq_lp_mm"],
                                 center_mm=g["roi"]["center_mm"])
         pitch_dev = prof.get("pitch_dev_pct")
-        status = "pass"
+        status, reason = "pass", ""
         if pitch_dev is None:
             status = "warn"
+            n_lines = prof.get("n_lines", 0)
+            used = prof.get("used_lines")
+            if n_lines < 4:
+                reason = (f"no line pattern found on the profile — only "
+                          f"{n_lines} peak(s) detected. The ROI is probably not "
+                          f"on the group, or the pattern is not resolved at "
+                          f"this dose/geometry.")
+            elif not used:
+                reason = (f"{n_lines} peaks found but their spacing is too "
+                          f"irregular to fit a line grid, so pitch could not be "
+                          f"measured.")
+            else:
+                reason = "pitch could not be fitted from the profile."
         elif abs(pitch_dev) > tol_pitch:
             status = "fail"
+            reason = (f"measured pitch {prof['measured_pitch_mm']:.4f} mm is "
+                      f"{pitch_dev:+.1f}% from the nominal "
+                      f"{prof['nominal_pitch_mm']:.4f} mm "
+                      f"(tolerance +/-{tol_pitch:g}%). Either this ROI is on a "
+                      f"different group than its label, or the phantom differs "
+                      f"from the definition.")
+        else:
+            reason = (f"pitch {prof['measured_pitch_mm']:.4f} mm, "
+                      f"{pitch_dev:+.1f}% from nominal (within "
+                      f"+/-{tol_pitch:g}%).")
         rows.append({
             "id": g["id"], "freq_lp_mm": g["freq_lp_mm"],
             "mean": s["mean"], "std": s["std"], "n": s["n"],
-            "linearity": prof, "status": status,
+            "linearity": prof, "status": status, "reason": reason,
         })
     overall = "pass"
     if any(r["status"] == "fail" for r in rows):
         overall = "fail"
     elif any(r["status"] == "warn" for r in rows):
         overall = "warn"
-    return {"rows": rows, "status": overall,
-            "pitch_tolerance_pct": tol_pitch}
+    bad = [r["id"] for r in rows if r["status"] != "pass"]
+    reasons = [f"{r['id']}: {r['reason']}" for r in rows
+               if r["status"] != "pass" and r["reason"]]
+    if overall == "pass":
+        reasons = ["every group's measured pitch is within "
+                   f"+/-{tol_pitch:g}% of nominal."]
+    return {"rows": rows, "status": overall, "reasons": reasons,
+            "affected": bad, "pitch_tolerance_pct": tol_pitch}

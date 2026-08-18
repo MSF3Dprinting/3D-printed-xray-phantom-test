@@ -8,6 +8,7 @@ from __future__ import annotations
 import html as _html
 import io
 import logging
+import math
 import os
 import time
 
@@ -16,9 +17,10 @@ html_escape = _html.escape
 import numpy as np
 from fastapi import (FastAPI, File, Form, HTTPException, Request, Response,
                      UploadFile)
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, conlist, field_validator
 
 from .. import ALGO_VERSION
 from .. import ingest, pipeline
@@ -181,6 +183,24 @@ async def security_middleware(request: Request, call_next):
     if path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
     return response
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error(request: Request, exc: RequestValidationError):
+    """Return a clean 422 instead of echoing the rejected input back.
+
+    FastAPI's default handler puts the offending value in the response. Two
+    problems with that: a body containing NaN or Infinity (legal to Python's
+    JSON parser, not to its encoder) makes serialising the error itself fail,
+    turning a 422 into a 500; and reflecting arbitrary client input into a
+    response is a habit worth not having. Only the field location and the
+    message go back."""
+    detail = [{"loc": [str(p) for p in e.get("loc", [])],
+               "msg": str(e.get("msg", "invalid value")),
+               "type": str(e.get("type", ""))}
+              for e in exc.errors()]
+    log.info("422 %s %s: %s", request.method, _app_path(request), detail)
+    return JSONResponse(status_code=422, content={"detail": detail})
 
 
 def _set_auth_cookies(response, username: str, csrf: str) -> None:
@@ -381,7 +401,8 @@ def _do_register(aid: str, corners_hint=None):
 @app.post("/api/analyses")
 async def upload(request: Request, file: UploadFile = File(...),
                  site: str = Form(""), phantom: str = Form(""),
-                 operator: str = Form(""), notes: str = Form("")):
+                 operator: str = Form(""), notes: str = Form(""),
+                 allow_duplicate: bool = Form(False)):
     user, client = _current_user(request), _client_key(request)
     data = await file.read()
     try:
@@ -394,6 +415,24 @@ async def upload(request: Request, file: UploadFile = File(...),
         raise HTTPException(400, f"Could not read file: {e}")
     labels = {"site": site, "phantom": phantom,
               "operator": operator, "notes": notes}
+
+    # The same file analysed twice produces two records that look identical in
+    # History and double-count in any trend. The SHA-256 is already computed,
+    # so say so instead of silently creating the duplicate.
+    if not allow_duplicate:
+        dupes = []
+        for scan in scans:
+            dupes.extend(store.find_by_sha256(scan.sha256))
+        if dupes:
+            audit("upload", user=user, client=client, outcome="duplicate",
+                  filename=file.filename, existing=[d["id"] for d in dupes])
+            log.info("upload rejected as duplicate of %s",
+                     [d["id"] for d in dupes])
+            return JSONResponse(status_code=409, content=pipeline.to_jsonable({
+                "detail": "This file has already been analysed.",
+                "duplicate_of": dupes,
+            }))
+
     created = []
     for scan in scans:
         aid = store.new_analysis(scan, data, ingest.protocol_signature(scan.meta),
@@ -578,54 +617,59 @@ def _seg_angle(seg: dict):
 
 
 @app.post("/api/analyses/{aid}/roi")
-def move_roi(aid: str, body: RoiMove):
-    rec = store.get(aid)
-    if not rec or not rec.get("geometry"):
-        raise HTTPException(400, "no geometry yet")
+def move_roi(aid: str, body: RoiMove, request: Request):
+    """Move one ROI and everything attached to it.
+
+    The whole edit happens inside one write transaction. The geometry is a
+    single JSON blob, so a plain read-modify-write would let two overlapping
+    edits discard one another — the user moves an ROI, it springs back, and
+    moving a different one appears to 'fix' it."""
     ctx = _ctx(aid)
-    geom = rec["geometry"]
-    node = _walk_find(geom, body.roi_id)
-    if node is None:
-        raise HTTPException(404, f"ROI {body.roi_id} not found")
     from ..analysis.common import (roi_center_mm, roi_translate_mm,
                                    stats_for_roi)
 
-    old_center = roi_center_mm(node)
-    updated = roi_center_from_px(ctx, node, body.center_px)
-    node.clear()
-    node.update(pipeline.to_jsonable(updated))
-    node["manually_adjusted"] = True
-    node["auto_center_mm"] = node.get("auto_center_mm", old_center)
-    new_center = roi_center_mm(node)
-    dx = new_center[0] - old_center[0]
-    dy = new_center[1] - old_center[1]
+    def edit(geom):
+        if not geom:
+            raise HTTPException(400, "no geometry yet")
+        node = _walk_find(geom, body.roi_id)
+        if node is None:
+            raise HTTPException(404, f"ROI {body.roi_id} not found")
 
-    # Everything attached to this ROI has to travel with it, or the numbers
-    # keep coming from where the companion was left behind. Found by prefix so
-    # a new companion cannot be forgotten here.
-    companions = _walk_children(geom, body.roi_id)
-    changed = [node]
-    for comp in companions:
-        if comp.get("type") == "segment" and body.roi_id.startswith("linepairs/"):
-            # the profile is re-derived at the new position, so its direction is
-            # re-measured against the pattern that is actually there now
-            fresh = linepairs.profile_for_center(
-                ctx, new_center,
-                (rec["geometry"].get("linepairs") or {}).get("roi_size_mm", 12.6),
-                comp.get("id", ""),
-                fallback_dir_deg=_seg_angle(comp))
-        else:
-            fresh = roi_translate_mm(ctx, comp, dx, dy)
-        comp.clear()
-        comp.update(pipeline.to_jsonable(fresh))
-        changed.append(comp)
+        old_center = roi_center_mm(node)
+        updated = roi_center_from_px(ctx, node, body.center_px)
+        node.clear()
+        node.update(pipeline.to_jsonable(updated))
+        node["manually_adjusted"] = True
+        node["auto_center_mm"] = node.get("auto_center_mm", old_center)
+        new_center = roi_center_mm(node)
+        dx = new_center[0] - old_center[0]
+        dy = new_center[1] - old_center[1]
 
-    stats = stats_for_roi(ctx, node)
-    store.update(aid, geometry=geom)
+        # Companions are found by id prefix, so a new one cannot be forgotten.
+        changed = [node]
+        for comp in _walk_children(geom, body.roi_id):
+            if comp.get("type") == "segment" and body.roi_id.startswith("linepairs/"):
+                fresh = linepairs.profile_for_center(
+                    ctx, new_center,
+                    (geom.get("linepairs") or {}).get("roi_size_mm", 12.6),
+                    comp.get("id", ""), fallback_dir_deg=_seg_angle(comp))
+            else:
+                fresh = roi_translate_mm(ctx, comp, dx, dy)
+            comp.clear()
+            comp.update(pipeline.to_jsonable(fresh))
+            changed.append(comp)
+        return old_center, new_center, node, changed
+
+    try:
+        old_center, new_center, node, changed = store.mutate_json(
+            aid, "geometry", edit)
+    except KeyError:
+        raise HTTPException(404, "analysis not found")
+
     store.audit(aid, "C", "roi moved",
-                {"roi": body.roi_id, "from_mm": old_center,
-                 "to_mm": new_center})
-    return pipeline.to_jsonable({"roi": node, "stats": stats,
+                {"roi": body.roi_id, "from_mm": old_center, "to_mm": new_center})
+    return pipeline.to_jsonable({"roi": node,
+                                 "stats": stats_for_roi(ctx, node),
                                  "changed": changed})
 
 
@@ -639,46 +683,131 @@ def rotate_roi(aid: str, body: RoiRotate, request: Request):
     """Set an ROI's phantom-frame angle.
 
     Needed when automatic placement gets the orientation wrong on a phantom
-    that differs from the definition: the user aligns the square with the
-    pattern by hand."""
-    rec = store.get(aid)
-    if not rec or not rec.get("geometry"):
-        raise HTTPException(400, "no geometry yet")
+    that differs from the definition."""
     ctx = _ctx(aid)
-    geom = rec["geometry"]
-    node = _walk_find(geom, body.roi_id)
-    if node is None:
-        raise HTTPException(404, f"ROI {body.roi_id} not found")
-
     from ..analysis.common import roi_angle_deg, roi_rotate, stats_for_roi
-    old_angle = roi_angle_deg(node)
-    if old_angle is None:
-        raise HTTPException(400, "this ROI has no orientation to set")
 
-    rotated = roi_rotate(ctx, node, body.angle_deg)
-    node.clear()
-    node.update(pipeline.to_jsonable(rotated))
-    node["manually_adjusted"] = True
-    if node.get("auto_angle_deg") is None:
-        node["auto_angle_deg"] = old_angle
+    def edit(geom):
+        if not geom:
+            raise HTTPException(400, "no geometry yet")
+        node = _walk_find(geom, body.roi_id)
+        if node is None:
+            raise HTTPException(404, f"ROI {body.roi_id} not found")
+        old_angle = roi_angle_deg(node)
+        if old_angle is None:
+            raise HTTPException(400, "this ROI has no orientation to set")
 
-    changed = [node]
-    # a rotated profile segment is the user overriding the measured direction
-    for comp in _walk_children(geom, body.roi_id):
-        if comp.get("type") == "segment":
-            fresh = roi_rotate(ctx, comp, body.angle_deg)
-            comp.clear()
-            comp.update(pipeline.to_jsonable(fresh))
-            comp["manually_adjusted"] = True
-            changed.append(comp)
+        rotated = roi_rotate(ctx, node, body.angle_deg)
+        node.clear()
+        node.update(pipeline.to_jsonable(rotated))
+        node["manually_adjusted"] = True
+        if node.get("auto_angle_deg") is None:
+            node["auto_angle_deg"] = old_angle
 
-    stats = stats_for_roi(ctx, node)
-    store.update(aid, geometry=geom)
+        changed = [node]
+        # rotating the square is the user overriding the measured direction
+        for comp in _walk_children(geom, body.roi_id):
+            if comp.get("type") == "segment":
+                fresh = roi_rotate(ctx, comp, body.angle_deg)
+                comp.clear()
+                comp.update(pipeline.to_jsonable(fresh))
+                comp["manually_adjusted"] = True
+                changed.append(comp)
+        return old_angle, node, changed
+
+    try:
+        old_angle, node, changed = store.mutate_json(aid, "geometry", edit)
+    except KeyError:
+        raise HTTPException(404, "analysis not found")
+
     store.audit(aid, "C", "roi rotated",
                 {"roi": body.roi_id, "from_deg": old_angle,
                  "to_deg": body.angle_deg})
-    return pipeline.to_jsonable({"roi": node, "stats": stats,
+    return pipeline.to_jsonable({"roi": node,
+                                 "stats": stats_for_roi(ctx, node),
                                  "changed": changed})
+
+
+class BlockPlace(BaseModel):
+    """Reposition the low-contrast block as a whole.
+
+    Either give centre+angle (drag / rotate) or four clicked corners. The
+    shapes are pinned here so a malformed body is a 400 from the model rather
+    than a 500 from numpy further down."""
+    center_px: conlist(float, min_length=2, max_length=2) | None = None
+    angle_deg: float | None = None
+    corners_px: conlist(
+        conlist(float, min_length=2, max_length=2),
+        min_length=4, max_length=4) | None = None
+
+    @field_validator("center_px", "corners_px")
+    @classmethod
+    def _finite(cls, v):
+        if v is None:
+            return v
+        flat = v if isinstance(v[0], float) else [c for p in v for c in p]
+        if not all(math.isfinite(c) for c in flat):
+            raise ValueError("coordinates must be finite")
+        return v
+
+    @field_validator("angle_deg")
+    @classmethod
+    def _finite_angle(cls, v):
+        if v is not None and not math.isfinite(v):
+            raise ValueError("angle must be finite")
+        return v
+
+
+@app.post("/api/analyses/{aid}/lowcontrast_block")
+def place_lowcontrast_block(aid: str, body: BlockPlace, request: Request):
+    """Move or rotate the whole low-contrast block; the eight circles follow.
+
+    The circles sit on a rigid grid inside the block, so correcting the block
+    once is far better than dragging eight circles individually."""
+    ctx = _ctx(aid)
+    from ..analysis import lowcontrast
+    from ..analysis.common import rect_roi
+
+    def edit(geom):
+        if not geom or not geom.get("lowcontrast"):
+            raise HTTPException(400, "no low-contrast geometry yet")
+        lcg = geom["lowcontrast"]
+        block = lcg.get("block") or {}
+
+        if body.corners_px:
+            if len(body.corners_px) != 4:
+                raise HTTPException(400, "exactly four corners are required")
+            centre, angle = lowcontrast.block_from_corners(ctx, body.corners_px)
+        else:
+            centre = (list(ctx.T.px_to_mm(body.center_px))
+                      if body.center_px else list(block.get("center_mm", [0, 0])))
+            angle = (float(body.angle_deg) if body.angle_deg is not None
+                     else float(block.get("angle_deg", 0.0)))
+
+        size = block.get("size_mm") or ctx.pdef.lowcontrast["size_mm"]
+        lcg["block"] = pipeline.to_jsonable(
+            rect_roi(ctx, centre, size, angle, roi_id="lowcontrast/block"))
+        lcg["block"]["manually_adjusted"] = True
+        lcg["angle_deg"] = angle
+        # the grid shift was a refinement of the OLD placement; drop it
+        lcg["grid_shift_mm"] = [0.0, 0.0]
+        lcg["circles"] = pipeline.to_jsonable(
+            lowcontrast.circles_for_block(ctx, centre, angle))
+        for c in lcg["circles"]:
+            for k in ("roi", "bg_roi", "full_circle"):
+                c[k]["manually_adjusted"] = True
+        return centre, angle, lcg
+
+    try:
+        centre, angle, lcg = store.mutate_json(aid, "geometry", edit)
+    except KeyError:
+        raise HTTPException(404, "analysis not found")
+
+    store.audit(aid, "C", "low-contrast block placed",
+                {"center_mm": centre, "angle_deg": angle,
+                 "by": "corners" if body.corners_px else "drag"})
+    return pipeline.to_jsonable({"lowcontrast": lcg,
+                                 "center_mm": centre, "angle_deg": angle})
 
 
 @app.get("/api/analyses/{aid}/roi_stats")

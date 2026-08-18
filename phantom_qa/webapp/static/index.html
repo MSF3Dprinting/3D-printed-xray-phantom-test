@@ -65,6 +65,26 @@
   </div>
 </div>
 
+<div id="dup-backdrop" class="hidden">
+  <div id="dup-card">
+    <h3>This file has already been analysed</h3>
+    <p class="hint">The uploaded file is byte-for-byte identical to an existing
+      record. Analysing it again would add a second row to History and count
+      twice in every trend.</p>
+    <div class="card"><div class="kv">
+      <div>Analysis</div><div class="mono" id="dup-id"></div>
+      <div>Site / phantom</div><div id="dup-who"></div>
+      <div>Recorded</div><div id="dup-when"></div>
+      <div>Result</div><div id="dup-status"></div>
+    </div></div>
+    <div class="modal-actions">
+      <button id="dup-open" class="primary">Open the existing analysis</button>
+      <button id="dup-again" class="secondary">Analyse again anyway</button>
+      <button id="dup-cancel" class="secondary">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <div id="val-backdrop" class="hidden">
   <div id="val-card">
     <h3>Validation — administrator sign-off</h3>

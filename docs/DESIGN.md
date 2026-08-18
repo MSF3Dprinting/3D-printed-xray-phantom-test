@@ -95,6 +95,50 @@ stored independently: the square is the handle, so the profile is rebuilt at the
 new centre and its direction re-measured against the pattern actually there. A
 direction the user sets by hand is marked as such and no longer overridden.
 
+## A rigid group moves as one
+
+The eight low-contrast circles are not independent measurements that happen to
+sit near each other — they are a fixed grid printed inside one block. When the
+block is found in the wrong place, all eight are wrong by the same amount, and
+correcting them one at a time is eight chances to introduce a different error.
+
+So the block itself is a handle: drag it, set its angle, or click its four
+corners, and the circles are re-derived from the block frame. The four-corner
+path mirrors manual phantom corners in registration, because it solves the same
+problem — position and rotation are both wrong and clicking the corners states
+both at once.
+
+Placing the block discards the automatic grid-shift refinement. That refinement
+was fitted to the previous placement; carrying it over would drag the circles
+back off the objects the user just aimed at.
+
+## Edits are serialised, not last-write-wins
+
+Geometry is one JSON blob per analysis. Read-modify-write on a shared blob loses
+whichever edit was read first, and the symptom is confusing rather than obvious:
+an ROI springs back to where it was, and moving a *different* ROI appears to fix
+it — because that request re-read fresher state.
+
+Every geometry edit therefore runs inside a single `BEGIN IMMEDIATE`
+transaction (`Store.mutate_json`), which takes the SQLite write lock before
+reading. Overlapping edits queue instead of overlapping. The cost is a held
+write lock for the duration of one edit, which is microseconds of JSON work; the
+benefit is that the geometry the user sees is the geometry that was saved.
+
+## The same file is not analysed twice by accident
+
+Uploads are fingerprinted with SHA-256, and a file already present is refused
+with the existing record rather than silently duplicated: a duplicate shows
+twice in History and counts twice in every trend, quietly distorting the
+statistics it feeds.
+
+The refusal offers three choices — open the existing record, deliberately
+analyse again, or cancel — as three buttons rather than a two-way confirm. With
+two buttons, "cancel" would have to mean "create the duplicate", so dismissing
+the dialog would cause the exact outcome the check exists to prevent. Deliberate
+re-analysis remains available because it is legitimate after an algorithm or
+definition change.
+
 ## Manual correction is a first-class path
 
 Automatic placement is seeded from the stored phantom definition, so a

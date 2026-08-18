@@ -143,6 +143,7 @@ ROUTES = [
     ("POST", "/api/analyses/{aid}/propose",        "user"),
     ("POST", "/api/analyses/{aid}/roi",            "user"),
     ("POST", "/api/analyses/{aid}/roi_rotate",     "user"),
+    ("POST", "/api/analyses/{aid}/lowcontrast_block", "user"),
     ("POST", "/api/analyses/{aid}/compute_preview", "user"),
     ("POST", "/api/analyses/{aid}/field_edge",     "user"),
     ("POST", "/api/analyses/{aid}/confirm",        "user"),

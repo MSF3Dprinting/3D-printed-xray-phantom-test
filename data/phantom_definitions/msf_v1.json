@@ -298,7 +298,8 @@
     "wedge_r2_min": 0.85,
     "dim_dev_pct": 1.0,
     "linepair_pitch_dev_pct": 10.0,
-    "constancy_pct": 20.0
+    "constancy_pct": 20.0,
+    "ruler_linearity_rms_max_mm": 0.5
   },
   "provenance": {
     "calibrated_from": [

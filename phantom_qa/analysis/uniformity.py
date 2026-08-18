@@ -90,8 +90,21 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
         r["dmean_pct"] = 100.0 * (r["mean"] - mean_avg) / mean_avg
         r["status"] = "pass" if abs(r["dsnr_pct"]) <= tol else "fail"
         worst = max(worst, abs(r["dsnr_pct"]))
+    status = "pass" if worst <= tol else "fail"
+    bad = [r for r in rows if r["status"] != "pass"]
+    if status == "pass":
+        reasons = [f"every square is within +/-{tol:g}% of the mean SNR "
+                   f"(worst {worst:.1f}%)."]
+    else:
+        reasons = [f"{r['id']}: SNR {r['snr']:.1f} is {r['dsnr_pct']:+.1f}% from "
+                   f"the scan mean of {snr_avg:.1f} (tolerance +/-{tol:g}%)."
+                   for r in bad]
+        reasons.append("A single deviating corner usually means the ROI is not "
+                       "inside its printed square; a consistent gradient across "
+                       "several means genuine non-uniformity.")
     return {
         "rows": rows, "snr_avg": snr_avg, "mean_avg": mean_avg,
         "max_abs_dsnr_pct": worst, "tolerance_pct": tol,
-        "status": "pass" if worst <= tol else "fail",
+        "status": status, "reasons": reasons,
+        "affected": [r["id"] for r in bad],
     }

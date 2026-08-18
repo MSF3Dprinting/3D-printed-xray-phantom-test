@@ -173,10 +173,26 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
     else:
         status = "pass"
     reasons = []
+    if status == "pass":
+        reasons.append(
+            f"response decreases monotonically over all {len(rows)} steps, "
+            f"dynamic range {dyn_ratio:.1f}x, no step saturated "
+            f"(linear-fit R² {fit['r2']:.3f}).")
     if not monotonic:
-        reasons.append("response is not monotonic across the steps")
+        breaks = [f"S{rows[i]['step']}->S{rows[i+1]['step']}"
+                  for i in range(len(rows) - 1)
+                  if (means[i + 1] - means[i]) * (means[1] - means[0]) < 0]
+        reasons.append(
+            "response is not monotonic across the steps"
+            + (f" (reverses at {', '.join(breaks)})" if breaks else "")
+            + ". A step ROI sitting on the wrong step, or on a boundary, is the "
+              "usual cause — check the wedge ROIs in step C.")
     if any_sat:
-        reasons.append("at least one step is saturated")
+        sat = [f"S{r['step']}" for r in rows if r["saturated"]]
+        reasons.append(
+            f"saturated step(s): {', '.join(sat)} — the value is pinned at the "
+            f"detector limit or the ROI has no variation, so the measurement "
+            f"there is meaningless. Reduce the exposure or check the ROI.")
     if fit["r2"] < tol_r2:
         reasons.append(f"linear-fit R² {fit['r2']:.3f} below {tol_r2:.2f} "
                        f"(shape descriptor only — the phantom's steps are not "

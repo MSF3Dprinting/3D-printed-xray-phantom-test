@@ -279,6 +279,8 @@ curl -sI https://something.example.org/<other-app>/ | head -1
 | API caching | All `/api/` responses are `Cache-Control: no-store` |
 | Attack surface | `/docs`, `/redoc` and the OpenAPI schema are disabled |
 | Error handling | Unhandled exceptions return a bare 500 with no traceback. A corrupt or missing stored file returns 422 or 410 with an explanation |
+| Request validation | Malformed request bodies return 422 with the field location and message only — the rejected value is never echoed back |
+| Duplicate uploads | A file whose SHA-256 already exists is refused with 409 unless the operator explicitly confirms a re-analysis |
 | Deletion | Administrator password plus typing the analysis id; throttled; disabled entirely when unconfigured |
 | Validation | Administrator password; records the approver's name and comment |
 | Integrity | SHA-256 per analysis, re-checked in every report |

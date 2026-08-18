@@ -58,12 +58,29 @@ rotation from the image of the +x axis.
 reads 5.000 mm: the transform scale is anchored to the printed pitch, not to
 DICOM metadata. Per scan:
 
-- `pitch_measured_mm` — mean regression slope of the six ruler-line positions
-  per side.
+- `pitch_measured_mm` — mean regression slope of the six ruler-line positions,
+  over the sides that pass the quality gate below.
 - `k = 5.0 / pitch_measured` — a residual per-scan correction. All absolute
   dimensions are reported as (transform mm × k).
 - A cross-check table compares the pitch-anchored `absolute_mm_per_px` with the
   DICOM `ImagerPixelSpacing` (detector plane) and `PixelSpacing`.
+
+**Ruler quality gate.** Because `k` multiplies every reported length, one ruler
+that was not actually found corrupts the whole report. A side is admitted to the
+mean only if its mark positions are evenly spaced — linearity residual RMS
+≤ `ruler_linearity_rms_max_mm` (0.5 mm; the reference scans sit below 0.25 mm).
+Rejected sides are listed in `scale.rulers_rejected` and named in the dimension
+reasons. Two admitted sides are required for `scale.reliable`; below that the
+scale cannot be cross-checked and the results say so rather than presenting a
+number that looks measured. If every side is rejected the mean falls back to all
+detected sides, flagged unreliable — a bad scale that announces itself is more
+useful than no result.
+
+> Measured on a scan from a different X-ray unit, three of four rulers were
+> mis-detected (residual RMS 1.2–2.0 mm against 0.02 mm for the good side) and
+> outvoted the one good ruler, reporting the 300 mm phantom as 232.7 mm. With
+> the gate the same scan reports 293.1 mm and flags the scale as resting on a
+> single ruler.
 
 On the reference scans the phantom face sits at magnification ≈ 1.042 relative
 to the detector plane (0.1419 against 0.148 mm/px), because the phantom face
@@ -81,7 +98,8 @@ corner-fit residuals.
 
 **Pitch and linearity.** Linear regression of position against index per ruler
 gives the pitch (nominal 5.0 mm), the per-line residuals, and their RMS
-(`linearity_rms_mm`).
+(`linearity_rms_mm`). The RMS is also the admission test for the scale chain
+above; `reliable` on each ruler row records the outcome.
 
 **Dimensions.** Corner-to-corner distances in calibrated millimetres for four
 sides and both diagonals, against the assumed nominal side of 300.0 mm; plus
@@ -262,6 +280,26 @@ the same protocol signature, with a default band of ±20 % shown in trends.
 Absolute values in processed radiographs are not proportional to dose. Comparing
 across protocol signatures is possible but the interface keeps the groups
 separate deliberately.
+
+### Reasons
+
+Every test returns a `reasons` list alongside its status, and the interface and
+the report render it next to the result. A status on its own tells an operator
+that something is wrong but not what to do about it, which is the difference
+between a usable QA tool and a number to be ignored.
+
+| Field | Where |
+|---|---|
+| `reasons` | `linepairs`, `lowcontrast`, `uniformity`, `wedge` |
+| `reason` (per group) | each row of `linepairs.rows` |
+| `dimension_reasons`, `field_reasons` | `geometry` |
+
+A reason states the measured value, the limit it was compared against, and —
+where the two are distinguishable — whether the cause is more likely the
+detector or the ROI placement, naming the step where it can be corrected. A
+passing test explains why it passed, so a pass that rests on a mis-placed ROI
+is still visible. Reasons are generated from the same numbers as the status;
+they are not a separate judgement and cannot disagree with it.
 
 ---
 
