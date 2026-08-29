@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, conlist, field_validator
 
 from .. import ALGO_VERSION
-from .. import ingest, pipeline
+from .. import ingest, layout_profile, pipeline
 from ..analysis import linepairs
 from ..analysis.common import roi_center_from_px
 from ..comparison_report import build_comparison_report
@@ -35,8 +35,14 @@ from ..report import build_report
 from ..security import (CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, SharedThrottle,
                         csrf_ok, issue_session, new_csrf_token, read_session,
                         verify_password)
-from ..store import (VALIDATION_LABELS, VALIDATION_STATES, Store, csv_export,
-                     flatten_results, wide_csv_export)
+from ..store import (VALIDATION_LABELS, VALIDATION_STATES, Store,
+                     acquisition_flag, csv_export, flatten_results,
+                     wide_csv_export)
+
+#: A deletion reason short enough to be meaningless is the same as none at all,
+#: and the audit log is the only record of why data was destroyed.
+MIN_DELETE_REASON_CHARS = 5
+MAX_DELETE_REASON_CHARS = 500
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 cfg = get_config()
@@ -64,9 +70,24 @@ admin_throttle = SharedThrottle(store.db_path, "admin",
                                 max(cfg.max_login_attempts // 2, 3),
                                 cfg.lockout_minutes)
 
+# Per-process caches: under gunicorn each worker has its own copy, so nothing
+# here may be treated as authoritative. _regs in particular is keyed by the
+# stored registration itself, not by the analysis id — otherwise a worker that
+# served an earlier request keeps handing out a transform that a /register on
+# another worker has since replaced, and every pixel coordinate derived from it
+# would be wrong.
 _scans: dict[str, ingest.ScanData] = {}       # id -> ScanData cache
-_regs: dict[str, Registration] = {}
+_regs: dict[tuple, Registration] = {}         # (id, reg fingerprint) -> Registration
 _img_cache: dict[tuple, bytes] = {}
+
+
+def _forget(aid: str):
+    """Drop every cached artefact of one analysis in THIS worker."""
+    _scans.pop(aid, None)
+    for key in [k for k in _regs if k[0] == aid]:
+        _regs.pop(key, None)
+    for key in [k for k in _img_cache if k[0] == aid]:
+        _img_cache.pop(key, None)
 
 
 # ------------------------------------------------------------- security layer
@@ -324,13 +345,16 @@ def _scan(aid: str) -> ingest.ScanData:
     return match
 
 
-def _reg(aid: str) -> Registration:
-    if aid in _regs:
-        return _regs[aid]
-    rec = store.get(aid)
+def _reg(aid: str, rec: dict | None = None) -> Registration:
+    rec = rec if rec is not None else store.get(aid)
     if rec is None or not rec.get("reg"):
         raise HTTPException(400, "not registered yet")
     r = rec["reg"]
+    # Fingerprint the stored transform, so a re-registration invalidates the
+    # cache in every worker instead of only the one that served it.
+    key = (aid, json_dumps_stable(r.get("transform")))
+    if key in _regs:
+        return _regs[key]
     reg = Registration(
         transform=Transform.from_dict(r["transform"]),
         corners_px=np.asarray(r["corners_px"], float),
@@ -340,16 +364,57 @@ def _reg(aid: str) -> Registration:
         landmarks=r.get("landmarks", {}),
         residual_rms_mm=r.get("residual_rms_mm", float("nan")),
     )
-    _regs[aid] = reg
+    if len(_regs) > 64:
+        _regs.clear()
+    _regs[key] = reg
     return reg
 
 
-def _ctx(aid: str):
+def json_dumps_stable(obj) -> str:
+    import json as _json
+    return _json.dumps(obj, sort_keys=True)
+
+
+def _ctx(aid: str, rec: dict | None = None):
     scan = _scan(aid)
-    rec = store.get(aid)
-    return pipeline.build_ctx(scan, pdef, _reg(aid),
+    rec = rec if rec is not None else store.get(aid)
+    return pipeline.build_ctx(scan, pdef, _reg(aid, rec),
                               {"scan_meta": scan.meta,
                                "sid_mm": rec.get("sid_mm") or 1000.0})
+
+
+def _require_unsigned(rec: dict, what: str):
+    """Refuse to change measurements an administrator has signed off.
+
+    Changing the geometry drops the stored results, because results computed
+    from geometry that no longer exists are worse than none. On a validated
+    analysis that combination is worse still: the ruling, the approver's name
+    and the date all survive while the numbers they refer to are gone, and the
+    record then vanishes from every trend and export, which filter on completed
+    results. The reanalyze CLI already skips signed-off analyses; the web path
+    now does the same. Withdrawing the ruling is one click, and it is recorded."""
+    if (rec.get("validation_status") or "").strip():
+        raise HTTPException(
+            409,
+            f"This analysis has been signed off by "
+            f"{rec.get('validated_by') or 'an administrator'}"
+            + (f" on {rec['validated_at'][:16]}" if rec.get("validated_at") else "")
+            + f", so {what} would change measurements somebody has taken "
+              f"responsibility for. Withdraw the validation first if the "
+              f"analysis really needs to be reworked.")
+
+
+def _roi_stats_or_none(ctx, node):
+    """Statistics for an ROI, or None for shapes that have none.
+
+    Segments (the line-pair profile lines, the wedge axis) carry no area, and
+    stats_for_roi raises on them. Without this guard, rotating a profile line
+    committed the edit and THEN returned a 500, leaving the client convinced
+    the change had failed while the database said otherwise."""
+    from ..analysis.common import stats_for_roi
+    if (node or {}).get("type") not in ("rect", "circle", "annulus"):
+        return None
+    return stats_for_roi(ctx, node)
 
 
 def _display_range(aid: str) -> dict:
@@ -433,6 +498,13 @@ async def upload(request: Request, file: UploadFile = File(...),
                 "duplicate_of": dupes,
             }))
 
+    # The stored layout is looked up once and only advertised here. Applying it
+    # means proposing every pattern first, which is the expensive step and is
+    # thrown away the moment the operator corrects the registration by hand —
+    # so that happens in /propose, at Stage A confirm, not per uploaded image.
+    stored_layout = _profile_summary(
+        store.get_phantom_profile(labels["phantom"]))
+
     created = []
     for scan in scans:
         aid = store.new_analysis(scan, data, ingest.protocol_signature(scan.meta),
@@ -452,26 +524,81 @@ async def upload(request: Request, file: UploadFile = File(...),
             reg = _do_register(aid)
             created.append({"id": aid, "source_name": scan.source_name,
                             "registered": True,
+                            "phantom_profile": stored_layout,
                             "registration": _reg_payload(aid, reg)})
         except Exception as e:
             created.append({"id": aid, "source_name": scan.source_name,
-                            "registered": False, "error": str(e)})
-    return {"analyses": created}
+                            "registered": False, "error": str(e),
+                            "phantom_profile": stored_layout})
+    return {"analyses": created, "phantom_profile": stored_layout}
 
 
 @app.get("/api/analyses")
 def list_analyses(site: str = "", phantom: str = "", signature: str = "",
-                  validation: str = "", completed_only: bool = False):
+                  validation: str = "", completed_only: bool = False,
+                  order: str = "acquired"):
     return {"analyses": store.list_all(site=site or None,
                                        phantom=phantom or None,
                                        signature=signature or None,
                                        validation=validation or None,
-                                       completed_only=completed_only)}
+                                       completed_only=completed_only,
+                                       order_by=order),
+            "order": "uploaded" if order == "uploaded" else "acquired"}
 
 
 @app.get("/api/labels")
 def labels():
     return store.labels()
+
+
+@app.get("/api/phantom_profiles")
+def phantom_profiles():
+    """Every stored measuring-point layout, with how many analyses still use it.
+
+    A layout is dropped automatically when the last analysis carrying its
+    phantom label goes, so a row with n_analyses = 0 should not normally
+    appear; when it does, something deleted analyses outside the store."""
+    return {"profiles": store.list_phantom_profiles()}
+
+
+class ProfileDeleteBody(BaseModel):
+    phantom: str = ""
+    admin_password: str = ""
+    reason: str = ""
+
+
+@app.post("/api/phantom_profiles/forget")
+def forget_phantom_profile(body: ProfileDeleteBody, request: Request):
+    """Discard a phantom's stored layout without touching its analyses.
+
+    Admin-gated for the same reason deletion is: the layout is shared by every
+    future scan of that phantom, so dropping it is a decision about other
+    people's work, not just the caller's."""
+    user, client = _current_user(request), _client_key(request)
+    label = store.profile_key(body.phantom)
+    if not label:
+        raise HTTPException(400, "name the phantom whose layout to forget")
+    if not cfg.deletion_enabled:
+        raise HTTPException(
+            403, "Removing a stored layout requires an administrator password. "
+                 "Set PHANTOMQA_ADMIN_PASSWORD_HASH in .env "
+                 "(python -m phantom_qa.manage set-admin-password).")
+    wait = admin_throttle.locked_for(client)
+    if wait > 0:
+        raise HTTPException(429, f"Too many failed admin attempts. Try again in "
+                                 f"{wait // 60 + 1} min.")
+    if not verify_password(body.admin_password, cfg.admin_password_hash):
+        admin_throttle.record_failure(client)
+        audit("phantom_profile", user=user, client=client, phantom=label,
+              outcome="denied", refusal="bad admin password")
+        raise HTTPException(401, "Incorrect administrator password.")
+    admin_throttle.reset(client)
+    gone = store.delete_phantom_profile(label)
+    audit("phantom_profile", user=user, client=client, phantom=label,
+          outcome="forgotten" if gone else "absent", reason=body.reason)
+    log.warning("stored layout for phantom=%r forgotten by user=%s (%s)",
+                label, user, "removed" if gone else "there was none")
+    return {"ok": True, "deleted": gone, "phantom": label}
 
 
 class LabelBody(BaseModel):
@@ -488,11 +615,20 @@ def set_labels(aid: str, body: LabelBody, request: Request):
         raise HTTPException(404, "not found")
     fields = {k: v for k, v in body.model_dump().items() if v is not None}
     before = {k: rec.get(k) for k in fields}
-    store.set_labels(aid, fields)
-    store.audit(aid, "F", "labels edited", fields)
+    out = store.set_labels(aid, fields)
+    store.audit(aid, "F", "labels edited",
+                {**fields, "layout_deleted": out.get("profile_deleted", False),
+                 "baseline_demoted": out.get("baseline_demoted", False)})
     audit("labels", user=_current_user(request), client=_client_key(request),
-          analysis=aid, before=before, after=fields)
-    return {"ok": True, **fields}
+          analysis=aid, before=before, after=fields,
+          layout_deleted=out.get("profile_deleted", False))
+    return {"ok": True, **fields,
+            # A stored layout belongs to the phantom label. Renaming the last
+            # analysis off a label leaves nothing for that layout to describe,
+            # so it goes — and the operator is told, because it is not obvious.
+            "layout_deleted": out.get("profile_deleted", False),
+            "baseline_demoted": out.get("baseline_demoted", False),
+            "phantom_before": out.get("phantom_before", "")}
 
 
 @app.get("/api/analyses/{aid}")
@@ -512,8 +648,23 @@ def get_analysis(aid: str):
     payload["geometry"] = rec.get("geometry")
     payload["results"] = rec.get("results")
     payload["audit"] = rec.get("audit")
+    payload["acquired_flag"] = acquisition_flag(rec)
+    payload["layout_source"] = rec.get("layout_source") or ""
+    payload["history"] = store.geometry_state(aid)
+    prof = store.get_phantom_profile(rec.get("phantom") or "")
+    payload["phantom_profile"] = _profile_summary(prof)
+    # What a delete would take with it. Shown in the confirmation panel, so an
+    # operator can see that removing this row also forgets the phantom's
+    # measuring-point layout before they agree to it.
+    n_same = store.count_for_phantom(rec.get("phantom") or "")
+    payload["delete_impact"] = {
+        "phantom": store.profile_key(rec.get("phantom") or ""),
+        "analyses_for_phantom": n_same,
+        "is_last_for_phantom": bool(n_same == 1),
+        "layout_would_be_deleted": bool(prof and n_same <= 1),
+    }
     try:
-        payload["registration"] = _reg_payload(aid, _reg(aid))
+        payload["registration"] = _reg_payload(aid, _reg(aid, rec))
     except HTTPException:
         payload["registration"] = None
     return pipeline.to_jsonable(payload)
@@ -548,6 +699,10 @@ class CornersBody(BaseModel):
 
 @app.post("/api/analyses/{aid}/register")
 def re_register(aid: str, body: CornersBody):
+    rec = store.get(aid)
+    if rec is None:
+        raise HTTPException(404, "not found")
+    _require_unsigned(rec, "re-registering the phantom")
     hint = np.asarray(body.corners_px, float) if body.corners_px else None
     try:
         reg = _do_register(aid, corners_hint=hint)
@@ -555,60 +710,138 @@ def re_register(aid: str, body: CornersBody):
         raise HTTPException(400, f"registration failed: {e}")
     store.audit(aid, "A", "re-registered",
                 {"manual_corners": body.corners_px is not None})
-    # geometry proposals depend on the transform -> invalidate
-    store.update(aid, geometry=None, results=None, stage="A")
+    # Geometry proposals are expressed in pixels derived from the transform, so
+    # a new transform invalidates them — and every undo state built on top.
+    store.update(aid, geometry=None, results=None, stage="A", geometry_seq=0)
+    store.clear_geometry_history(aid)
     return _reg_payload(aid, reg)
 
 
+def _profile_summary(prof: dict | None) -> dict | None:
+    if not prof:
+        return None
+    return {"phantom": prof["phantom_key"], "updated_at": prof["updated_at"],
+            "updated_by": prof.get("updated_by") or "",
+            "pdef_version": prof.get("pdef_version") or "",
+            "source_analysis_id": prof.get("source_analysis_id") or "",
+            "n_rois": len((prof.get("layout") or {}).get("rois") or {})}
+
+
+class ProposeBody(BaseModel):
+    #: None means "do what this analysis did last time"; the Stage C reset
+    #: buttons send an explicit true / false.
+    use_profile: bool | None = None
+
+
 @app.post("/api/analyses/{aid}/propose")
-def propose(aid: str):
-    ctx = _ctx(aid)
+def propose(aid: str, body: ProposeBody | None = None, request: Request = None):
+    """Re-detect every measuring point, then optionally replay the phantom's
+    stored layout on top.
+
+    The automatic proposal always runs first, even when a layout is going to be
+    applied: its per-pattern detection flags are the evidence Stage B shows, and
+    they are only meaningful if they came from this scan. The raw proposal is
+    also pinned as undo state 0, which is what "reset to auto-detected" returns
+    to — exactly, rather than by re-detecting and hoping for the same answer."""
+    body = body or ProposeBody()
+    rec = store.get(aid)
+    if rec is None:
+        raise HTTPException(404, "not found")
+    _require_unsigned(rec, "re-detecting the patterns")
+    ctx = _ctx(aid, rec)
     geom = pipeline.propose_all(ctx)
-    store.update(aid, geometry=geom, stage="B")
+    user = _current_user(request) if request is not None else ""
+
+    # seq 0 is the untouched automatic proposal, always.
+    store.set_geometry_baseline(aid, geom, action="propose", user=user)
     store.audit(aid, "B", "proposals generated")
-    return {"geometry": geom}
+
+    want = (body.use_profile if body.use_profile is not None
+            else (rec.get("layout_source") or "") != "auto")
+    prof = store.get_phantom_profile(rec.get("phantom") or "") if want else None
+    applied, check, report = False, None, None
+    if prof:
+        check = layout_profile.layout_agrees(prof["layout"], geom)
+        if check["ok"]:
+            geom, report = layout_profile.apply_layout(ctx, geom, prof["layout"])
+            store.replace_geometry(aid, geom, action="apply_profile", user=user,
+                                   detail={"phantom": prof["phantom_key"]})
+            applied = True
+            store.audit(aid, "B", "stored phantom layout applied",
+                        {"phantom": prof["phantom_key"], **report})
+        else:
+            log.warning("stored layout for phantom=%r refused on analysis=%s: %s",
+                        prof["phantom_key"], aid, check["reason"])
+            store.audit(aid, "B", "stored phantom layout refused",
+                        {"phantom": prof["phantom_key"], **check})
+
+    store.update(aid, stage="B", layout_source=("profile" if applied else "auto"))
+    return pipeline.to_jsonable({
+        "geometry": geom,
+        "layout_source": "profile" if applied else "auto",
+        "profile": _profile_summary(prof),
+        "profile_applied": applied,
+        "profile_report": report,
+        "profile_check": check,
+        "history": store.geometry_state(aid),
+    })
+
+
+def _finite_point(v):
+    """A pixel coordinate pair that numpy can actually use.
+
+    `list[float]` alone accepts [], [1.0] and [1, 2, 3]: the first two reach
+    numpy and raise, giving a 500 for what is plainly a bad request, and a
+    one-element list silently indexes as a coordinate of (1, 1)."""
+    if v is None:
+        return v
+    if len(v) != 2:
+        raise ValueError("expected exactly two coordinates, x and y")
+    if not all(math.isfinite(c) for c in v):
+        raise ValueError("coordinates must be finite")
+    return v
 
 
 class RoiMove(BaseModel):
     roi_id: str
-    center_px: list[float]
+    center_px: conlist(float, min_length=2, max_length=2)
+
+    @field_validator("center_px")
+    @classmethod
+    def _finite(cls, v):
+        return _finite_point(v)
 
 
-_ROI_TYPES = ("rect", "circle", "annulus", "segment")
+def _finite_point(v):
+    """A pixel coordinate pair that numpy can actually use.
+
+    `list[float]` alone accepts [], [1.0] and [1, 2, 3]: the first two reach
+    numpy and raise, giving a 500 for what is plainly a bad request, and a
+    one-element list silently indexes as a coordinate of (1, 1)."""
+    if v is None:
+        return v
+    if len(v) != 2:
+        raise ValueError("expected exactly two coordinates, x and y")
+    if not all(math.isfinite(c) for c in v):
+        raise ValueError("coordinates must be finite")
+    return v
 
 
-def _walk_find(node, roi_id, types=("rect", "circle", "annulus", "segment")):
-    if isinstance(node, dict):
-        if node.get("id") == roi_id and node.get("type") in types:
-            return node
-        for v in node.values():
-            r = _walk_find(v, roi_id, types)
-            if r is not None:
-                return r
-    elif isinstance(node, list):
-        for v in node:
-            r = _walk_find(v, roi_id, types)
-            if r is not None:
-                return r
-    return None
+class RoiMove(BaseModel):
+    roi_id: str
+    center_px: conlist(float, min_length=2, max_length=2)
+
+    @field_validator("center_px")
+    @classmethod
+    def _finite(cls, v):
+        return _finite_point(v)
 
 
-def _walk_children(node, roi_id, out=None):
-    """Every ROI whose id is '<roi_id>/…' — the companions of one handle."""
-    if out is None:
-        out = []
-    prefix = roi_id + "/"
-    if isinstance(node, dict):
-        if (isinstance(node.get("id"), str) and node["id"].startswith(prefix)
-                and node.get("type") in _ROI_TYPES):
-            out.append(node)
-        else:
-            for v in node.values():
-                _walk_children(v, roi_id, out)
-    elif isinstance(node, list):
-        for v in node:
-            _walk_children(v, roi_id, out)
-    return out
+# The lookup semantics are shared with the layout-profile writer/reader, so
+# the two cannot drift apart about what counts as an ROI.
+_ROI_TYPES = layout_profile.ROI_TYPES
+_walk_find = layout_profile.walk_find
+_walk_children = layout_profile.walk_children
 
 
 def _seg_angle(seg: dict):
@@ -624,9 +857,12 @@ def move_roi(aid: str, body: RoiMove, request: Request):
     single JSON blob, so a plain read-modify-write would let two overlapping
     edits discard one another — the user moves an ROI, it springs back, and
     moving a different one appears to 'fix' it."""
-    ctx = _ctx(aid)
-    from ..analysis.common import (roi_center_mm, roi_translate_mm,
-                                   stats_for_roi)
+    rec = store.get(aid)
+    if rec is None:
+        raise HTTPException(404, "analysis not found")
+    _require_unsigned(rec, "moving a measuring area")
+    ctx = _ctx(aid, rec)
+    from ..analysis.common import roi_center_mm, roi_translate_mm
 
     def edit(geom):
         if not geom:
@@ -661,21 +897,31 @@ def move_roi(aid: str, body: RoiMove, request: Request):
         return old_center, new_center, node, changed
 
     try:
-        old_center, new_center, node, changed = store.mutate_json(
-            aid, "geometry", edit)
+        (old_center, new_center, node, changed), hist = store.mutate_geometry(
+            aid, edit, action="roi", user=_current_user(request),
+            detail={"roi": body.roi_id})
     except KeyError:
         raise HTTPException(404, "analysis not found")
 
     store.audit(aid, "C", "roi moved",
                 {"roi": body.roi_id, "from_mm": old_center, "to_mm": new_center})
     return pipeline.to_jsonable({"roi": node,
-                                 "stats": stats_for_roi(ctx, node),
-                                 "changed": changed})
+                                 "stats": _roi_stats_or_none(ctx, node),
+                                 "changed": changed, "history": hist})
 
 
 class RoiRotate(BaseModel):
     roi_id: str
     angle_deg: float
+
+    @field_validator("angle_deg")
+    @classmethod
+    def _finite(cls, v):
+        # NaN survives JSON, reaches the rotation matrix and poisons every
+        # coordinate it touches — the ROI simply disappears from the overlay.
+        if not math.isfinite(v):
+            raise ValueError("the angle must be a finite number of degrees")
+        return v
 
 
 @app.post("/api/analyses/{aid}/roi_rotate")
@@ -684,8 +930,12 @@ def rotate_roi(aid: str, body: RoiRotate, request: Request):
 
     Needed when automatic placement gets the orientation wrong on a phantom
     that differs from the definition."""
-    ctx = _ctx(aid)
-    from ..analysis.common import roi_angle_deg, roi_rotate, stats_for_roi
+    rec = store.get(aid)
+    if rec is None:
+        raise HTTPException(404, "analysis not found")
+    _require_unsigned(rec, "rotating a measuring area")
+    ctx = _ctx(aid, rec)
+    from ..analysis.common import roi_angle_deg, roi_rotate
 
     def edit(geom):
         if not geom:
@@ -704,11 +954,19 @@ def rotate_roi(aid: str, body: RoiRotate, request: Request):
         if node.get("auto_angle_deg") is None:
             node["auto_angle_deg"] = old_angle
 
+        delta = float(body.angle_deg) - float(old_angle)
         changed = [node]
-        # rotating the square is the user overriding the measured direction
+        # The companion turns BY the same amount, not TO the same angle. The
+        # line-pair square deliberately sits 45 deg off its profile line, so
+        # setting both to one absolute angle would swing the measuring line off
+        # the pattern — and mark it hand-set, which suppresses the automatic
+        # re-measurement for good.
         for comp in _walk_children(geom, body.roi_id):
             if comp.get("type") == "segment":
-                fresh = roi_rotate(ctx, comp, body.angle_deg)
+                comp_angle = roi_angle_deg(comp)
+                if comp_angle is None:
+                    continue
+                fresh = roi_rotate(ctx, comp, comp_angle + delta)
                 comp.clear()
                 comp.update(pipeline.to_jsonable(fresh))
                 comp["manually_adjusted"] = True
@@ -716,7 +974,9 @@ def rotate_roi(aid: str, body: RoiRotate, request: Request):
         return old_angle, node, changed
 
     try:
-        old_angle, node, changed = store.mutate_json(aid, "geometry", edit)
+        (old_angle, node, changed), hist = store.mutate_geometry(
+            aid, edit, action="roi_rotate", user=_current_user(request),
+            detail={"roi": body.roi_id, "to_deg": body.angle_deg})
     except KeyError:
         raise HTTPException(404, "analysis not found")
 
@@ -724,8 +984,8 @@ def rotate_roi(aid: str, body: RoiRotate, request: Request):
                 {"roi": body.roi_id, "from_deg": old_angle,
                  "to_deg": body.angle_deg})
     return pipeline.to_jsonable({"roi": node,
-                                 "stats": stats_for_roi(ctx, node),
-                                 "changed": changed})
+                                 "stats": _roi_stats_or_none(ctx, node),
+                                 "changed": changed, "history": hist})
 
 
 class BlockPlace(BaseModel):
@@ -764,7 +1024,11 @@ def place_lowcontrast_block(aid: str, body: BlockPlace, request: Request):
 
     The circles sit on a rigid grid inside the block, so correcting the block
     once is far better than dragging eight circles individually."""
-    ctx = _ctx(aid)
+    rec = store.get(aid)
+    if rec is None:
+        raise HTTPException(404, "analysis not found")
+    _require_unsigned(rec, "moving the low-contrast block")
+    ctx = _ctx(aid, rec)
     from ..analysis import lowcontrast
     from ..analysis.common import rect_roi
 
@@ -799,7 +1063,9 @@ def place_lowcontrast_block(aid: str, body: BlockPlace, request: Request):
         return centre, angle, lcg
 
     try:
-        centre, angle, lcg = store.mutate_json(aid, "geometry", edit)
+        (centre, angle, lcg), hist = store.mutate_geometry(
+            aid, edit, action="lowcontrast_block",
+            user=_current_user(request), detail={"angle_deg": body.angle_deg})
     except KeyError:
         raise HTTPException(404, "analysis not found")
 
@@ -807,7 +1073,8 @@ def place_lowcontrast_block(aid: str, body: BlockPlace, request: Request):
                 {"center_mm": centre, "angle_deg": angle,
                  "by": "corners" if body.corners_px else "drag"})
     return pipeline.to_jsonable({"lowcontrast": lcg,
-                                 "center_mm": centre, "angle_deg": angle})
+                                 "center_mm": centre, "angle_deg": angle,
+                                 "history": hist})
 
 
 @app.get("/api/analyses/{aid}/roi_stats")
@@ -818,9 +1085,9 @@ def roi_stats(aid: str, roi_id: str):
     node = _walk_find(rec["geometry"], roi_id)
     if node is None:
         raise HTTPException(404, f"ROI {roi_id} not found")
-    from ..analysis.common import stats_for_roi
-    ctx = _ctx(aid)
-    return pipeline.to_jsonable({"roi": node, "stats": stats_for_roi(ctx, node)})
+    ctx = _ctx(aid, rec)
+    return pipeline.to_jsonable({"roi": node,
+                                 "stats": _roi_stats_or_none(ctx, node)})
 
 
 class PreviewBody(BaseModel):
@@ -854,45 +1121,171 @@ def compute_preview(aid: str, body: PreviewBody):
 
 class FieldEdgeSet(BaseModel):
     side: str
-    point_px: list[float]
+    point_px: conlist(float, min_length=2, max_length=2)
+
+    @field_validator("point_px")
+    @classmethod
+    def _finite(cls, v):
+        return _finite_point(v)
 
 
 @app.post("/api/analyses/{aid}/field_edge")
-def set_field_edge(aid: str, body: FieldEdgeSet):
-    rec = store.get(aid)
-    if not rec or not rec.get("geometry"):
-        raise HTTPException(400, "no geometry yet")
-    ctx = _ctx(aid)
-    geom = rec["geometry"]
+def set_field_edge(aid: str, body: FieldEdgeSet, request: Request):
+    """Place a radiation-field edge by hand.
+
+    Serialised like every other Stage C edit: this used to read the whole
+    geometry blob, change it in memory and write it back, so an ROI drag
+    committed in between was silently thrown away."""
     side_geom = {"top": ((0, 1), (0, -1)), "right": ((1, 0), (-1, 0)),
                  "bottom": ((0, -1), (0, 1)), "left": ((-1, 0), (1, 0))}
     if body.side not in side_geom:
         raise HTTPException(400, "bad side")
+    rec = store.get(aid)
+    if rec is None:
+        raise HTTPException(404, "analysis not found")
+    _require_unsigned(rec, "moving a field edge")
+    ctx = _ctx(aid, rec)
     (ex, ey), (nx, ny) = side_geom[body.side]
     S2 = pdef.side_mm / 2.0
     edge_pt = np.array([ex * S2, ey * S2], float)
     outward = -np.array([nx, ny], float)
     p_mm = np.asarray(ctx.T.px_to_mm(body.point_px), float)
     offset = float(np.dot(p_mm - edge_pt, outward))
-    geom["geometry"]["field_edges"][body.side] = pipeline.to_jsonable({
+    entry = pipeline.to_jsonable({
         "side": body.side, "detected": True, "manual": True,
         "offset_from_edge_mm": offset,
         "edge_pt_px": np.asarray(
             ctx.T.mm_to_px(edge_pt + outward * offset)).tolist(),
     })
-    store.update(aid, geometry=geom)
+
+    def edit(geom):
+        if not geom:
+            raise HTTPException(400, "no geometry yet")
+        gg = geom.get("geometry")
+        # propose_all stores {"_error": ...} for a test that raised, so the
+        # field_edges dict is not guaranteed to exist.
+        if not isinstance(gg, dict) or not isinstance(gg.get("field_edges"), dict):
+            raise HTTPException(
+                400, "this scan has no field-edge geometry to correct — the "
+                     "geometry test did not propose successfully")
+        gg["field_edges"][body.side] = entry
+
+    try:
+        _, hist = store.mutate_geometry(
+            aid, edit, action="field_edge", user=_current_user(request),
+            detail={"side": body.side, "offset_mm": offset})
+    except KeyError:
+        raise HTTPException(404, "analysis not found")
     store.audit(aid, "C", "field edge set manually",
                 {"side": body.side, "offset_mm": offset})
-    return geom["geometry"]["field_edges"][body.side]
+    return {**entry, "history": hist}
+
+
+# ------------------------------------------- measuring-point undo / redo / reset
+
+@app.post("/api/analyses/{aid}/geometry/undo")
+def geometry_undo(aid: str, request: Request):
+    """Step the measuring points back one edit.
+
+    Server-side rather than in the browser, because the browser resyncs from
+    the server whenever a request fails or the analysis is reopened — a stack
+    kept in the page would vanish exactly when it was most needed."""
+    rec = store.get(aid)
+    if rec is None:
+        raise HTTPException(404, "not found")
+    _require_unsigned(rec, "undoing a measuring-point change")
+    try:
+        out = store.undo_geometry(aid)
+    except LookupError as e:
+        raise HTTPException(409, str(e))
+    store.audit(aid, "C", "undo", {"to_seq": out["seq"]})
+    return pipeline.to_jsonable({"geometry": out.pop("geometry"),
+                                 "history": out})
+
+
+@app.post("/api/analyses/{aid}/geometry/redo")
+def geometry_redo(aid: str, request: Request):
+    rec = store.get(aid)
+    if rec is None:
+        raise HTTPException(404, "not found")
+    _require_unsigned(rec, "redoing a measuring-point change")
+    try:
+        out = store.redo_geometry(aid)
+    except LookupError as e:
+        raise HTTPException(409, str(e))
+    store.audit(aid, "C", "redo", {"to_seq": out["seq"]})
+    return pipeline.to_jsonable({"geometry": out.pop("geometry"),
+                                 "history": out})
+
+
+class GeometryReset(BaseModel):
+    #: "auto"    — back to this scan's untouched automatic proposal
+    #: "profile" — back to the stored layout of this phantom
+    to: str = "auto"
+
+
+@app.post("/api/analyses/{aid}/geometry/reset")
+def geometry_reset(aid: str, body: GeometryReset, request: Request):
+    """Discard the manual corrections and start from a known layout again.
+
+    A reset is recorded as an ordinary edit rather than as a rewind, so it is
+    itself undoable: pressing it by mistake never destroys an afternoon's work.
+    "auto" restores the exact snapshot taken when the patterns were proposed —
+    not a re-detection, which could legitimately land somewhere else."""
+    rec = store.get(aid)
+    if rec is None:
+        raise HTTPException(404, "not found")
+    _require_unsigned(rec, "resetting the measuring points")
+    user = _current_user(request)
+
+    if body.to == "auto":
+        base = store.geometry_at(aid, 0)
+        if base is None:
+            raise HTTPException(
+                409, "there is no automatic proposal to go back to — confirm "
+                     "the registration in Stage A to generate one")
+        hist = store.replace_geometry(aid, base, action="reset_auto", user=user)
+        store.update(aid, layout_source="auto")
+        store.audit(aid, "C", "measuring points reset to auto-detected")
+        return pipeline.to_jsonable({"geometry": base, "history": hist,
+                                     "layout_source": "auto"})
+
+    if body.to != "profile":
+        raise HTTPException(400, "reset target must be 'auto' or 'profile'")
+
+    prof = store.get_phantom_profile(rec.get("phantom") or "")
+    if not prof:
+        raise HTTPException(
+            404, "no measuring-point layout is stored for this phantom yet")
+    base = store.geometry_at(aid, 0)
+    if base is None:
+        raise HTTPException(409, "there is no automatic proposal to build on")
+    check = layout_profile.layout_agrees(prof["layout"], base)
+    if not check["ok"]:
+        raise HTTPException(409, check["reason"])
+    ctx = _ctx(aid, rec)
+    geom, report = layout_profile.apply_layout(ctx, base, prof["layout"])
+    hist = store.replace_geometry(aid, geom, action="reset_profile", user=user,
+                                  detail={"phantom": prof["phantom_key"]})
+    store.update(aid, layout_source="profile")
+    store.audit(aid, "C", "measuring points reset to the stored phantom layout",
+                {"phantom": prof["phantom_key"], **report})
+    return pipeline.to_jsonable({
+        "geometry": geom, "history": hist, "layout_source": "profile",
+        "profile": _profile_summary(prof), "profile_report": report})
 
 
 class StageConfirm(BaseModel):
     stage: str
     note: str | None = None
+    #: Stage C only. None means "store the layout if the phantom is named";
+    #: false is the escape hatch for a one-off correction that should not
+    #: become the default for every future scan of that phantom.
+    save_profile: bool | None = None
 
 
 @app.post("/api/analyses/{aid}/confirm")
-def confirm_stage(aid: str, body: StageConfirm):
+def confirm_stage(aid: str, body: StageConfirm, request: Request):
     rec = store.get(aid)
     if rec is None:
         raise HTTPException(404, "not found")
@@ -902,7 +1295,44 @@ def confirm_stage(aid: str, body: StageConfirm):
     nxt = order[min(order.index(body.stage) + 1, len(order) - 1)]
     store.update(aid, stage=nxt)
     store.audit(aid, body.stage, "confirmed", {"note": body.note})
-    return {"stage": nxt}
+
+    out = {"stage": nxt, "profile_saved": False, "profile": None,
+           "profile_error": None}
+    # Confirming Stage C is the moment the operator says "these measuring
+    # points are right for this phantom" — so that is when the layout becomes
+    # the phantom's stored default. Saving on every drag instead would let a
+    # half-finished correction become the default for everyone.
+    if body.stage != "C" or body.save_profile is False:
+        return out
+    label = store.profile_key(rec.get("phantom") or "")
+    if not label:
+        out["profile_error"] = ("no phantom is named on this analysis, so the "
+                                "measuring points could not be stored for "
+                                "future scans of it")
+        return out
+    if not rec.get("geometry"):
+        out["profile_error"] = "there is no confirmed geometry to store"
+        return out
+    try:
+        reg = _reg(aid, rec).summary()
+    except HTTPException:
+        reg = {}
+    layout = layout_profile.extract_layout(
+        rec["geometry"], pdef_name=pdef.name, pdef_version=pdef.version,
+        algo_version=ALGO_VERSION, registration=pipeline.to_jsonable(reg))
+    saved = store.save_phantom_profile(
+        label, layout, pdef_version=pdef.version, algo_version=ALGO_VERSION,
+        source_analysis_id=aid, updated_by=_current_user(request))
+    store.audit(aid, "C", "phantom layout stored",
+                {"phantom": label, "rois": saved["n_rois"]})
+    audit("phantom_profile", user=_current_user(request),
+          client=_client_key(request), analysis=aid, phantom=label,
+          outcome="saved", rois=saved["n_rois"])
+    log.info("stored measuring-point layout for phantom=%r from analysis=%s "
+             "(%d ROIs)", label, aid, saved["n_rois"])
+    out["profile_saved"] = True
+    out["profile"] = saved
+    return out
 
 
 class ComputeBody(BaseModel):
@@ -914,8 +1344,9 @@ def compute(aid: str, body: ComputeBody, request: Request):
     rec = store.get(aid)
     if not rec or not rec.get("geometry"):
         raise HTTPException(400, "no confirmed geometry")
+    _require_unsigned(rec, "recomputing the results")
     store.update(aid, sid_mm=body.sid_mm)
-    ctx = _ctx(aid)
+    ctx = _ctx(aid, rec)
     results = pipeline.compute_all(ctx, rec["geometry"])
     status = pipeline.overall_status(results)
     store.update(aid, results=results, status=status, stage="F")
@@ -924,17 +1355,69 @@ def compute(aid: str, body: ComputeBody, request: Request):
     audit("compute", user=_current_user(request), client=_client_key(request),
           analysis=aid, outcome=status, sid_mm=body.sid_mm)
     log.info("computed analysis=%s overall=%s", aid, status)
-    baseline = store.baseline_for(rec["signature"], exclude_id=aid)
+    baseline = store.baseline_for(rec["signature"], rec.get("phantom", ""),
+                                  exclude_id=aid)
     return pipeline.to_jsonable({
         "results": results, "overall": status,
         "baseline": ({"id": baseline["id"],
+                      "phantom": baseline.get("phantom", ""),
+                      "acquired_at": baseline.get("acquired_at", ""),
+                      "created_at": baseline.get("created_at", ""),
                       "rows": flatten_results(baseline["results"])}
                      if baseline and baseline.get("results") else None),
     })
 
 
 class FinalizeBody(BaseModel):
-    baseline: bool = False
+    #: None leaves the baseline flag alone. Finalising is not the only way to
+    #: set it any more, so re-finalising must not silently clear it.
+    baseline: bool | None = None
+
+
+def _set_baseline(aid: str, rec: dict, value: bool, request: Request) -> dict:
+    if value and rec.get("reduced_precision"):
+        raise HTTPException(
+            400, "A reduced-precision analysis (a plain image, 8-bit and "
+                 "without acquisition metadata) cannot be a reference.")
+    if value and not rec.get("results"):
+        raise HTTPException(
+            400, "This analysis has no results yet, so there is nothing for "
+                 "later scans to be compared against.")
+    out = store.set_baseline(aid, value)
+    store.audit(aid, "F", "baseline set" if value else "baseline cleared",
+                {"phantom": out["phantom"], "replaced": out["replaced"]})
+    audit("baseline", user=_current_user(request), client=_client_key(request),
+          analysis=aid, outcome="set" if value else "cleared",
+          phantom=out["phantom"], signature=out["signature"],
+          replaced=out["replaced"])
+    log.info("baseline %s for phantom=%r protocol=%r: analysis=%s%s",
+             "set" if value else "cleared", out["phantom"], out["signature"],
+             aid, f" (replacing {out['replaced']})" if out["replaced"] else "")
+    return out
+
+
+class BaselineBody(BaseModel):
+    baseline: bool = True
+
+
+@app.post("/api/analyses/{aid}/baseline")
+def set_baseline(aid: str, body: BaselineBody, request: Request):
+    """Make this analysis its phantom's reference, or stop it being one.
+
+    Scoped to the phantom AND the protocol: two phantoms can differ by design
+    and both be valid, so each needs its own reference, while comparing across
+    protocols is meaningless whatever the phantom."""
+    rec = store.get(aid)
+    if rec is None:
+        raise HTTPException(404, "not found")
+    out = _set_baseline(aid, rec, bool(body.baseline), request)
+    return {"ok": True, **out}
+
+
+@app.get("/api/baselines")
+def list_baselines():
+    """Every current reference — one per phantom per protocol."""
+    return {"baselines": store.baselines()}
 
 
 @app.post("/api/analyses/{aid}/finalize")
@@ -943,32 +1426,37 @@ def finalize(aid: str, body: FinalizeBody, request: Request):
     if rec is None:
         raise HTTPException(404, "not found")
     store.update(aid, stage="F", status=rec.get("status") or "complete")
-    if body.baseline:
-        if rec.get("reduced_precision"):
-            raise HTTPException(400, "reduced-precision analyses cannot be baselines")
-        store.set_baseline(aid, True)
+    changed = None
+    if body.baseline is not None:
+        changed = _set_baseline(aid, rec, body.baseline, request)
     store.audit(aid, "F", "finalized", {"baseline": body.baseline})
     audit("finalize", user=_current_user(request), client=_client_key(request),
           analysis=aid, baseline=body.baseline,
           site=rec.get("site"), phantom=rec.get("phantom"))
-    return {"ok": True}
+    return {"ok": True, "baseline": changed}
 
 
 class DeleteBody(BaseModel):
     admin_password: str = ""
-    confirm_id: str = ""
     reason: str = ""
 
 
 @app.post("/api/analyses/{aid}/delete")
 def delete_analysis(aid: str, body: DeleteBody, request: Request):
-    """Delete an analysis and its stored source file.
+    """Delete an analysis, its stored source file and its edit history.
 
     Deliberately hard to do by accident on a shared installation:
       * a separate ADMIN password is required — not the everyday login;
-      * the analysis id must be typed back to confirm;
+      * a written reason of at least a few characters must be given, and is
+        recorded in the audit log next to who did it and from where;
       * every attempt, successful or not, goes to the audit log.
-    With no admin password configured the endpoint refuses outright."""
+    With no admin password configured the endpoint refuses outright.
+
+    Typing the analysis id back used to be required as well. It was dropped
+    because it protected nothing an operator could not satisfy by copy-paste,
+    while the failure it produced was a silent 400 the browser showed for six
+    seconds — after which a re-upload of the same file offered to reopen the
+    record the operator believed they had deleted."""
     user = _current_user(request)
     client = _client_key(request)
     rec = store.get(aid)
@@ -977,7 +1465,7 @@ def delete_analysis(aid: str, body: DeleteBody, request: Request):
 
     if not cfg.deletion_enabled:
         audit("delete", user=user, client=client, analysis=aid,
-              outcome="refused", reason="deletion disabled")
+              outcome="refused", refusal="deletion disabled")
         raise HTTPException(
             403, "Deletion is disabled on this installation. An administrator "
                  "must set PHANTOMQA_ADMIN_PASSWORD_HASH in .env "
@@ -990,37 +1478,47 @@ def delete_analysis(aid: str, body: DeleteBody, request: Request):
         raise HTTPException(429, f"Too many failed admin attempts. Try again in "
                                  f"{wait // 60 + 1} min.")
 
-    if body.confirm_id.strip() != aid:
-        audit("delete", user=user, client=client, analysis=aid,
-              outcome="refused", reason="confirmation id mismatch")
-        raise HTTPException(400, "Type the analysis id exactly to confirm.")
-
     if not verify_password(body.admin_password, cfg.admin_password_hash):
         admin_throttle.record_failure(client)
         audit("delete", user=user, client=client, analysis=aid,
-              outcome="denied", reason="bad admin password")
+              outcome="denied", refusal="bad admin password")
         log.warning("delete denied (bad admin password) analysis=%s client=%s "
                     "user=%s", aid, client, user)
         raise HTTPException(401, "Incorrect administrator password.")
 
+    # After the password, so a missing reason cannot be used to probe whether a
+    # password was right, and so a wrong password still answers 401.
+    reason = (body.reason or "").strip()
+    if len(reason) < MIN_DELETE_REASON_CHARS:
+        audit("delete", user=user, client=client, analysis=aid,
+              outcome="refused", refusal="no reason given")
+        raise HTTPException(
+            400, f"Give a reason of at least {MIN_DELETE_REASON_CHARS} "
+                 f"characters. It is recorded in the audit log and is the only "
+                 f"record of why this data was destroyed.")
+    reason = reason[:MAX_DELETE_REASON_CHARS]
+
     admin_throttle.reset(client)
+    out = store.delete(aid)
     audit("delete", user=user, client=client, analysis=aid, outcome="ok",
           site=rec.get("site"), phantom=rec.get("phantom"),
           source=rec.get("source_name"), sha256=rec.get("sha256"),
-          created_at=rec.get("created_at"), reason=body.reason)
-    log.warning("DELETED analysis=%s site=%r phantom=%r by user=%s client=%s",
-                aid, rec.get("site"), rec.get("phantom"), user, client)
-    store.delete(aid)
-    _scans.pop(aid, None)
-    _regs.pop(aid, None)
-    return {"ok": True}
+          created_at=rec.get("created_at"), acquired_at=rec.get("acquired_at"),
+          layout_deleted=out["profile_deleted"], reason=reason)
+    log.warning("DELETED analysis=%s site=%r phantom=%r by user=%s client=%s "
+                "layout_deleted=%s", aid, rec.get("site"), rec.get("phantom"),
+                user, client, out["profile_deleted"])
+    _forget(aid)
+    return {"ok": True, "phantom": out["phantom"],
+            "layout_deleted": out["profile_deleted"]}
 
 
 @app.get("/api/deletion_policy")
 def deletion_policy():
     return {"enabled": cfg.deletion_enabled,
             "requires_admin_password": True,
-            "requires_id_confirmation": True}
+            "requires_reason": True,
+            "min_reason_chars": MIN_DELETE_REASON_CHARS}
 
 
 class ValidationBody(BaseModel):
@@ -1125,8 +1623,13 @@ def export_csv_one(aid: str):
 
 
 def _selected_records(ids: str = "", site: str = "", phantom: str = "",
-                      signature: str = "") -> list[dict]:
-    """Records for an explicit id list, or for a label filter."""
+                      signature: str = "", validation: str = "") -> list[dict]:
+    """Records for an explicit id list, or for a label filter.
+
+    Every filter the History tab offers has to be honoured here too. The
+    validation filter was not, so exporting "the analyses nobody has signed
+    off" silently produced a file covering all of them — the sort of thing that
+    is only noticed once the wrong list has been acted on."""
     if ids:
         out = []
         for a in ids.split(","):
@@ -1135,14 +1638,17 @@ def _selected_records(ids: str = "", site: str = "", phantom: str = "",
                 out.append(rec)
         return out
     listing = store.list_all(site=site or None, phantom=phantom or None,
-                             signature=signature or None, completed_only=True)
+                             signature=signature or None,
+                             validation=validation or None,
+                             completed_only=True)
     return [store.get(item["id"]) for item in listing]
 
 
 @app.get("/api/export.csv", response_class=PlainTextResponse)
 def export_csv_many(ids: str = "", site: str = "", phantom: str = "",
-                    signature: str = "", layout: str = "long"):
-    recs = _selected_records(ids, site, phantom, signature)
+                    signature: str = "", validation: str = "",
+                    layout: str = "long"):
+    recs = _selected_records(ids, site, phantom, signature, validation)
     if not recs:
         raise HTTPException(404, "no matching analyses")
     return wide_csv_export(recs) if layout == "wide" else csv_export(recs)
@@ -1150,8 +1656,8 @@ def export_csv_many(ids: str = "", site: str = "", phantom: str = "",
 
 @app.get("/api/comparison_report.html", response_class=HTMLResponse)
 def comparison_report(ids: str = "", site: str = "", phantom: str = "",
-                      signature: str = ""):
-    recs = _selected_records(ids, site, phantom, signature)
+                      signature: str = "", validation: str = ""):
+    recs = _selected_records(ids, site, phantom, signature, validation)
     if not recs:
         raise HTTPException(404, "no matching analyses")
     suffix = ""
@@ -1159,7 +1665,8 @@ def comparison_report(ids: str = "", site: str = "", phantom: str = "",
         suffix = " — " + " / ".join(x for x in (site, phantom) if x)
     return build_comparison_report(
         recs, title_suffix=suffix,
-        filters={"site": site, "phantom": phantom, "signature": signature})
+        filters={"site": site, "phantom": phantom, "signature": signature,
+                 "validation": validation})
 
 
 @app.get("/api/analyses/{aid}/report.html", response_class=HTMLResponse)
@@ -1174,7 +1681,8 @@ def report_html(aid: str):
             overlay = pipeline.render_overlay(_scan(aid), ctx, rec["geometry"])
         except Exception:
             overlay = None
-    baseline = store.baseline_for(rec["signature"], exclude_id=aid)
+    baseline = store.baseline_for(rec["signature"], rec.get("phantom", ""),
+                                  exclude_id=aid)
     # the report states whether the source file still matches its recorded hash
     integrity = store.verify_integrity(aid)
     if integrity.get("status") != "ok":
@@ -1186,29 +1694,35 @@ def report_html(aid: str):
 
 @app.get("/api/trends")
 def trends(signature: str = "", site: str = "", phantom: str = "",
-           ids: str = ""):
+           validation: str = "", ids: str = ""):
     """Trend data for a label filter, a signature, or an explicit id list."""
     if ids:
         listing = [{"id": a.strip()} for a in ids.split(",") if a.strip()]
     else:
         listing = store.list_all(site=site or None, phantom=phantom or None,
                                  signature=signature or None,
+                                 validation=validation or None,
                                  completed_only=True)
     out = []
     for item in listing:
         rec = store.get(item["id"])
         if not rec or not rec.get("results"):
             continue
+        # Both dates travel separately. Collapsing them here is what made a
+        # detector with a reset clock indistinguishable from a correct one.
         out.append({"id": rec["id"], "created_at": rec["created_at"],
-                    "acquired_at": rec.get("acquired_at") or rec["created_at"],
+                    "acquired_at": rec.get("acquired_at") or "",
+                    "acquired_flag": acquisition_flag(rec),
+                    "source_name": rec.get("source_name", ""),
                     "site": rec.get("site", ""), "phantom": rec.get("phantom", ""),
                     "signature": rec.get("signature", ""),
                     "status": rec.get("status", ""),
                     "is_baseline": rec["is_baseline"],
                     "rows": flatten_results(rec["results"])})
-    out.sort(key=lambda a: a["acquired_at"])
+    out.sort(key=lambda a: (a["acquired_at"] or a["created_at"]))
     return pipeline.to_jsonable({
-        "filter": {"signature": signature, "site": site, "phantom": phantom},
+        "filter": {"signature": signature, "site": site, "phantom": phantom,
+                   "validation": validation},
         "analyses": out})
 
 

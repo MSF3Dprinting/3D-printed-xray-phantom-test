@@ -16,7 +16,28 @@ const S = {
   labels: true, selectedRoi: null, mode: "normal", manualCorners: [],
   fieldEdgeSide: null, dragRoi: null, dimPreview: null, lcCorners: [],
   pendingFile: null,
+  /* measuring-point undo state, mirrored from the server after every edit */
+  history: { seq: 0, undo_depth: 0, redo_depth: 0 },
+  layoutSource: "", phantomProfile: null,
+  lcAngleCommitted: 0, rotTargetId: null, previewPending: false,
 };
+
+/* Everything the viewer knows about ONE analysis. Cleared as a unit whenever
+   an analysis is closed or deleted, so no fragment of the previous scan — a
+   selected ROI id, a half-finished corner click, a dimension preview — can be
+   drawn over the next one. */
+function clearAnalysisState() {
+  S.aid = null; S.record = null; S.reg = null; S.geometry = null;
+  S.results = null; S.baseline = null; S.imgEl = null;
+  S.selectedRoi = null; S.mode = "normal"; S.manualCorners = [];
+  S.fieldEdgeSide = null; S.dragRoi = null; S.dimPreview = null;
+  S.lcCorners = []; S.pendingFile = null;
+  S.history = { seq: 0, undo_depth: 0, redo_depth: 0 };
+  S.layoutSource = ""; S.phantomProfile = null;
+  S.lcAngleCommitted = 0; S.rotTargetId = null; S.previewPending = false;
+  const d = document.querySelector("#roi-details");
+  if (d) d.remove();
+}
 
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, attrs = {}, html = "") => {
@@ -35,30 +56,47 @@ function csrfToken() {
 }
 
 /* Every state-changing request carries the CSRF token from the cookie; the
-   server rejects the request if the two do not match. */
+   server rejects the request if the two do not match.
+
+   A 401 normally means the session expired, so we sign in again. The
+   administrator-password endpoints (delete, validation, forgetting a stored
+   layout) also answer 401 for a WRONG PASSWORD — bouncing to the login page
+   there would log the operator out mid-action and never show them why. Those
+   callers pass adminAuth so the error comes back for the panel to display. */
 async function api(path, opts = {}) {
-  const o = { credentials: "same-origin", ...opts };
+  const { adminAuth = false, ...rest } = opts;
+  const o = { credentials: "same-origin", ...rest };
   const method = (o.method || "GET").toUpperCase();
   if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
     o.headers = { ...(o.headers || {}), "X-CSRF-Token": csrfToken() };
   }
   const r = await fetch(path, o);
+  let msg = r.statusText, body = null;
+  if (!r.ok) {
+    try { body = await r.json(); msg = body.detail || msg; } catch (e) { /* noop */ }
+  }
   if (r.status === 401) {
-    window.location = "login";
-    throw new Error("Session expired — signing in again");
+    // The admin-password endpoints answer 401 for two different things. Only a
+    // genuine session expiry may bounce to the login page; a refused password
+    // has to reach the panel that asked for it. The middleware's expiry
+    // message is the one thing that distinguishes them.
+    const expired = msg === "Authentication required";
+    if (!adminAuth || expired) {
+      window.location = "login";
+      throw new Error("Session expired — signing in again");
+    }
   }
   if (!r.ok) {
-    let msg = r.statusText, body = null;
-    try { body = await r.json(); msg = body.detail || msg; } catch (e) { /* noop */ }
-    const err = new Error(msg);
+    const err = new Error(typeof msg === "string" ? msg : r.statusText);
+    err.status = r.status;
     if (body && body.duplicate_of) err.duplicateOf = body.duplicate_of;
     throw err;
   }
   return r.json();
 }
-const postJSON = (path, body) => api(path, {
+const postJSON = (path, body, opts = {}) => api(path, {
   method: "POST", headers: { "Content-Type": "application/json" },
-  body: JSON.stringify(body) });
+  body: JSON.stringify(body), ...opts });
 
 function status(msg, isErr = false) {
   const n = $("#app-status");
@@ -320,10 +358,16 @@ let panning = null;
 canvas.addEventListener("mousedown", (ev) => {
   const pos = [ev.offsetX, ev.offsetY];
   if (S.mode === "corners" || S.mode === "fieldedge" || S.mode === "lccorners") return;
-  if (S.stage === "C") {
+  if (S.stage === "C" && !signedOff()) {
     const hit = hitRoi(pos);
     if (hit && hit.drag) {
+      // Remember where the press started: a click that never moves must stay a
+      // click. It used to POST the ROI's unchanged centre, which stamped it
+      // "manually adjusted", wrote an audit line, and — on the low-contrast
+      // block — discarded the automatic grid refinement.
       S.dragRoi = hit;
+      S.dragStart = pos;
+      S.dragMoved = false;
       S.selectedRoi = hit.roi.id;
       draw();
       return;
@@ -339,6 +383,11 @@ canvas.addEventListener("mousemove", (ev) => {
   $("#cursor-mm").textContent = mm
     ? `x ${mm[0].toFixed(1)} mm  y ${mm[1].toFixed(1)} mm` : "";
   if (S.dragRoi) {
+    if (S.dragStart && Math.hypot(pos[0] - S.dragStart[0],
+                                  pos[1] - S.dragStart[1]) > 3) {
+      S.dragMoved = true;
+    }
+    if (!S.dragMoved) return;
     const natP = scr2nat(pos);
     moveRoiLocal(S.dragRoi.roi, natP);
     draw();
@@ -374,15 +423,20 @@ canvas.addEventListener("mouseup", async (ev) => {
     await submitFieldEdge(scr2nat(pos));
     return;
   }
-  if (S.dragRoi && S.dragRoi.block) {
-    const roi = S.dragRoi.roi;
-    S.dragRoi = null;
-    await placeBlock({ center_px: roi.center_px });
-    return;
-  }
   if (S.dragRoi) {
-    const roi = S.dragRoi.roi;
-    S.dragRoi = null;
+    const hit = S.dragRoi, roi = hit.roi, moved = S.dragMoved;
+    S.dragRoi = null; S.dragStart = null; S.dragMoved = false;
+    if (!moved) {
+      // A press that did not move is an inspect, not an edit.
+      try {
+        const r = await api(`api/analyses/${S.aid}/roi_stats?roi_id=`
+                            + encodeURIComponent(roi.id));
+        showRoiDetails(r.roi, r.stats);
+      } catch (e) { /* noop */ }
+      draw();
+      return;
+    }
+    if (hit.block) { await placeBlock({ center_px: roi.center_px }); return; }
     try {
       const r = await postJSON(`api/analyses/${S.aid}/roi`,
         { roi_id: roi.id, center_px: roi.center_px });
@@ -465,6 +519,28 @@ function replaceRoi(roiId, fresh) {
 function applyChanged(response) {
   const list = response.changed || (response.roi ? [response.roi] : []);
   list.forEach(r => { if (r && r.id) replaceRoi(r.id, r); });
+  noteHistory(response);
+}
+
+/* Every geometry-changing response carries how far undo and redo can now go,
+   so the buttons never need a second round trip to know their state. */
+function noteHistory(response) {
+  if (response && response.history) {
+    S.history = response.history;
+    refreshHistoryButtons();
+  }
+}
+
+function refreshHistoryButtons() {
+  const u = $("#btn-undo"), r = $("#btn-redo");
+  if (u) {
+    u.disabled = !S.history.undo_depth;
+    u.textContent = `↶ Undo${S.history.undo_depth ? ` (${S.history.undo_depth})` : ""}`;
+  }
+  if (r) {
+    r.disabled = !S.history.redo_depth;
+    r.textContent = `↷ Redo${S.history.redo_depth ? ` (${S.history.redo_depth})` : ""}`;
+  }
 }
 
 function showRoiDetails(roi, stats) {
@@ -477,30 +553,57 @@ function showRoiDetails(roi, stats) {
   const mm = roi.center_mm || [];
   const rotatable = roi.type === "rect";
   const ang = rotatable ? (roi.angle_deg || 0) : null;
-  d.innerHTML = `<b>${roi.id}</b>${roi.manually_adjusted ?
-      ' <span class="chip warn">manually adjusted</span>' : ""}<br>
-    centre (${fmt(mm[0])}, ${fmt(mm[1])}) mm &nbsp;
-    μ=${fmt(stats.mean, 1)} σ=${fmt(stats.std, 1)} n=${stats.n}
+  const badges =
+    (roi.manually_adjusted ? ' <span class="chip warn">manually adjusted</span>' : "")
+    + (roi.from_profile ? ' <span class="roi-badge">from stored layout</span>' : "");
+  // Segments (profile lines, the wedge axis) have no area, so no statistics.
+  const statLine = stats
+    ? `μ=${fmt(stats.mean, 1)} σ=${fmt(stats.std, 1)} n=${stats.n}` : "";
+  d.innerHTML = `<b>${roi.id}</b>${badges}<br>
+    centre (${fmt(mm[0])}, ${fmt(mm[1])}) mm &nbsp; ${statLine}
     ${rotatable ? `
     <div class="rot-row">
       <label>angle
-        <input type="range" id="roi-angle" min="-90" max="90" step="0.5"
+        <input type="range" id="roi-angle" min="-180" max="180" step="0.5"
                value="${ang.toFixed(1)}">
       </label>
-      <span id="roi-angle-val" class="mono">${ang.toFixed(1)}°</span>
+      <input type="number" id="roi-angle-num" step="0.5" min="-180" max="180"
+             value="${ang.toFixed(1)}" title="degrees in the phantom frame">
       <button class="secondary-sm" id="roi-angle-minus">−1°</button>
       <button class="secondary-sm" id="roi-angle-plus">+1°</button>
     </div>
-    <span class="hint">Drag the dot to move · rotate here or with [ and ]</span>`
+    <span class="hint">Drag the dot to move · type an exact angle or drag the
+    slider · [ and ] nudge by 1°</span>`
     : ""}`;
   if (!rotatable) return;
+  // The keyboard shortcut acts on the ROI whose panel is actually on screen,
+  // not on whatever was last clicked: selecting the low-contrast block on
+  // mousedown used to leave a stale panel and send the nudge to the wrong ROI.
+  S.rotTargetId = roi.id;
   const slider = $("#roi-angle");
-  const show = (v) => { $("#roi-angle-val").textContent = (+v).toFixed(1) + "°"; };
+  const num = $("#roi-angle-num");
+  const sync = (v, from) => {
+    if (from !== "slider") slider.value = v;
+    if (from !== "num") num.value = (+v).toFixed(1);
+  };
   slider.addEventListener("input", () => {
-    show(slider.value);
+    sync(slider.value, "slider");
     previewRotation(roi.id, +slider.value);
   });
   slider.addEventListener("change", () => commitRotation(roi.id, +slider.value));
+  num.addEventListener("input", () => {
+    const v = parseFloat(num.value);
+    if (Number.isFinite(v)) { sync(v, "num"); previewRotation(roi.id, v); }
+  });
+  // Enter commits, not blur: `change` on a number input also fires when the
+  // field loses focus, so tabbing away would silently POST a rotation.
+  num.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const v = parseFloat(num.value);
+    if (Number.isFinite(v)) commitRotation(roi.id, v);
+    else status("Enter a number of degrees.", true);
+  });
   $("#roi-angle-minus").addEventListener("click", () => nudgeRotation(-1));
   $("#roi-angle-plus").addEventListener("click", () => nudgeRotation(+1));
 }
@@ -519,29 +622,49 @@ function findRoi(roiId) {
   return found;
 }
 
+/* A phantom-frame angle expressed in image space — the same mapping the
+   server uses (analysis/common.img_angle_deg). The old code assumed the
+   phantom's +y always pointed up on screen, which is false for a mirrored
+   registration: the local preview then turned the opposite way and only
+   snapped back after the round trip. */
+function imgAngleDeg(mmDeg) {
+  if (!S.reg || !S.reg.transform) return mmDeg;
+  const A = S.reg.transform.A, r = mmDeg * Math.PI / 180;
+  const c = Math.cos(r), s = Math.sin(r);
+  return Math.atan2(A[1][0] * c + A[1][1] * s,
+                    A[0][0] * c + A[0][1] * s) * 180 / Math.PI;
+}
+
+const rotatePointAbout = (p, c, a) => {
+  const dx = p[0] - c[0], dy = p[1] - c[1];
+  return [c[0] + dx * Math.cos(a) - dy * Math.sin(a),
+          c[1] + dx * Math.sin(a) + dy * Math.cos(a)];
+};
+
 /* Rotate locally for instant feedback; the server has the final word. */
 function previewRotation(roiId, angleDeg) {
+  if (roiId === "lowcontrast/block") { previewBlockAngle(angleDeg); return; }
   const roi = findRoi(roiId);
   if (!roi || roi.type !== "rect" || !roi.corners_px) return;
-  const delta = (angleDeg - (roi.angle_deg || 0));
-  // phantom +y is up while image y is down, so a positive phantom rotation is
-  // clockwise on screen
-  const a = -delta * Math.PI / 180;
+  const a = (imgAngleDeg(angleDeg) - imgAngleDeg(roi.angle_deg || 0))
+            * Math.PI / 180;
   const c = roi.center_px;
-  roi.corners_px = roi.corners_px.map(p => {
-    const dx = p[0] - c[0], dy = p[1] - c[1];
-    return [c[0] + dx * Math.cos(a) - dy * Math.sin(a),
-            c[1] + dx * Math.sin(a) + dy * Math.cos(a)];
-  });
+  roi.corners_px = roi.corners_px.map(p => rotatePointAbout(p, c, a));
   roi.angle_deg = angleDeg;
+  roi.angle_img_deg = imgAngleDeg(angleDeg);
+  S.previewPending = true;
   draw();
 }
 
 async function commitRotation(roiId, angleDeg) {
+  // The block is a rigid group of 25 ROIs; rotating it through the generic ROI
+  // endpoint would turn its outline and leave the eight circles behind.
+  if (roiId === "lowcontrast/block") { await commitBlockAngle(angleDeg); return; }
   try {
     const r = await postJSON(`api/analyses/${S.aid}/roi_rotate`,
                              { roi_id: roiId, angle_deg: angleDeg });
     applyChanged(r);
+    S.previewPending = false;
     showRoiDetails(r.roi, r.stats);
     status(`${roiId} rotated to ${angleDeg.toFixed(1)}° — measurement updated`);
     draw();
@@ -553,19 +676,91 @@ async function commitRotation(roiId, angleDeg) {
 
 function nudgeRotation(delta) {
   const slider = $("#roi-angle");
-  if (!slider) return;
-  slider.value = (+slider.value + delta).toFixed(1);
-  $("#roi-angle-val").textContent = (+slider.value).toFixed(1) + "°";
-  previewRotation(S.selectedRoi, +slider.value);
-  commitRotation(S.selectedRoi, +slider.value);
+  const target = S.rotTargetId;
+  if (!slider || !target) return;
+  const v = +(+slider.value + delta).toFixed(1);
+  slider.value = v;
+  const num = $("#roi-angle-num");
+  if (num) num.value = v.toFixed(1);
+  previewRotation(target, v);
+  commitRotation(target, v);
 }
 
+/* [ and ] nudge whichever angle control is in play: the block's field when it
+   has focus, otherwise the selected ROI's panel, otherwise the block. */
 document.addEventListener("keydown", (e) => {
-  if (S.stage !== "C" || !S.selectedRoi) return;
-  if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
-  if (e.key === "[") { e.preventDefault(); nudgeRotation(-1); }
-  if (e.key === "]") { e.preventDefault(); nudgeRotation(+1); }
+  if (S.stage !== "C") return;
+  if (e.key !== "[" && e.key !== "]") return;
+  const t = e.target;
+  if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) && t.id !== "lc-angle")
+    return;
+  const d = e.key === "[" ? -1 : +1;
+  e.preventDefault();
+  if (t && t.id === "lc-angle") { nudgeBlockAngle(d); return; }
+  if (S.rotTargetId && $("#roi-angle")) { nudgeRotation(d); return; }
+  nudgeBlockAngle(d);
 });
+
+/* ---- low-contrast block angle ----
+   Its own path, because the block is a rigid group: the outline and all eight
+   circle triples turn together about the block centre. */
+function previewBlockAngle(angleDeg) {
+  const lc = S.geometry && S.geometry.lowcontrast;
+  if (!lc || lc._error || !lc.block || !lc.block.corners_px) return;
+  const c = lc.block.center_px;
+  const a = (imgAngleDeg(angleDeg) - imgAngleDeg(lc.block.angle_deg || 0))
+            * Math.PI / 180;
+  lc.block.corners_px = lc.block.corners_px.map(p => rotatePointAbout(p, c, a));
+  lc.block.angle_deg = angleDeg;
+  lc.block.angle_img_deg = imgAngleDeg(angleDeg);
+  (lc.circles || []).forEach(ci => ["roi", "bg_roi", "full_circle"].forEach(k => {
+    if (ci[k] && ci[k].center_px)
+      ci[k].center_px = rotatePointAbout(ci[k].center_px, c, a);
+  }));
+  lc.angle_deg = angleDeg;
+  S.previewPending = true;
+  draw();
+}
+
+async function commitBlockAngle(v) {
+  if (!Number.isFinite(v)) { status("Enter a number of degrees.", true); return; }
+  await placeBlock({ angle_deg: v });
+}
+
+/* Turn the block end for end.
+
+   The block outline is symmetrical about its centre, so the automatic angle is
+   only ever determined modulo 180 — detection genuinely cannot tell which end
+   is which. When it guesses wrong the eight circles are still on eight real
+   discs, so nothing looks broken and no check fails: L1 simply sits on L8's
+   disc and the contrast series is reported backwards. That makes it the one
+   correction worth a single button rather than a typed angle. */
+async function flipBlock() {
+  const lc = S.geometry && S.geometry.lowcontrast;
+  if (!lc || lc._error || !lc.block) return;
+  const flipped = normaliseAngle((Number(lc.angle_deg) || 0) + 180);
+  const f = $("#lc-angle");
+  if (f) f.value = flipped.toFixed(1);
+  previewBlockAngle(flipped);
+  await commitBlockAngle(flipped);
+}
+
+/* Keep a phantom-frame angle in -180..180 so the field and the ±1° buttons
+   stay usable after a flip. */
+function normaliseAngle(deg) {
+  let a = ((deg + 180) % 360 + 360) % 360 - 180;
+  if (Object.is(a, -180)) a = 180;
+  return a;
+}
+
+function nudgeBlockAngle(delta) {
+  const f = $("#lc-angle");
+  if (!f || f.disabled) return;
+  const v = +((parseFloat(f.value) || 0) + delta).toFixed(1);
+  f.value = v.toFixed(1);
+  previewBlockAngle(v);
+  commitBlockAngle(v);
+}
 
 /* ================= overlay toggles ================= */
 
@@ -632,12 +827,35 @@ function renderIdentityBar() {
     const vals = await editLabelsDialog(r, `Identification — ${r.id}`);
     if (!vals) return;
     try {
-      await postJSON(`api/analyses/${S.aid}/labels`, vals);
+      const out = await postJSON(`api/analyses/${S.aid}/labels`, vals);
       Object.assign(S.record, vals);
+      // A stored layout belongs to the phantom label. Renaming the last
+      // analysis off a label leaves that layout describing nothing, so it is
+      // discarded — say so, because it is not visible anywhere else.
+      if (out.layout_deleted) {
+        S.phantomProfile = null;
+        status(`Identification updated. The stored measuring-point layout for `
+               + `phantom ${out.phantom_before} was discarded — no analyses `
+               + `carry that name any more.`);
+      } else {
+        status("Identification updated.");
+      }
+      await refreshProfileForRecord();
       renderIdentityBar();
-      status("Identification updated.");
+      renderStage();
     } catch (e) { status("Could not save: " + e.message, true); }
   });
+}
+
+/* After a phantom rename the layout on offer changes, so re-read it rather
+   than leaving Stage C advertising the previous phantom's. */
+async function refreshProfileForRecord() {
+  if (!S.aid) return;
+  try {
+    const rec = await api(`api/analyses/${S.aid}`);
+    S.phantomProfile = rec.phantom_profile || null;
+    S.record = { ...S.record, ...rec };
+  } catch (e) { /* leave what we have */ }
 }
 
 function html_escape(s) {
@@ -726,10 +944,37 @@ async function placeBlock(payload) {
   try {
     const r = await postJSON(`api/analyses/${S.aid}/lowcontrast_block`, payload);
     S.geometry.lowcontrast = r.lowcontrast;
+    S.previewPending = false;
+    noteHistory(r);
+    // Every low-contrast ROI object was just replaced, so anything holding a
+    // reference to one — the angle field, an open ROI panel — must re-read.
+    S.lcAngleCommitted = Number(r.angle_deg);
+    const f = $("#lc-angle");
+    if (f) f.value = S.lcAngleCommitted.toFixed(1);
+    if (S.selectedRoi && String(S.selectedRoi).startsWith("lowcontrast/")) {
+      if (!findRoi(S.selectedRoi)) {
+        S.selectedRoi = null; S.rotTargetId = null;
+        const d = $("#roi-details");
+        if (d) d.remove();
+      } else if (S.rotTargetId === "lowcontrast/block") {
+        // The details panel lives outside #stage-content, so it survives every
+        // re-render and would keep the pre-edit angle on its slider. [ and ]
+        // read that slider, so the next nudge would quietly undo the angle
+        // just applied.
+        const sl = $("#roi-angle"), num = $("#roi-angle-num");
+        if (sl) sl.value = S.lcAngleCommitted;
+        if (num) num.value = S.lcAngleCommitted.toFixed(1);
+      }
+    }
     status(`Low-contrast block placed at ${r.angle_deg.toFixed(1)}° — `
            + `all 8 circles moved with it`);
     draw();
-  } catch (e) { status("Could not place block: " + e.message, true); }
+  } catch (e) {
+    status("Could not place block: " + e.message, true);
+    // The local preview already moved the block; the server did not accept it,
+    // so re-read rather than leave the two disagreeing.
+    openAnalysis(S.aid);
+  }
 }
 
 /* ================= validation (administrator sign-off) ================= */
@@ -753,7 +998,7 @@ function valChip(st) {
 /* Same administrator credential as deletion: it is the other decision an
    ordinary user must not be able to make. The approver's NAME is recorded
    separately, because a shared password cannot say who signed. */
-function validationDialog(rec) {
+function validationDialog(rec, submit) {
   return new Promise((resolve) => {
     const back = $("#val-backdrop");
     $("#val-target").textContent =
@@ -771,7 +1016,14 @@ function validationDialog(rec) {
     back.classList.remove("hidden");
     $("#v-by").focus();
 
+    // The panel owns the submit, for the same reason the delete panel does: a
+    // wrong administrator password is a 401, and letting that reach the shared
+    // 401 handler threw the operator out to the sign-in page mid-signoff, with
+    // the approver name and comment they had typed lost and a throttle strike
+    // recorded that they never saw.
+    let busy = false;
     const done = (result) => {
+      if (busy) return;
       back.classList.add("hidden");
       $("#v-save").onclick = null;
       $("#v-cancel").onclick = null;
@@ -779,7 +1031,7 @@ function validationDialog(rec) {
       document.onkeydown = null;
       resolve(result);
     };
-    $("#v-save").onclick = () => {
+    $("#v-save").onclick = async () => {
       const sel = document.querySelector('input[name="vstatus"]:checked');
       const status = sel ? sel.value : "";
       const by = $("#v-by").value.trim();
@@ -792,8 +1044,21 @@ function validationDialog(rec) {
         $("#val-error").textContent = "The administrator password is required.";
         return;
       }
-      done({ status, validated_by: by, comment: $("#v-comment").value.trim(),
-             admin_password: $("#v-pw").value });
+      busy = true;
+      $("#v-save").disabled = true;
+      $("#val-error").textContent = "Recording…";
+      try {
+        const r = await submit({
+          status, validated_by: by, comment: $("#v-comment").value.trim(),
+          admin_password: $("#v-pw").value });
+        busy = false;
+        done(r);
+      } catch (e) {
+        busy = false;
+        $("#v-save").disabled = false;
+        $("#val-error").textContent = e.message;
+        $("#v-pw").select();
+      }
     };
     $("#v-cancel").onclick = () => done(null);
     back.onclick = (e) => { if (e.target === back) done(null); };
@@ -810,14 +1075,13 @@ async function setValidation(rec, onDone) {
       + "(python -m phantom_qa.manage set-admin-password).");
     return;
   }
-  const vals = await validationDialog(rec);
-  if (!vals) return;
-  try {
-    const r = await postJSON(`api/analyses/${rec.id}/validation`, vals);
-    status(`Recorded: ${VAL_LABEL[r.validation_status] || "pending review"}`
-           + (r.validated_by ? ` (${r.validated_by})` : ""));
-    if (onDone) onDone(r);
-  } catch (e) { status("Validation refused: " + e.message, true); }
+  $("#v-save").disabled = false;
+  const r = await validationDialog(rec, (vals) =>
+    postJSON(`api/analyses/${rec.id}/validation`, vals, { adminAuth: true }));
+  if (!r) return;
+  status(`Recorded: ${VAL_LABEL[r.validation_status] || "pending review"}`
+         + (r.validated_by ? ` (${r.validated_by})` : ""));
+  if (onDone) onDone(r);
 }
 
 /* ================= integrity & deletion ================= */
@@ -842,10 +1106,104 @@ async function verifyAnalysis(aid) {
   } catch (e) { status("Verification failed: " + e.message, true); }
 }
 
-/* Deleting destroys the stored source file, so on a shared installation it
-   needs the ADMIN password plus the analysis id typed back. */
+/* Deleting destroys the stored source file, the edit history and — when this
+   was the last analysis of its phantom — that phantom's stored measuring-point
+   layout. It needs the ADMIN password and a written reason.
+
+   A panel with real fields, not a chain of prompt() boxes. The old flow asked
+   for the id, then the password, then the reason, and every refusal came back
+   as a status line that cleared itself after six seconds. An operator who
+   mistyped the password saw the row still there, assumed the browser had not
+   caught up, and on re-uploading the same file was offered "open the existing
+   analysis" — which brought back the very marks they thought they had
+   deleted. Here the target stays on screen while they type and the refusal is
+   shown in place until they deal with it. */
+function deleteDialog(rec, impact, submit) {
+  return new Promise((resolve) => {
+    const back = $("#del-backdrop");
+    const text = (id, v) => { $(id).textContent = v || "—"; };
+    // textContent throughout: site, phantom and the file name are operator-
+    // supplied and must never be parsed as markup.
+    text("#del-id", rec.id);
+    text("#del-who", [rec.site, rec.phantom].filter(Boolean).join(" / ")
+                     || "unlabelled");
+    text("#del-acquired", (rec.acquired_at || "").slice(0, 16)
+                          || "not recorded by the scanner");
+    text("#del-uploaded", (rec.created_at || "").slice(0, 16));
+    text("#del-source", rec.source_name);
+    text("#del-status", rec.status || "-");
+
+    const warn = $("#del-layout-warn");
+    if (impact && impact.layout_would_be_deleted) {
+      warn.textContent =
+        `⚠ This is the last analysis of phantom “${impact.phantom}”. Its stored `
+        + `measuring-point layout will be deleted too, so the next scan of that `
+        + `phantom starts from automatic detection again.`;
+      warn.classList.remove("hidden");
+    } else {
+      warn.textContent = "";
+      warn.classList.add("hidden");
+    }
+
+    $("#del-reason").value = "";
+    $("#del-pw").value = "";
+    $("#del-error").textContent = "";
+    $("#del-confirm").disabled = false;
+    back.classList.remove("hidden");
+    $("#del-reason").focus();
+
+    // While the request is in flight the panel refuses to close. Otherwise
+    // Escape would report "nothing was deleted" to an operator whose deletion
+    // was, at that moment, succeeding.
+    let busy = false;
+    const done = (result) => {
+      if (busy) return;
+      back.classList.add("hidden");
+      $("#del-confirm").onclick = null;
+      $("#del-cancel").onclick = null;
+      back.onclick = null;
+      document.onkeydown = null;
+      resolve(result);
+    };
+    const minChars = (impact && impact.min_reason_chars) || 5;
+    $("#del-confirm").onclick = async () => {
+      const reason = $("#del-reason").value.trim();
+      if (reason.length < minChars) {
+        $("#del-error").textContent =
+          `Give a reason of at least ${minChars} characters — it is the only `
+          + "record of why this data was destroyed.";
+        return;
+      }
+      if (!$("#del-pw").value) {
+        $("#del-error").textContent = "The administrator password is required.";
+        return;
+      }
+      // The panel stays open until the server actually accepts. A refusal —
+      // wrong password, throttled, reason too short — is shown here rather
+      // than as a status line that fades, so the deletion can never appear to
+      // have happened when it did not.
+      busy = true;
+      $("#del-confirm").disabled = true;
+      $("#del-error").textContent = "Deleting…";
+      try {
+        const r = await submit({ admin_password: $("#del-pw").value, reason });
+        busy = false;
+        done(r);
+      } catch (e) {
+        busy = false;
+        $("#del-error").textContent = e.message;
+        $("#del-confirm").disabled = false;
+        $("#del-pw").select();
+      }
+    };
+    $("#del-cancel").onclick = () => done(null);
+    back.onclick = (e) => { if (e.target === back) done(null); };
+    document.onkeydown = (e) => { if (e.key === "Escape") done(null); };
+  });
+}
+
 async function deleteAnalysis(aid) {
-  let policy = { enabled: true };
+  let policy = { enabled: true, min_reason_chars: 5 };
   try { policy = await api("api/deletion_policy"); } catch (e) { /* noop */ }
   if (!policy.enabled) {
     alert("Deletion is disabled on this installation.\n\nAn administrator must "
@@ -853,31 +1211,38 @@ async function deleteAnalysis(aid) {
       + "(python -m phantom_qa.manage set-admin-password).");
     return;
   }
-  const confirmId = prompt(
-    `This permanently deletes analysis ${aid} AND its stored source file.\n`
-    + `It cannot be undone.\n\nType the analysis id to confirm:`);
-  if (confirmId === null) return;
-  if (confirmId.trim() !== aid) { alert("The id did not match — nothing deleted."); return; }
-  const pw = prompt("Administrator password (not your login password):");
-  if (pw === null) return;
-  const reason = prompt("Reason for deletion (recorded in the audit log):", "") || "";
+  let rec = (H.rows || []).find(x => x.id === aid) || { id: aid };
+  let impact = { min_reason_chars: policy.min_reason_chars || 5 };
   try {
-    await postJSON(`api/analyses/${aid}/delete`,
-                   { admin_password: pw, confirm_id: confirmId.trim(), reason });
-    status(`Analysis ${aid} deleted.`);
-    if (S.aid === aid) {
-      S.aid = null; S.record = null; S.imgEl = null; S.geometry = null;
-      S.results = null; S.reg = null;
-      setStage("U");
-      draw();
-    }
-    loadHistory();
-  } catch (e) { status("Delete refused: " + e.message, true); }
+    const full = await api(`api/analyses/${aid}`);
+    rec = { ...rec, ...full };
+    impact = { ...(full.delete_impact || {}), ...impact };
+  } catch (e) { /* fall back to what History already knows */ }
+
+  const r = await deleteDialog(rec, impact, (vals) =>
+    postJSON(`api/analyses/${aid}/delete`, vals, { adminAuth: true }));
+  if (!r) { status("Nothing was deleted."); return; }
+  status(`Analysis ${aid} deleted.`
+         + (r.layout_deleted
+            ? ` The stored measuring-point layout for phantom ${r.phantom} `
+              + `was removed with it.`
+            : ""));
+  if (S.aid === aid) {
+    clearAnalysisState();
+    setStage("U");
+    draw();
+  }
+  loadHistory();
 }
 
 /* ================= wizard stages ================= */
 
 function setStage(st) {
+  // An angle typed but not applied has already been drawn locally. Leaving the
+  // step with that preview standing would show geometry the server does not
+  // have — and step C, re-entered, would read the previewed angle back out of
+  // S.geometry as if it had been committed. Resync instead of guessing.
+  const leavingWithPreview = S.stage === "C" && st !== "C" && S.previewPending;
   S.stage = st;
   document.querySelectorAll("#stage-nav li").forEach(li => {
     const s = li.dataset.stage;
@@ -886,10 +1251,25 @@ function setStage(st) {
       STAGES.indexOf(s) < STAGES.indexOf(st) && s !== "U");
   });
   const rd = $("#roi-details");
-  if (rd && st !== "C") rd.remove();
+  if (rd && st !== "C") { rd.remove(); S.rotTargetId = null; }
   renderIdentityBar();
   renderStage();
   draw();
+  if (leavingWithPreview) discardPreview();
+}
+
+/* Drop an uncommitted local preview by re-reading the stored geometry. Cheap,
+   because it only runs when a preview is actually outstanding. */
+async function discardPreview() {
+  S.previewPending = false;
+  if (!S.aid) return;
+  try {
+    const rec = await api(`api/analyses/${S.aid}`);
+    S.geometry = rec.geometry;
+    S.history = rec.history || S.history;
+    renderStage();
+    draw();
+  } catch (e) { /* leave the local copy; the next edit will resync */ }
 }
 
 function renderStage() {
@@ -999,11 +1379,18 @@ async function uploadFile(file, opts = {}) {
     const r = await api("api/analyses", { method: "POST", body: fd });
     const ok = r.analyses.filter(a => a.registered);
     if (!r.analyses.length) throw new Error("no images found");
+    const notes = [];
     if (r.analyses.length > 1)
-      status(`${r.analyses.length} images found — opening the first; others are in History.`);
+      notes.push(`${r.analyses.length} images found — opening the first; others `
+                 + `are in History.`);
+    if (r.phantom_profile)
+      notes.push(`A stored measuring-point layout for phantom `
+                 + `${r.phantom_profile.phantom} will be applied when you `
+                 + `confirm the registration.`);
     S.pendingFile = null;
     const first = ok[0] || r.analyses[0];
     await openAnalysis(first.id);
+    if (notes.length) status(notes.join(" "));
   } catch (e) {
     if (e.duplicateOf && e.duplicateOf.length) {
       const choice = await duplicateDialog(e.duplicateOf[0]);
@@ -1022,15 +1409,18 @@ async function uploadFile(file, opts = {}) {
 }
 
 async function openAnalysis(aid) {
+  // Full reset first: nothing of the previously open analysis may survive into
+  // this one, not even a selected ROI id or a half-finished corner click.
+  clearAnalysisState();
   S.aid = aid;
-  S.imgEl = null;
-  S.geometry = null; S.results = null; S.selectedRoi = null;
-  S.manualCorners = []; S.mode = "normal";
   const rec = await api(`api/analyses/${aid}`);
   S.record = rec;
   S.reg = rec.registration;
   S.geometry = rec.geometry;
   S.results = rec.results;
+  S.history = rec.history || { seq: 0, undo_depth: 0, redo_depth: 0 };
+  S.layoutSource = rec.layout_source || "";
+  S.phantomProfile = rec.phantom_profile || null;
   S.sid = rec.sid_mm || 1000;
   S.nativeCols = S.reg ? S.reg.image.cols : (rec.meta.Columns || 3000);
   S.nativeRows = S.reg ? S.reg.image.rows : (rec.meta.Rows || 3000);
@@ -1064,13 +1454,12 @@ function stageA(c) {
     <button class="primary" id="btn-confirm-a">Confirm registration ✓</button>
     <button class="secondary" id="btn-manual-corners">Manual corners…</button>`;
   $("#btn-confirm-a").addEventListener("click", async () => {
-    status("Generating pattern proposals…");
+    status("Detecting patterns…");
     try {
       await postJSON(`api/analyses/${S.aid}/confirm`, { stage: "A" });
       const r = await postJSON(`api/analyses/${S.aid}/propose`, {});
-      S.geometry = r.geometry;
+      applyProposal(r);
       setStage("B");
-      status("");
     } catch (e) { status(e.message, true); }
   });
   $("#btn-manual-corners").addEventListener("click", () => {
@@ -1078,6 +1467,30 @@ function stageA(c) {
     status("Click the 4 phantom corners in order around the square.");
     draw();
   });
+}
+
+/* Adopt a fresh proposal, and say plainly where the marks came from.
+
+   The operator must be able to tell a stored layout from a detection at the
+   moment the marks appear on screen — that difference is the whole point of
+   storing a layout, and the absence of it is how "the marks came back from a
+   deleted scan" felt like a bug rather than a feature. */
+function applyProposal(r) {
+  S.geometry = r.geometry;
+  S.layoutSource = r.layout_source || "auto";
+  if (r.profile) S.phantomProfile = r.profile;
+  noteHistory(r);
+  if (r.profile_applied && r.profile) {
+    status(`Measuring points loaded from the stored layout for phantom `
+           + `${r.profile.phantom} (saved `
+           + `${(r.profile.updated_at || "").slice(0, 16)}). Stage C can reset `
+           + `them to automatic detection.`);
+  } else if (r.profile && r.profile_check && !r.profile_check.ok) {
+    status(`The stored layout for phantom ${r.profile.phantom} was NOT applied: `
+           + r.profile_check.reason, true);
+  } else {
+    status("");
+  }
 }
 
 async function submitManualCorners() {
@@ -1097,14 +1510,27 @@ async function submitManualCorners() {
 }
 
 /* ---- Stage B ---- */
+/* Detail a confident user wants and a hurried one should not have to wade
+   through. A native <details>: it needs no script, survives a re-render, is
+   keyboard-accessible, and prints expanded — so the printable report is still
+   complete even when the screen is not. */
+function advanced(summary, html, open = false) {
+  return `<details class="advanced"${open ? " open" : ""}>`
+       + `<summary>${summary}</summary>${html}</details>`;
+}
+
 function stageB(c) {
   if (!S.geometry) { c.innerHTML = "<p>No proposals yet.</p>"; return; }
   const g = S.geometry;
   const rows = [];
-  const add = (test, name, ok, extra = "") => rows.push(
-    `<tr><td><span class="swatch" style="background:${COLORS[test]}"></span>
-     ${name}</td><td>${ok ? "detected" : "NOT refined (nominal used)"}</td>
-     <td>${extra}</td></tr>`);
+  const missing = [];
+  const add = (test, name, ok, extra = "") => {
+    if (!ok) missing.push(name);
+    rows.push(
+      `<tr><td><span class="swatch" style="background:${COLORS[test]}"></span>
+       ${name}</td><td>${ok ? "detected" : "NOT refined (nominal used)"}</td>
+       <td>${extra}</td></tr>`);
+  };
   if (g.linepairs && !g.linepairs._error)
     g.linepairs.groups.forEach(gr =>
       add("linepairs", `line group ${gr.id} (${gr.freq_lp_mm} lp/mm)`, gr.detected));
@@ -1131,16 +1557,36 @@ function stageB(c) {
     if (g[t] && g[t]._error) rows.push(
       `<tr><td>${t}</td><td colspan="2" style="color:var(--fail)">${g[t]._error}</td></tr>`);
   });
+  const errored = TESTS.filter(t => g[t] && g[t]._error);
+  const total = rows.length;
+  const found = total - missing.length;
+  let verdict;
+  if (errored.length) {
+    verdict = `<div class="reasons-why"><b>${errored.join(", ")} could not be
+      analysed on this scan.</b> The remaining patterns are still usable.</div>`;
+  } else if (!missing.length) {
+    verdict = `<div class="reasons-pass"><b>Every pattern was found</b>
+      (${total} of ${total}).</div>`;
+  } else {
+    verdict = `<div class="reasons-why"><b>${found} of ${total} patterns were
+      found.</b> These were not, so their nominal positions are being used:
+      <ul>${missing.map(m => `<li>${m}</li>`).join("")}</ul></div>`;
+  }
+
   c.innerHTML = `<h2>Stage B — Pattern identification</h2>
-    <p class="hint">Every detected pattern is outlined and labeled on the image.
-    Verify each is the right object with the right label (zoom in!). A 180°
-    mix-up or mislabeled group must be caught here.</p>
-    <table><tr><th>pattern</th><th>detection</th><th></th></tr>${rows.join("")}</table>
+    <p class="hint">Look at the image, not at this panel: every pattern found is
+    outlined and labelled there. Check that each outline is on the right object
+    with the right label — zoom in. A pattern found end-for-end, or a group
+    labelled as its neighbour, has to be caught here.</p>
+    ${verdict}
+    ${advanced("Detection detail — every pattern, with what was measured",
+      `<table><tr><th>pattern</th><th>detection</th><th></th></tr>
+       ${rows.join("")}</table>`)}
     <button class="primary" id="btn-confirm-b">Verify measuring points →</button>
     <button class="secondary" id="btn-back-a">Back to registration</button>
-    <p class="hint">Patterns that were not found, or were labelled wrongly, are
-    corrected in the next step by dragging and rotating their measuring areas —
-    you do not have to fix them here.</p>`;
+    <p class="hint">Nothing needs fixing here. Patterns that were not found, or
+    were labelled wrongly, are corrected in the next step by dragging and
+    rotating their measuring areas.</p>`;
   $("#btn-confirm-b").addEventListener("click", async () => {
     await postJSON(`api/analyses/${S.aid}/confirm`, { stage: "B" });
     setStage("C");
@@ -1149,47 +1595,231 @@ function stageB(c) {
 }
 
 /* ---- Stage C ---- */
+
+/* Where the measuring points currently come from, and how to change that.
+
+   Two resets rather than one, because "start again" is ambiguous once a
+   phantom has a stored layout: the operator has to be able to say whether they
+   mean this scan's own detection or the layout confirmed for this phantom. */
+/* An analysis somebody has signed off is read-only. Say so before the operator
+   drags something and gets a refusal, rather than after. */
+function signedOff() {
+  return !!(S.record && (S.record.validation_status || "").trim());
+}
+
+function lockedBar() {
+  const r = S.record || {};
+  return `<div class="ident-warn" style="border-radius:6px;margin:8px 0">
+      🔒 <b>Signed off${r.validated_by
+        ? ` by ${html_escape(r.validated_by)}` : ""}</b>${r.validated_at
+        ? ` on ${html_escape(r.validated_at.slice(0, 16))}` : ""} — the
+      measuring points, the registration and the results are locked, because
+      someone has taken responsibility for these numbers. To rework this
+      analysis, withdraw the validation from the identity bar above first.
+    </div>`;
+}
+
+function layoutBar() {
+  if (signedOff()) return lockedBar();
+  const prof = S.phantomProfile;
+  const fromProfile = S.layoutSource === "profile";
+  const phantom = (S.record && S.record.phantom) || "";
+  const head = fromProfile
+    ? `<b>Measuring points: stored layout for phantom ${html_escape(prof
+        ? prof.phantom : phantom)}</b>`
+    : `<b>Measuring points: automatic detection on this scan</b>`;
+  const meta = fromProfile && prof
+    ? `<br>saved ${html_escape((prof.updated_at || "").slice(0, 16))}`
+      + (prof.updated_by ? ` by ${html_escape(prof.updated_by)}` : "")
+      + ` · ${prof.n_rois} measuring area(s)`
+    : (prof
+       ? `<br>A stored layout for phantom ${html_escape(prof.phantom)} is `
+         + `available (saved ${html_escape((prof.updated_at || "").slice(0, 16))}).`
+       : (phantom
+          ? `<br>No layout stored for phantom ${html_escape(phantom)} yet — `
+            + `confirming this stage will store one.`
+          : `<br><span style="color:var(--warn)">No phantom is named, so these `
+            + `corrections cannot be reused on the next scan. Add a phantom in `
+            + `the identity bar above.</span>`));
+  return `<div class="layout-bar ${fromProfile ? "profile" : ""}">
+      ${head}${meta}
+      <div class="btn-row">
+        <button class="secondary-sm" id="btn-undo">↶ Undo</button>
+        <button class="secondary-sm" id="btn-redo">↷ Redo</button>
+        <button class="secondary-sm" id="btn-reset-auto">Reset to auto-detected</button>
+        ${prof ? `<button class="secondary-sm" id="btn-reset-profile">Reset to
+          stored layout</button>` : ""}
+      </div>
+    </div>`;
+}
+
 function stageC(c) {
   const fieldBtns = ["top", "right", "bottom", "left"].map(s =>
     `<button class="secondary btn-field" data-side="${s}">${s}</button>`).join(" ");
+  const locked = signedOff();
+  const lc = (S.geometry && S.geometry.lowcontrast) || null;
+  const lcOk = !locked && !!lc && !lc._error && !!lc.block;
+  const lcAng = lcOk ? Number(lc.angle_deg || 0) : 0;
+  S.lcAngleCommitted = lcAng;
   c.innerHTML = `<h2>Stage C — Measuring points</h2>
+    ${layoutBar()}
     <p class="hint">Click an ROI center dot to inspect μ/σ; drag it to adjust.
     Adjusted ROIs turn orange and are recorded in the audit trail. Low-contrast:
-    solid = object ROI, dotted = background ROI, dashed = full circle outline.</p>
+    solid = object ROI, dotted = background ROI, dashed = full circle outline.
+    Every change can be undone — you never have to re-upload the scan to
+    recover from a slip.</p>
     <h3>Low-contrast block</h3>
     <p class="hint">The eight circles sit on a fixed grid inside the block, so
     correcting the block once moves them all. Drag the block outline like any
-    ROI, set its angle, or click its four corners.</p>
-    <button class="secondary" id="btn-block-corners">Click 4 block corners…</button>
-    <button class="secondary" id="btn-block-rotate">Set block angle…</button>
+    ROI, type its angle below, or click its four corners.</p>
+    <div class="btn-row">
+      <button class="secondary-sm" id="lc-flip" ${lcOk ? "" : "disabled"}
+              title="Turn the block end for end — L1 and L8 swap places">
+        ⟲ Turn 180°</button>
+    </div>
+    <p class="hint">Use <b>Turn 180°</b> first if the circles are numbered the
+    wrong way round: the block outline is symmetrical, so detection can find it
+    end for end, and L1 then sits on L5's disc, L2 on L6's and so on. Every ROI
+    still lands on a real disc, so nothing looks wrong on the image — the sign
+    is step E reporting that |CNR| is not in design order. Everything below is
+    fine adjustment on top of this.</p>
+    <div class="rot-row" id="lc-angle-row">
+      <label for="lc-angle">fine angle °
+        <input type="number" id="lc-angle" step="0.5" min="-180" max="180"
+               value="${lcAng.toFixed(1)}" ${lcOk ? "" : "disabled"}></label>
+      <button class="secondary-sm" id="lc-angle-minus" ${lcOk ? "" : "disabled"}>−1°</button>
+      <button class="secondary-sm" id="lc-angle-plus" ${lcOk ? "" : "disabled"}>+1°</button>
+      <button class="secondary-sm" id="lc-angle-apply" ${lcOk ? "" : "disabled"}>Apply</button>
+    </div>
+    <p class="hint">Degrees in the phantom frame. Typing previews on the image;
+    Enter or Apply commits and re-lays all eight circles. [ and ] nudge by 1°.
+    The first commit after detection also drops the automatic sub-millimetre
+    grid refinement, so the circles can settle up to about 2 mm from the
+    preview; after that, preview and result agree exactly.
+    ${lcOk ? "" : "<b>The low-contrast block was not proposed on this scan, so "
+              + "there is no angle to set.</b>"}</p>
+    <button class="secondary" id="btn-block-corners" ${lcOk ? "" : "disabled"}>Click
+      4 block corners…</button>
 
     <h3>Manual field-edge placement</h3>
     <p class="hint">If a field edge was not auto-detected (or looks wrong),
-    choose a side and click the visible radiation-field edge on the image.</p>
+    choose a side and click the visible radiation-field edge on the image.
+    Field edges describe the collimation of this exposure, so they are never
+    stored as part of the phantom's layout.</p>
     <div>${fieldBtns}</div>
     <button class="primary" id="btn-confirm-c">Measuring points confirmed ✓</button>
     <button class="secondary" id="btn-back-b">Back to patterns</button>`;
-  $("#btn-block-corners").addEventListener("click", () => {
-    S.mode = "lccorners"; S.lcCorners = [];
-    status("Click the 4 corners of the low-contrast block, in any order.");
-    draw();
-  });
-  $("#btn-block-rotate").addEventListener("click", async () => {
-    const cur = ((S.geometry.lowcontrast || {}).angle_deg) || 0;
-    const v = prompt("Block angle in degrees (phantom frame):", cur.toFixed(1));
-    if (v === null) return;
-    await placeBlock({ angle_deg: parseFloat(v) });
-  });
+
+  if (!locked) {
+    refreshHistoryButtons();
+    $("#btn-undo").addEventListener("click", () => stepHistory("undo"));
+    $("#btn-redo").addEventListener("click", () => stepHistory("redo"));
+    $("#btn-reset-auto").addEventListener("click", () => resetGeometry("auto"));
+    const rp = $("#btn-reset-profile");
+    if (rp) rp.addEventListener("click", () => resetGeometry("profile"));
+  }
+  document.querySelectorAll(".btn-field").forEach(
+    b => { b.disabled = locked; });
+
+  if (lcOk) {
+    const f = $("#lc-angle");
+    f.addEventListener("input", () => {
+      const v = parseFloat(f.value);
+      if (Number.isFinite(v)) previewBlockAngle(v);
+    });
+    f.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault(); commitBlockAngle(parseFloat(f.value));
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        previewBlockAngle(S.lcAngleCommitted);
+        f.value = S.lcAngleCommitted.toFixed(1);
+      }
+    });
+    $("#lc-angle-apply").addEventListener("click",
+      () => commitBlockAngle(parseFloat(f.value)));
+    $("#lc-angle-minus").addEventListener("click", () => nudgeBlockAngle(-1));
+    $("#lc-angle-plus").addEventListener("click", () => nudgeBlockAngle(+1));
+    $("#lc-flip").addEventListener("click", () => flipBlock());
+    $("#btn-block-corners").addEventListener("click", () => {
+      S.mode = "lccorners"; S.lcCorners = [];
+      status("Click the 4 corners of the low-contrast block, in any order.");
+      draw();
+    });
+  }
+
   document.querySelectorAll(".btn-field").forEach(b =>
     b.addEventListener("click", () => {
       S.mode = "fieldedge"; S.fieldEdgeSide = b.dataset.side;
       status(`Click the radiation-field edge on the ${b.dataset.side} side.`);
     }));
   $("#btn-confirm-c").addEventListener("click", async () => {
-    await postJSON(`api/analyses/${S.aid}/confirm`, { stage: "C" });
-    setStage("D");
+    try {
+      const r = await postJSON(`api/analyses/${S.aid}/confirm`, { stage: "C" });
+      if (r.profile_saved && r.profile) {
+        S.phantomProfile = { phantom: r.profile.phantom,
+                             updated_at: r.profile.updated_at,
+                             updated_by: r.profile.updated_by,
+                             n_rois: r.profile.n_rois };
+        let msg = `Measuring points stored for phantom ${r.profile.phantom} — `
+                + `the next scan of it starts here.`;
+        if ((r.profile.near_miss || []).length)
+          msg += ` Note: a separate layout also exists for `
+               + `“${r.profile.near_miss.join("”, “")}”, which differs only in `
+               + `spelling.`;
+        status(msg);
+      } else if (r.profile_error) {
+        status(r.profile_error, true);
+      }
+      setStage("D");
+    } catch (e) { status(e.message, true); }
   });
   $("#btn-back-b").addEventListener("click", () => setStage("B"));
+}
+
+async function stepHistory(which) {
+  try {
+    const r = await postJSON(`api/analyses/${S.aid}/geometry/${which}`, {});
+    S.geometry = r.geometry;
+    noteHistory(r);
+    // An undo can revert any part of the tree, so the whole blob is replaced
+    // rather than patched ROI by ROI.
+    S.selectedRoi = null; S.rotTargetId = null;
+    const d = $("#roi-details");
+    if (d) d.remove();
+    renderStage();
+    draw();
+    status(which === "undo" ? "Last measuring-point change undone."
+                            : "Change redone.");
+  } catch (e) {
+    if (e.status === 409) { status(e.message); refreshHistoryButtons(); return; }
+    status(`${which} failed: ` + e.message, true);
+    openAnalysis(S.aid);
+  }
+}
+
+async function resetGeometry(to) {
+  const label = to === "auto" ? "the automatic detection for this scan"
+                             : "the stored layout for this phantom";
+  if (!confirm(`Reset every measuring point to ${label}?\n\n`
+               + `Your manual corrections on this scan are replaced. `
+               + `The reset itself can be undone.`)) return;
+  status("Resetting measuring points…");
+  try {
+    const r = await postJSON(`api/analyses/${S.aid}/geometry/reset`, { to });
+    S.geometry = r.geometry;
+    S.layoutSource = r.layout_source || S.layoutSource;
+    if (r.profile) S.phantomProfile = r.profile;
+    noteHistory(r);
+    S.selectedRoi = null; S.rotTargetId = null;
+    const d = $("#roi-details");
+    if (d) d.remove();
+    renderStage();
+    draw();
+    status(to === "auto"
+      ? "Measuring points reset to the automatic detection. Undo restores your edits."
+      : "Measuring points reset to this phantom's stored layout.");
+  } catch (e) { status("Reset refused: " + e.message, true); }
 }
 
 async function submitFieldEdge(natPoint) {
@@ -1198,6 +1828,7 @@ async function submitFieldEdge(natPoint) {
     const f = await postJSON(`api/analyses/${S.aid}/field_edge`,
       { side: S.fieldEdgeSide, point_px: natPoint });
     S.geometry.geometry.field_edges[S.fieldEdgeSide] = f;
+    noteHistory(f);
     status(`Field edge ${S.fieldEdgeSide} set (${fmt(f.offset_from_edge_mm, 1)} mm outside phantom edge).`);
     draw();
   } catch (e) { status("Failed: " + e.message, true); }
@@ -1249,35 +1880,57 @@ async function stageD(c) {
     `<tr><td>${side}</td><td class="num">${fmt(f.deviation_from_central_line_mm, 1)}</td>
      <td class="num">${fmt(f.pct_of_sid, 2)} %</td><td>${chip(f.status)}</td></tr>` :
     `<tr><td>${side}</td><td colspan="3" class="hint">not measured — ${f.reason || "no edge found"}</td></tr>`).join("");
+  const worstDim = d.dev_from_nominal_pct;
   c.innerHTML = `<h2>Stage D — Dimension verification</h2>
+    <p class="hint">This step confirms the millimetre scale before anything is
+    measured with it. If both lines below are green you can go straight on.</p>
+    <div class="card"><div class="kv">
+      <div>Phantom size</div>
+      <div>${chip(gr.dimension_status)} mean side ${fmt(d.mean_side_mm, 1)} mm
+        ${worstDim !== undefined && worstDim !== null
+          ? `(${worstDim >= 0 ? "+" : ""}${fmt(worstDim, 2)} % from the assumed
+             ${nomS} mm)` : ""}</div>
+      <div>X-ray field</div>
+      <div>${chip(gr.field_status)} ${fieldSummary(gr)}</div>
+    </div></div>
+    ${reasonsBlock(gr.dimension_reasons, gr.dimension_status)}
+    ${reasonsBlock(gr.field_reasons, gr.field_status)}
     <p>SID <input type="number" id="sid-input" value="${S.sid}" step="10"> mm
        <button class="secondary" id="btn-recompute-d">recompute</button></p>
-    <h3>Corner-mark dimensions ${chip(gr.dimension_status)}</h3>
-    <table><tr><th>dimension</th><th>measured</th><th>nominal*</th><th>Δ</th></tr>
-    ${dimsHtml}</table>
-    <p class="hint">*nominal side ${nomS} mm is assumed design intent
-    (no drawing available); calibrated reference is ${fmt(d.calibrated_side_mm, 1)} mm.</p>
-    <h3>Side-mark rulers (0.5 cm pitch)</h3>
-    <table><tr><th>side</th><th>pitch [mm]</th><th>Δpitch</th>
-    <th>linearity RMS [mm]</th><th>central line from edge [mm]</th></tr>${rulRows}</table>
-    <h3>Central-line separations</h3>
-    <table>
-      <tr><td>vertical</td><td class="num">${fmt(seps.vertical_mm, 2)} mm</td>
-          <td>nominal ${fmt(seps.nominal_mm, 1)} mm</td></tr>
-      <tr><td>horizontal</td><td class="num">${fmt(seps.horizontal_mm, 2)} mm</td>
-          <td></td></tr></table>
-    <h3>Scale cross-check</h3>
-    <table>
-      <tr><td>tape-pitch measured</td><td class="num">${fmt(sc.pitch_measured_mm, 4)} mm (nominal 5.000)</td></tr>
-      <tr><td>absolute scale (pitch-anchored)</td><td class="num">${fmt(sc.absolute_mm_per_px, 5)} mm/px</td></tr>
-      <tr><td>DICOM ImagerPixelSpacing</td><td class="num">${fmt(spac.ImagerPixelSpacing, 5)} mm/px</td></tr>
-      <tr><td>DICOM PixelSpacing</td><td class="num">${fmt(spac.PixelSpacing, 5)} mm/px</td></tr>
-      <tr><td>implied magnification vs detector plane</td>
-          <td class="num">${fmt(sc.implied_magnification_vs_detector_plane, 4)}</td></tr>
-    </table>
-    <h3>X-ray field vs central lines ${chip(gr.field_status)}</h3>
-    <table><tr><th>side</th><th>deviation [mm]</th><th>% of SID</th><th></th></tr>
-    ${fieldRows}</table>
+    <p class="hint">Source-to-image distance, used to express the field
+    deviation as a percentage. Change it only if this exposure used a different
+    one.</p>
+
+    ${advanced("Measured dimensions — corners, rulers, scale and field",
+      `<h3>Corner-mark dimensions ${chip(gr.dimension_status)}</h3>
+       <table><tr><th>dimension</th><th>measured</th><th>nominal*</th><th>Δ</th></tr>
+       ${dimsHtml}</table>
+       <p class="hint">*nominal side ${nomS} mm is assumed design intent
+       (no drawing available); calibrated reference is
+       ${fmt(d.calibrated_side_mm, 1)} mm.</p>
+       <h3>Side-mark rulers (0.5 cm pitch)</h3>
+       <table><tr><th>side</th><th>pitch [mm]</th><th>Δpitch</th>
+       <th>linearity RMS [mm]</th><th>central line from edge [mm]</th></tr>
+       ${rulRows}</table>
+       <h3>Central-line separations</h3>
+       <table>
+         <tr><td>vertical</td><td class="num">${fmt(seps.vertical_mm, 2)} mm</td>
+             <td>nominal ${fmt(seps.nominal_mm, 1)} mm</td></tr>
+         <tr><td>horizontal</td><td class="num">${fmt(seps.horizontal_mm, 2)} mm</td>
+             <td></td></tr></table>
+       <h3>Scale cross-check</h3>
+       <table>
+         <tr><td>tape-pitch measured</td><td class="num">${fmt(sc.pitch_measured_mm, 4)} mm (nominal 5.000)</td></tr>
+         <tr><td>absolute scale (pitch-anchored)</td><td class="num">${fmt(sc.absolute_mm_per_px, 5)} mm/px</td></tr>
+         <tr><td>DICOM ImagerPixelSpacing</td><td class="num">${fmt(spac.ImagerPixelSpacing, 5)} mm/px</td></tr>
+         <tr><td>DICOM PixelSpacing</td><td class="num">${fmt(spac.PixelSpacing, 5)} mm/px</td></tr>
+         <tr><td>implied magnification vs detector plane</td>
+             <td class="num">${fmt(sc.implied_magnification_vs_detector_plane, 4)}</td></tr>
+       </table>
+       <h3>X-ray field vs central lines ${chip(gr.field_status)}</h3>
+       <table><tr><th>side</th><th>deviation [mm]</th><th>% of SID</th><th></th></tr>
+       ${fieldRows}</table>`)}
+
     <button class="primary" id="btn-confirm-d">Dimensions verified ✓ — run analysis</button>
     <button class="secondary" id="btn-back-c">Back to measuring points</button>`;
   $("#btn-recompute-d").addEventListener("click", () => {
@@ -1292,6 +1945,23 @@ async function stageD(c) {
   $("#btn-back-c").addEventListener("click", () => setStage("C"));
 }
 
+
+/* The field-alignment headline: the worst side, or why there is none. */
+function fieldSummary(gr) {
+  const sides = Object.entries(gr.field_alignment || {});
+  const measured = sides.filter(([, f]) => f.detected);
+  if (!measured.length)
+    return "not measured — no field edge was visible on any side";
+  let worst = measured[0];
+  measured.forEach((s) => {
+    if (Math.abs(s[1].pct_of_sid) > Math.abs(worst[1].pct_of_sid)) worst = s;
+  });
+  return `worst side ${worst[0]}, `
+       + `${fmt(worst[1].deviation_from_central_line_mm, 1)} mm `
+       + `(${fmt(worst[1].pct_of_sid, 2)} % of SID)`
+       + (measured.length < sides.length
+          ? ` · ${sides.length - measured.length} side(s) not measurable` : "");
+}
 
 /* Why a test passed, warned or failed. The status chip alone is not enough to
    troubleshoot with — especially on a phantom the definition does not match. */
@@ -1318,7 +1988,11 @@ async function stageE(c) {
   S.results = r.results;
   S.baseline = r.baseline;
   const res = r.results;
+  // Each entry carries what the summary row needs plus the detail behind it,
+  // so the two can never disagree about a test's status.
   const cards = [];
+  const card = (key, title, status, headline, html) =>
+    cards.push({ key, title, status, headline, html });
 
   /* line pairs */
   const lp = res.linepairs || {};
@@ -1334,11 +2008,15 @@ async function stageE(c) {
           ? `<tr class="reason-row"><td colspan="6">${html_escape(row.reason)}</td></tr>`
           : ""}`;
     }).join("");
-    cards.push(`<div class="card"><h3>Line patterns — SD &amp; linearity ${chip(lp.status)}</h3>
-      ${reasonsBlock(lp.reasons, lp.status)}
-      <table><tr><th>group</th><th>SD</th><th>pitch [mm]</th><th>Δpitch</th>
-      <th>grid RMS</th><th></th></tr>${rows}</table>
-      <div id="lp-charts"></div></div>`);
+    const worstLp = lp.rows.filter(x => x.status !== "pass").map(x => x.id);
+    card("linepairs", "Line patterns (resolution)", lp.status,
+      worstLp.length ? `${worstLp.length} of ${lp.rows.length} group(s) outside `
+                       + `tolerance: ${worstLp.join(", ")}`
+                     : `all ${lp.rows.length} groups within tolerance`,
+      `${reasonsBlock(lp.reasons, lp.status)}
+       <table><tr><th>group</th><th>SD</th><th>pitch [mm]</th><th>Δpitch</th>
+       <th>grid RMS</th><th></th></tr>${rows}</table>
+       <div id="lp-charts"></div>`);
   }
 
   /* wedge */
@@ -1348,13 +2026,17 @@ async function stageE(c) {
       `<tr><td>S${row.step}</td><td class="num">${fmt(row.mean, 1)}</td>
        <td class="num">${fmt(row.std, 1)}</td>
        <td>${row.saturated ? '<span class="chip fail">saturated</span>' : ""}</td></tr>`).join("");
-    cards.push(`<div class="card"><h3>Wedge (7 steps, positional) ${chip(w.status)}</h3>
-      ${reasonsBlock(w.reasons, w.status)}
-      <div class="kv"><div>R² (fit vs step index)</div><div>${fmt(w.fit.r2, 4)}
-      (min ${w.r2_min})</div><div>slope</div><div>${fmt(w.fit.slope, 1)} /step</div>
-      <div>monotonic</div><div>${w.monotonic}</div></div>
-      <canvas class="mini-chart" id="chart-wedge" width="420" height="220"></canvas>
-      <table><tr><th>step</th><th>mean</th><th>σ</th><th></th></tr>${rows}</table></div>`);
+    const sat = w.rows.filter(x => x.saturated).length;
+    card("wedge", "Wedge (dynamic range)", w.status,
+      `${w.monotonic ? "steps in order" : "STEPS NOT IN ORDER"}, `
+      + `range ${fmt(w.dynamic_range_ratio, 1)}×`
+      + (sat ? ` · ${sat} step(s) saturated` : ""),
+      `${reasonsBlock(w.reasons, w.status)}
+       <div class="kv"><div>R² (fit vs step index)</div><div>${fmt(w.fit.r2, 4)}
+       (min ${w.r2_min})</div><div>slope</div><div>${fmt(w.fit.slope, 1)} /step</div>
+       <div>monotonic</div><div>${w.monotonic}</div></div>
+       <canvas class="mini-chart" id="chart-wedge" width="420" height="220"></canvas>
+       <table><tr><th>step</th><th>mean</th><th>σ</th><th></th></tr>${rows}</table>`);
   }
 
   /* low contrast */
@@ -1364,11 +2046,18 @@ async function stageE(c) {
       `<tr><td>${row.id}</td><td class="num">${row.cnr.toFixed(3)}</td>
        <td class="num">${fmt(row.obj_mean, 1)}</td>
        <td class="num">${fmt(row.bg_mean, 1)}</td></tr>`).join("");
-    cards.push(`<div class="card"><h3>Low contrast — CNR ${chip(lc.status)}</h3>
-      ${reasonsBlock(lc.reasons, lc.status)}
-      <canvas class="mini-chart" id="chart-lc" width="420" height="200"></canvas>
-      <table><tr><th>circle</th><th>CNR</th><th>μ obj</th><th>μ bg</th></tr>${rows}</table>
-      ${lc.ordering_ok ? "" : '<p class="hint" style="color:var(--warn)">|CNR| not monotone with design order — check ROI placement.</p>'}</div>`);
+    const visible = lc.rows.filter(x => Math.abs(x.cnr) >= 0.2).length;
+    const orderWarn = lc.ordering_ok ? "" :
+      '<p class="hint" style="color:var(--warn)">|CNR| is not in design order. '
+      + 'The usual cause is the block having been found end for end — go back to '
+      + 'step C and press <b>Turn 180°</b>.</p>';
+    card("lowcontrast", "Low contrast (visible discs)", lc.status,
+      `${visible} of ${lc.rows.length} discs above CNR 0.2`
+      + (lc.ordering_ok ? "" : " · NOT in design order"),
+      `${reasonsBlock(lc.reasons, lc.status)}${orderWarn}
+       <canvas class="mini-chart" id="chart-lc" width="420" height="200"></canvas>
+       <table><tr><th>circle</th><th>CNR</th><th>μ obj</th><th>μ bg</th></tr>
+       ${rows}</table>`);
   }
 
   /* uniformity */
@@ -1378,11 +2067,13 @@ async function stageE(c) {
       `<tr><td>${row.id}</td><td class="num">${fmt(row.mean, 1)}</td>
        <td class="num">${fmt(row.std, 2)}</td><td class="num">${fmt(row.snr, 1)}</td>
        <td class="num">${fmt(row.dsnr_pct, 2)} %</td><td>${chip(row.status)}</td></tr>`).join("");
-    cards.push(`<div class="card"><h3>Uniformity — SNR ${chip(u.status)}</h3>
-      ${reasonsBlock(u.reasons, u.status)}
-      <table><tr><th>square</th><th>μ</th><th>σ</th><th>SNR</th><th>ΔSNR</th><th></th></tr>
-      ${rows}</table>
-      <p class="hint">tolerance |ΔSNR| ≤ ${u.tolerance_pct}%</p></div>`);
+    card("uniformity", "Uniformity (SNR across the field)", u.status,
+      `worst corner ${fmt(u.max_abs_dsnr_pct, 1)} % from the average `
+      + `(tolerance ${u.tolerance_pct} %)`,
+      `${reasonsBlock(u.reasons, u.status)}
+       <table><tr><th>square</th><th>μ</th><th>σ</th><th>SNR</th><th>ΔSNR</th>
+       <th></th></tr>${rows}</table>
+       <p class="hint">tolerance |ΔSNR| ≤ ${u.tolerance_pct}%</p>`);
   }
 
   /* geometry + field alignment had no card at all, so a "fail" overall could
@@ -1390,26 +2081,83 @@ async function stageE(c) {
   const gm = res.geometry || {};
   if (gm.dimension_status || gm.field_status) {
     const d = gm.dimensions || {};
-    cards.push(`<div class="card">
-      <h3>Geometry &amp; dimensions ${chip(gm.dimension_status)}</h3>
-      ${reasonsBlock(gm.dimension_reasons, gm.dimension_status)}
-      <div class="kv">
-        <div>mean side</div><div>${fmt(d.mean_side_mm)} mm</div>
-        <div>deviation</div><div>${fmt(d.dev_from_nominal_pct)} %</div>
-      </div>
-      <h3 style="margin-top:12px">Field alignment ${chip(gm.field_status)}</h3>
-      ${reasonsBlock(gm.field_reasons, gm.field_status)}
-    </div>`);
+    card("geometry", "Geometry &amp; dimensions", gm.dimension_status,
+      `mean side ${fmt(d.mean_side_mm, 1)} mm `
+      + `(${fmt(d.dev_from_nominal_pct, 2)} % from nominal)`,
+      `${reasonsBlock(gm.dimension_reasons, gm.dimension_status)}
+       <div class="kv">
+         <div>mean side</div><div>${fmt(d.mean_side_mm)} mm</div>
+         <div>deviation</div><div>${fmt(d.dev_from_nominal_pct)} %</div>
+       </div>`);
+    card("alignment", "X-ray field alignment", gm.field_status,
+      fieldSummary(gm),
+      reasonsBlock(gm.field_reasons, gm.field_status)
+      || '<p class="hint">No further detail was recorded for this test.</p>');
   }
 
-  const base = r.baseline ?
-    `<p class="hint">Baseline for this protocol: ${r.baseline.id} — deltas shown
-     in the report.</p>` :
-    `<p class="hint">No baseline stored for this protocol signature yet — mark
-     this analysis as baseline in Stage F if it should become the reference.</p>`;
+  /* A test whose geometry carried an _error, or whose compute() raised, comes
+     back as {status:"n/a"|"error", error:"…"} with no rows — so none of the
+     blocks above pushed a card for it. Without this it vanishes from the
+     summary entirely and the verdict below claims every test passed, on a scan
+     where a test was never measured at all. */
+  const TEST_TITLES = {
+    geometry: "Geometry &amp; dimensions",
+    linepairs: "Line patterns (resolution)",
+    lowcontrast: "Low contrast (visible discs)",
+    uniformity: "Uniformity (SNR across the field)",
+    wedge: "Wedge (dynamic range)",
+  };
+  TESTS.forEach(t => {
+    if (cards.some(cd => cd.key === t)) return;
+    const rr = res[t] || {};
+    const why = rr.error || "no result was produced for this test";
+    card(t, TEST_TITLES[t] || t, rr.status || "n/a",
+      `not analysed — ${html_escape(why)}`,
+      `<p style="color:var(--fail)">This test could not be analysed on this
+         scan: ${html_escape(why)}</p>
+       <p class="hint">Go back to step C and place its measuring areas by hand,
+         or repeat the exposure.</p>`);
+  });
+
+  const phantomName = (S.record && S.record.phantom) || "";
+  const base = r.baseline
+    ? `<p class="hint">Compared against the reference for
+       ${phantomName ? `phantom <b>${html_escape(phantomName)}</b>` : "this phantom"}
+       on this protocol: ${r.baseline.id}
+       ${r.baseline.acquired_at
+         ? `(${html_escape(r.baseline.acquired_at.slice(0, 16))})` : ""}.
+       Differences are shown in the printable report.</p>`
+    : `<p class="hint">No reference is stored for
+       ${phantomName ? `phantom <b>${html_escape(phantomName)}</b>` : "this phantom"}
+       on this protocol yet, so there is nothing to compare against. Mark this
+       analysis as the reference in step F if it should become one.</p>`;
+
+  // The summary answers "is anything wrong, and where"; the detail behind each
+  // row answers "why". Most operators only ever need the first.
+  const summaryRows = cards.map(cd =>
+    `<tr><td>${cd.title}</td><td>${chip(cd.status)}</td>
+     <td class="hint">${cd.headline}</td></tr>`).join("");
+  const attention = cards.filter(cd => cd.status !== "pass");
+  const verdict = attention.length
+    ? `<div class="reasons-why"><b>Needs attention:</b>
+       ${attention.map(cd => cd.title).join(", ")}. The matching section below
+       is already open, with the measured values and the reason.</div>`
+    : `<div class="reasons-pass"><b>Every test passed.</b> The detail below is
+       there if you want it.</div>`;
+
+  const details = cards.map(cd => advanced(
+    `${cd.title} ${chip(cd.status)}`, `<div class="card">${cd.html}</div>`,
+    cd.status !== "pass")).join("");
 
   c.innerHTML = `<h2>Stage E — Analysis results</h2>
-    <p>Overall: ${chip(r.overall)}</p>${base}${cards.join("")}
+    <div class="card"><h3>Overall ${chip(r.overall)}</h3>
+      <table><tr><th>test</th><th>result</th><th>measured</th></tr>
+      ${summaryRows}</table></div>
+    ${verdict}
+    ${base}
+    <h3>Detail per pattern</h3>
+    <p class="hint">Anything that did not pass is already open.</p>
+    ${details}
     <button class="primary" id="btn-confirm-e">Accept results → save</button>
     <button class="secondary" id="btn-back-d">Back to dimensions</button>`;
 
@@ -1422,6 +2170,55 @@ async function stageE(c) {
     setStage("F");
   });
   $("#btn-back-d").addEventListener("click", () => setStage("D"));
+}
+
+/* The reference this phantom's future scans are compared against.
+
+   Scoped to the phantom AND the protocol: two phantoms can differ by design and
+   both be valid, so each needs its own. It is also removable — a reference
+   chosen from a scan that later turns out to be poor has to be retractable. */
+function baselineBlock(r) {
+  const phantom = (r.phantom || "").trim();
+  if (r.is_baseline) {
+    return `<h3>Reference scan</h3>
+      <p><span class="chip pass">★ this is the reference</span> for
+      ${phantom ? `phantom <b>${html_escape(phantom)}</b>` : "unlabelled scans"}
+      on this protocol.</p>
+      <p class="hint">Every later scan of this phantom on this protocol is
+      compared against it. Remove it if this scan turned out not to be a good
+      reference — the phantom then simply has none until another is chosen.</p>
+      <button class="secondary" id="btn-baseline">Remove as reference</button>`;
+  }
+  if (r.reduced_precision) {
+    return `<h3>Reference scan</h3>
+      <p class="hint">A reduced-precision analysis cannot be a reference: it is
+      8-bit, lossy and carries no acquisition metadata.</p>`;
+  }
+  return `<h3>Reference scan</h3>
+    <p class="hint">Marking this as the reference makes every later scan of
+    ${phantom ? `phantom <b>${html_escape(phantom)}</b>` : "this phantom"} on
+    this protocol compare against it. Each phantom has its own reference, so
+    doing this does not affect any other phantom.${phantom ? ""
+      : " <b>Name the phantom first</b>, or the reference will belong to every "
+        + "unlabelled scan on this protocol."}</p>
+    <button class="secondary" id="btn-baseline">Mark as the reference for
+      this phantom</button>`;
+}
+
+async function toggleBaseline(value) {
+  try {
+    const r = await postJSON(`api/analyses/${S.aid}/baseline`,
+                             { baseline: value });
+    S.record.is_baseline = r.is_baseline ? 1 : 0;
+    status(r.is_baseline
+      ? `This is now the reference for `
+        + `${r.phantom || "unlabelled scans"} on this protocol.`
+        + (r.replaced.length
+           ? ` It replaced ${r.replaced.join(", ")}.` : "")
+      : `Reference removed. ${r.phantom || "This phantom"} has no reference `
+        + `until another scan is marked.`);
+    renderStage();
+  } catch (e) { status("Could not change the reference: " + e.message, true); }
 }
 
 /* ---- Stage F ---- */
@@ -1448,8 +2245,7 @@ function stageF(c) {
     <p>Analysis <b>${S.aid}</b> stored with full audit trail.</p>
     ${identWarn}
     ${valBlock}
-    <label><input type="checkbox" id="cb-baseline"> Mark as baseline for this
-    protocol signature</label><br>
+    ${baselineBlock(r)}
     <button class="primary" id="btn-finalize">Finalize</button>
     <h3>Export</h3>
     <p>
@@ -1466,10 +2262,13 @@ function stageF(c) {
     <button class="secondary" id="btn-verify">Verify source file</button>
     <br>
     <button class="secondary" id="btn-new">New analysis</button>`;
+  const bl = $("#btn-baseline");
+  if (bl) bl.addEventListener("click", () => toggleBaseline(!r.is_baseline));
   $("#btn-finalize").addEventListener("click", async () => {
     try {
-      await postJSON(`api/analyses/${S.aid}/finalize`,
-        { baseline: $("#cb-baseline").checked });
+      // Finalising no longer touches the baseline: it is its own decision now,
+      // and re-finalising must not silently clear a reference.
+      await postJSON(`api/analyses/${S.aid}/finalize`, {});
       status("Finalized.");
     } catch (e) { status(e.message, true); }
   });
@@ -1481,8 +2280,7 @@ function stageF(c) {
     }));
   $("#btn-verify").addEventListener("click", () => verifyAnalysis(S.aid));
   $("#btn-new").addEventListener("click", () => {
-    S.aid = null; S.imgEl = null; S.geometry = null; S.results = null;
-    S.reg = null; S.record = null; S.pendingFile = null;
+    clearAnalysisState();
     setStage("U");
     draw();
   });
@@ -1589,7 +2387,23 @@ $("#tab-history").addEventListener("click", () => showTab("history"));
 
 /* current filter + selection state */
 const H = { filter: { site: "", phantom: "", signature: "", validation: "" },
-            rows: [] };
+            order: "acquired", rows: [] };
+
+/* One date cell. The scanner's clock and this server's clock are independent,
+   and neither records a timezone, so an unusable acquisition date is called
+   out rather than quietly replaced by the upload time. */
+const ACQ_NOTE = {
+  missing: "the scanner recorded no acquisition date for this file",
+  implausible: "the acquisition date cannot be right — check the scanner clock",
+};
+
+function dateCell(a) {
+  const flag = a.acquired_flag || "";
+  const stamp = (a.acquired_at || "").slice(0, 16);
+  if (!flag) return stamp || "<span class='hint'>—</span>";
+  return `<span title="${ACQ_NOTE[flag]}" style="color:var(--warn)">`
+       + `${stamp || "unknown"} ⚠</span>`;
+}
 
 function selectedIds() {
   return [...document.querySelectorAll("#history-table .sel:checked")]
@@ -1628,17 +2442,22 @@ async function loadHistory() {
 
   const q = new URLSearchParams();
   Object.entries(H.filter).forEach(([k, v]) => { if (v) q.set(k, v); });
+  q.set("order", H.order);
   const r = await api("api/analyses?" + q.toString());
   H.rows = r.analyses;
+  const flagged = r.analyses.filter(a => a.acquired_flag).length;
   $("#filter-count").textContent =
-    `${r.analyses.length} analysis(es) match`;
+    `${r.analyses.length} analysis(es) match`
+    + (flagged ? ` · ${flagged} with no usable acquisition date` : "");
+  $("#f-order").value = H.order;
 
   const tb = $("#history-table tbody");
   tb.innerHTML = "";
   r.analyses.forEach(a => {
     const tr = el("tr", {}, `
       <td><input type="checkbox" class="sel" data-id="${a.id}"></td>
-      <td>${(a.acquired_at || a.created_at || "").slice(0, 16)}</td>
+      <td>${dateCell(a)}</td>
+      <td>${(a.created_at || "").slice(0, 16)}</td>
       <td>${a.site || "<span class='hint'>—</span>"}</td>
       <td>${a.phantom || "<span class='hint'>—</span>"}</td>
       <td>${a.source_name}${a.reduced_precision ? " ⚠" : ""}</td>
@@ -1646,7 +2465,12 @@ async function loadHistory() {
       <td>${a.stage}</td><td>${chip(a.status)}</td>
       <td>${valChip(a.validation_status)}${a.validated_by
             ? `<br><span class="hint">${a.validated_by}</span>` : ""}</td>
-      <td>${a.is_baseline ? "★" : ""}</td>
+      <td><a href="#" class="base ${a.is_baseline ? "" : "hint"}"
+             data-id="${a.id}" data-on="${a.is_baseline ? 1 : 0}"
+             title="${a.is_baseline
+               ? "The reference for this phantom on this protocol — click to remove"
+               : "Make this the reference for this phantom on this protocol"}"
+             >${a.is_baseline ? "★" : "☆"}</a></td>
       <td><a href="#" class="open" data-id="${a.id}">open</a> ·
           <a href="api/analyses/${a.id}/report.html" target="_blank">report</a> ·
           <a href="#" class="edit" data-id="${a.id}">label</a> ·
@@ -1658,6 +2482,26 @@ async function loadHistory() {
   tb.querySelectorAll("a.open").forEach(a => a.addEventListener("click", (e) => {
     e.preventDefault();
     openAnalysis(a.dataset.id);
+  }));
+  tb.querySelectorAll("a.base").forEach(a => a.addEventListener("click", async (e) => {
+    e.preventDefault();
+    const on = a.dataset.on === "1";
+    try {
+      const r = await postJSON(`api/analyses/${a.dataset.id}/baseline`,
+                               { baseline: !on });
+      status(r.is_baseline
+        ? `${r.phantom || "Unlabelled scans"} on this protocol now use `
+          + `${a.dataset.id} as the reference.`
+          + (r.replaced.length ? ` It replaced ${r.replaced.join(", ")}.` : "")
+        : `${r.phantom || "This phantom"} has no reference scan now.`);
+      if (S.aid === a.dataset.id && S.record) {
+        S.record.is_baseline = r.is_baseline ? 1 : 0;
+        renderStage();
+      }
+      loadHistory();
+    } catch (err) {
+      status("Could not change the reference: " + err.message, true);
+    }
   }));
   tb.querySelectorAll("a.del").forEach(a => a.addEventListener("click", async (e) => {
     e.preventDefault();
@@ -1681,10 +2525,16 @@ async function loadHistory() {
     const vals = await editLabelsDialog(rec, `Identification — ${rec.id}`);
     if (!vals) return;
     try {
-      await postJSON(`api/analyses/${a.dataset.id}/labels`, vals);
+      const out = await postJSON(`api/analyses/${a.dataset.id}/labels`, vals);
+      if (out.layout_deleted)
+        status(`Renamed. The stored measuring-point layout for phantom `
+               + `${out.phantom_before} was discarded — no analyses carry that `
+               + `name any more.`);
       if (S.aid === a.dataset.id && S.record) {
         Object.assign(S.record, vals);
+        await refreshProfileForRecord();
         renderIdentityBar();
+        renderStage();
       }
       loadHistory();
     } catch (err) { status("Could not save: " + err.message, true); }
@@ -1701,6 +2551,10 @@ async function loadHistory() {
     H.filter[k] = e.target.value;
     loadHistory();
   });
+});
+$("#f-order").addEventListener("change", (e) => {
+  H.order = e.target.value === "uploaded" ? "uploaded" : "acquired";
+  loadHistory();
 });
 $("#btn-clear-filter").addEventListener("click", () => {
   H.filter = { site: "", phantom: "", signature: "", validation: "" };
@@ -1747,27 +2601,43 @@ async function loadTrends() {
   msel.innerHTML = opts.map(m =>
     `<option${m === prev ? " selected" : ""}>${m}</option>`).join("");
   msel.onchange = drawTrend;
+  $("#trend-axis").onchange = drawTrend;
   drawTrend();
 }
 
 function drawTrend() {
   if (!trendData) return;
   const key = ($("#trend-metric").value || "").split(" | ");
+  const axis = ($("#trend-axis") || {}).value || "acquired";
+  // Which clock orders the series. The acquisition axis still falls back to the
+  // upload time for a scan whose header carried no date, but says so with ⚠ so
+  // a run of such points cannot be mistaken for a real chronology.
+  const stampOf = (a) => (axis === "uploaded"
+    ? (a.created_at || "")
+    : (a.acquired_at || a.created_at || "")).slice(0, 16);
   const pts = [];
-  let baseVal = null;
-  trendData.analyses.forEach(a => {
+  // Each phantom has its own reference now, so a selection spanning several
+  // phantoms legitimately contains several. A +/-20 % band drawn around one of
+  // them would be a band around an arbitrary phantom, so it is drawn only when
+  // the selection has exactly one reference.
+  const baseVals = [];
+  const ordered = trendData.analyses.slice().sort(
+    (p, q) => (stampOf(p) < stampOf(q) ? -1 : stampOf(p) > stampOf(q) ? 1 : 0));
+  ordered.forEach(a => {
     const row = a.rows.find(r => r.test === key[0] && r.object === key[1]
                                  && r.metric === key[2]);
     if (row && typeof row.value === "number") {
-      pts.push({ x: (a.acquired_at || a.created_at).slice(0, 16), y: row.value,
-                 baseline: a.is_baseline,
+      const flagged = axis !== "uploaded" && !!a.acquired_flag;
+      pts.push({ x: stampOf(a) + (flagged ? " ⚠" : ""), y: row.value,
+                 baseline: a.is_baseline, flagged,
                  label: [a.site, a.phantom].filter(Boolean).join(" / ") });
-      if (a.is_baseline) baseVal = row.value;
+      if (a.is_baseline) baseVals.push(row.value);
     }
   });
   const cv = $("#trend-chart"), ctx = cv.getContext("2d");
   ctx.clearRect(0, 0, cv.width, cv.height);
   if (!pts.length) { ctx.fillText("no data", 30, 30); return; }
+  const baseVal = baseVals.length === 1 ? baseVals[0] : null;
   const ys = pts.map(p => p.y);
   let ymin = Math.min(...ys), ymax = Math.max(...ys);
   if (baseVal !== null) {
@@ -1799,7 +2669,7 @@ function drawTrend() {
                                 : ctx.lineTo(sx(i), sy(p.y)));
   ctx.stroke();
   pts.forEach((p, i) => {
-    ctx.fillStyle = p.baseline ? "#35b45c" : "#4a7dbd";
+    ctx.fillStyle = p.baseline ? "#35b45c" : (p.flagged ? "#d9a021" : "#4a7dbd");
     ctx.beginPath();
     ctx.arc(sx(i), sy(p.y), p.baseline ? 6 : 4, 0, Math.PI * 2);
     ctx.fill();
@@ -1816,6 +2686,13 @@ function drawTrend() {
   });
   ctx.fillStyle = "#333"; ctx.font = "11px Segoe UI";
   ctx.fillText($("#trend-metric").value || "", pad, 14);
+  const note = $("#trend-note");
+  if (note) {
+    note.textContent = baseVals.length > 1
+      ? `${baseVals.length} reference scans in this selection (one per phantom),`
+        + " so no tolerance band is drawn — filter to a single phantom to see it."
+      : (baseVals.length ? "" : "No reference scan in this selection.");
+  }
 }
 
 /* ================= sign-out ================= */

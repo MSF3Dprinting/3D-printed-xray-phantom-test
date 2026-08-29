@@ -112,6 +112,33 @@
   </div>
 </div>
 
+<div id="del-backdrop" class="hidden">
+  <div id="del-card">
+    <h3>Delete this analysis</h3>
+    <p class="hint">This permanently removes the record, the stored source file
+      and the measuring-point edit history. It cannot be undone.</p>
+    <div class="card"><div class="kv">
+      <div>Analysis</div><div class="mono" id="del-id"></div>
+      <div>Site / phantom</div><div id="del-who"></div>
+      <div>Acquired</div><div id="del-acquired"></div>
+      <div>Uploaded</div><div id="del-uploaded"></div>
+      <div>Source file</div><div id="del-source"></div>
+      <div>Result</div><div id="del-status"></div>
+    </div></div>
+    <p id="del-layout-warn" class="ident-warn hidden"></p>
+    <label class="vfield">Reason (recorded in the audit log)
+      <textarea id="del-reason" rows="2"
+                placeholder="e.g. test exposure, wrong phantom fitted"></textarea></label>
+    <label class="vfield">Administrator password
+      <input id="del-pw" type="password" autocomplete="off"></label>
+    <p id="del-error" class="login-error"></p>
+    <div class="modal-actions">
+      <button id="del-confirm" class="danger">Delete permanently</button>
+      <button id="del-cancel" class="secondary">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <main id="view-history" class="hidden">
   <section class="history-block">
     <h2>Filter</h2>
@@ -126,12 +153,19 @@
         <option value="not_validated">not validated</option>
         <option value="pending">pending review</option>
       </select></label>
+      <label title="Which date the table is sorted by">Order by
+        <select id="f-order">
+          <option value="acquired">acquisition date</option>
+          <option value="uploaded">upload date</option>
+        </select></label>
       <button id="btn-clear-filter" class="secondary-sm">Clear</button>
       <span id="filter-count" class="hint"></span>
     </div>
     <p class="hint">The filter drives the table, the trend chart and the
     comparison report. Tick individual rows to work with a manual selection
-    instead.</p>
+    instead. <b>Acquired</b> comes from the scanner's own clock and <b>uploaded</b>
+    from this server — order by upload date when a scanner's clock is wrong or
+    was reset.</p>
   </section>
 
   <section class="history-block">
@@ -143,7 +177,9 @@
       <span id="selection-note" class="hint"></span>
     </div>
     <table id="history-table"><thead>
-      <tr><th><input type="checkbox" id="sel-all"></th><th>acquired</th>
+      <tr><th><input type="checkbox" id="sel-all"></th>
+          <th title="from the scanner's own clock (DICOM)">acquired</th>
+          <th title="when the file reached this server">uploaded</th>
           <th>site</th><th>phantom</th><th>source</th><th>protocol</th>
           <th>stage</th><th>status</th><th>validation</th><th>base</th>
           <th></th></tr>
@@ -154,10 +190,20 @@
     <h2>Trend of a single metric</h2>
     <div class="filter-bar">
       <label>Metric <select id="trend-metric"></select></label>
+      <label title="Which date orders and labels the points">Date axis
+        <select id="trend-axis">
+          <option value="acquired">acquisition date</option>
+          <option value="uploaded">upload date</option>
+        </select></label>
     </div>
     <canvas id="trend-chart" width="1000" height="380"></canvas>
-    <p class="hint">Points in acquisition order; ★ = baseline. Dashed green band
-    = ±20 % of the baseline (constancy default). For everything at once, use the
+    <p class="hint" id="trend-note" style="color:var(--warn)"></p>
+    <p class="hint">★ = the reference scan for that phantom. Dashed green band
+    = ±20 % of the reference
+    (constancy default), drawn only when the selection contains exactly one
+    reference — each phantom has its own. Points marked ⚠ have no acquisition
+    date from the scanner, or one that cannot be right; switch the date axis to
+    the upload date to place them reliably. For everything at once, use the
     comprehensive comparison report above.</p>
   </section>
 </main>

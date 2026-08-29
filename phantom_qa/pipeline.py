@@ -109,10 +109,14 @@ def compute_all(ctx: Ctx, geometry_all: dict) -> dict:
             out[name] = _MODULES[name].compute(ctx, geom)
         except Exception as e:
             out[name] = {"status": "error", "error": f"{type(e).__name__}: {e}"}
+    # `params` is optional on Ctx and every other reader goes through
+    # ctx.param(); dereferencing it directly turned a context built without one
+    # into an AttributeError 500 rather than a result.
+    params = ctx.params or {}
     out["_meta"] = {
         "algo_version": ALGO_VERSION,
-        "signature": protocol_signature(ctx.params.get("scan_meta", {}))
-        if ctx.params.get("scan_meta") else None,
+        "signature": protocol_signature(params.get("scan_meta", {}))
+        if params.get("scan_meta") else None,
         "registration": ctx.reg.summary() if ctx.reg else None,
     }
     return to_jsonable(out)

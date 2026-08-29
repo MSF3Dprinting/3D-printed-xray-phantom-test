@@ -102,9 +102,10 @@ phantom_qa/                 application package
   features.py               sub-pixel measurement primitives
   registration.py           phantom detection, orientation, affine transform
   phantom_def.py            phantom definition loader
+  layout_profile.py         per-phantom measuring-point layouts (store and replay)
   analysis/                 one module per test
   pipeline.py               stage orchestration and overlay rendering
-  store.py                  database, labels, filtering, CSV export
+  store.py                  database, labels, filtering, CSV export, undo history
   report.py                 single-analysis HTML report
   comparison_report.py      multi-analysis comparison report
   reanalyze.py              recompute stored analyses from kept source files
@@ -141,6 +142,12 @@ Three points matter when reading it:
   A phantom whose resolution strip runs in the opposite frequency order, or
   which has a different number of groups, will be found but mislabelled. See
   [docs/MAINTENANCE.md](docs/MAINTENANCE.md#a-phantom-that-differs-from-the-definition).
+- **Hand corrections are remembered per phantom.** Confirming step C stores the
+  measuring points against the analysis's Phantom name and replays them on the
+  next scan of that phantom, in the phantom's own frame so a different placement
+  on the detector does not matter. It complements a calibrated definition rather
+  than replacing one: it freezes ROI positions, it does not change the nominal
+  geometry results are measured against.
 
 `nominal_side_mm` (300.0) is an assumed design dimension; no drawing was
 available. Measured side lengths are 299.3–300.4 mm.

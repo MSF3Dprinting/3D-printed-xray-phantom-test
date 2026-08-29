@@ -138,7 +138,20 @@ def reanalyze_one(store, pdef: PhantomDef, aid: str, mode: str = "results",
     if mode == "full":
         fields["geometry"] = geometry
         fields["reg"] = pipeline.registration_to_dict(reg)
+        fields["geometry_seq"] = 0
     store.update(aid, **fields)
+    if mode == "full":
+        # Re-detection replaces the transform, so every stored measuring-point
+        # state now holds pixel coordinates from a registration that is gone.
+        # An undo stack whose snapshots were built against a discarded
+        # transform is worse than none at all.
+        #
+        # The results are NOT invalidated here, unlike every other geometry
+        # write: they were computed from precisely this geometry a few lines
+        # above, so the two already agree. Letting the default fire blanked
+        # them, and the CLI still printed "pass -> pass" over the top of it.
+        store.set_geometry_baseline(aid, geometry, action="reanalyze",
+                                    user=user or "", invalidate_results=False)
     store.audit(aid, "E", "re-analysed",
                 {"mode": mode, "algo": f"{summary['old_algo']} -> {ALGO_VERSION}",
                  "pdef": f"{summary['old_pdef']} -> {pdef.version}",

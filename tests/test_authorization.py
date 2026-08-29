@@ -125,6 +125,7 @@ ROUTES = [
     ("GET",  "/api/analyses",                      "user"),
     ("POST", "/api/analyses",                      "user"),
     ("GET",  "/api/labels",                        "user"),
+    ("GET",  "/api/phantom_profiles",              "user"),
     ("GET",  "/api/signatures",                    "user"),
     ("GET",  "/api/trends",                        "user"),
     ("GET",  "/api/deletion_policy",               "user"),
@@ -147,11 +148,17 @@ ROUTES = [
     ("POST", "/api/analyses/{aid}/compute_preview", "user"),
     ("POST", "/api/analyses/{aid}/field_edge",     "user"),
     ("POST", "/api/analyses/{aid}/confirm",        "user"),
+    ("POST", "/api/analyses/{aid}/geometry/undo",  "user"),
+    ("POST", "/api/analyses/{aid}/geometry/redo",  "user"),
+    ("POST", "/api/analyses/{aid}/geometry/reset", "user"),
     ("POST", "/api/analyses/{aid}/compute",        "user"),
     ("POST", "/api/analyses/{aid}/finalize",       "user"),
+    ("POST", "/api/analyses/{aid}/baseline",       "user"),
+    ("GET",  "/api/baselines",                     "user"),
 
     ("POST", "/api/analyses/{aid}/delete",         "admin"),
     ("POST", "/api/analyses/{aid}/validation",     "admin"),
+    ("POST", "/api/phantom_profiles/forget",       "admin"),
 ]
 
 
@@ -240,7 +247,7 @@ def test_user_is_not_blocked_by_auth(app_mod, analysis, method, path):
 # ------------------------------------------------------- admin level enforced
 
 @pytest.mark.parametrize("path,body", [
-    ("/api/analyses/{aid}/delete", {"confirm_id": "{aid}"}),
+    ("/api/analyses/{aid}/delete", {"reason": "regression test"}),
     ("/api/analyses/{aid}/validation",
      {"status": "validated", "validated_by": "Someone"}),
 ])
@@ -275,16 +282,29 @@ def test_admin_can_validate(user_client, analysis):
 def test_admin_can_delete(user_client, analysis):
     r = user_client.post(f"/api/analyses/{analysis}/delete",
                          json={"admin_password": ADMIN_PW,
-                               "confirm_id": analysis, "reason": "test"})
+                               "reason": "duplicate upload, wrong phantom"})
     assert r.status_code == 200, r.text
     assert user_client.get(f"/api/analyses/{analysis}").status_code == 404
 
 
-def test_delete_requires_the_id_confirmation(user_client, analysis):
+@pytest.mark.parametrize("reason", ["", "   ", "why", "abcd"])
+def test_delete_requires_a_written_reason(user_client, analysis, reason):
+    """The audit log is the only record of why data was destroyed.
+
+    Refused with 400 rather than 422: the frontend shows `detail` verbatim, and
+    a pydantic validation error would put a list of dicts there."""
     r = user_client.post(f"/api/analyses/{analysis}/delete",
-                         json={"admin_password": ADMIN_PW, "confirm_id": "nope"})
-    assert r.status_code == 400
+                         json={"admin_password": ADMIN_PW, "reason": reason})
+    assert r.status_code == 400, r.text
+    assert isinstance(r.json()["detail"], str)
     assert user_client.get(f"/api/analyses/{analysis}").status_code == 200
+
+
+def test_delete_checks_the_password_before_the_reason(user_client, analysis):
+    """A missing reason must not reveal that the password was right."""
+    r = user_client.post(f"/api/analyses/{analysis}/delete",
+                         json={"admin_password": "wrong", "reason": ""})
+    assert r.status_code == 401
 
 
 def test_validation_requires_an_approver_name(user_client, analysis):
@@ -303,7 +323,7 @@ def test_admin_actions_disabled_without_admin_password(tmp_path, monkeypatch):
     aid = m.store.new_analysis(fake_scan(), b"x", "sig", "1", "1", labels={})
     m.store.update(aid, results=results_for())
     for url, body in ((f"/api/analyses/{aid}/delete",
-                       {"admin_password": "x", "confirm_id": aid}),
+                       {"admin_password": "x", "reason": "no longer needed"}),
                       (f"/api/analyses/{aid}/validation",
                        {"status": "validated", "validated_by": "X",
                         "admin_password": "x"})):

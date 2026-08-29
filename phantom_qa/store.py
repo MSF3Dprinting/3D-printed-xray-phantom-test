@@ -2,6 +2,17 @@
 
 One row per analysis. The original upload bytes are kept on disk
 (data/uploads/<id>.bin) for traceability and re-analysis.
+
+Two side tables hang off it:
+
+``geometry_history``  one compressed snapshot per measuring-point edit, so
+                      Stage C can offer undo / redo / reset without the user
+                      having to re-upload the scan.
+``phantom_profiles``  the confirmed measuring-point layout of ONE physical
+                      phantom, keyed by its operator-typed label. Stored in
+                      phantom-frame millimetres, which is why it replays
+                      correctly onto a scan where the phantom lay at a
+                      different angle on the detector.
 """
 
 from __future__ import annotations
@@ -13,6 +24,7 @@ import os
 import sqlite3
 import time
 import uuid
+import zlib
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS analyses (
@@ -42,7 +54,32 @@ CREATE TABLE IF NOT EXISTS analyses (
   validation_status TEXT DEFAULT '',
   validated_by TEXT DEFAULT '',
   validation_comment TEXT DEFAULT '',
-  validated_at TEXT DEFAULT ''
+  validated_at TEXT DEFAULT '',
+  geometry_seq INTEGER DEFAULT 0,
+  layout_source TEXT DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS geometry_history (
+  analysis_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  user TEXT DEFAULT '',
+  action TEXT NOT NULL,
+  detail_json TEXT,
+  geometry_z BLOB NOT NULL,
+  PRIMARY KEY (analysis_id, seq)
+);
+
+CREATE TABLE IF NOT EXISTS phantom_profiles (
+  phantom_key TEXT PRIMARY KEY,
+  phantom_norm TEXT DEFAULT '',
+  layout_json TEXT NOT NULL DEFAULT '{}',
+  pdef_version TEXT DEFAULT '',
+  algo_version TEXT DEFAULT '',
+  source_analysis_id TEXT DEFAULT '',
+  created_at TEXT DEFAULT '',
+  updated_at TEXT DEFAULT '',
+  updated_by TEXT DEFAULT ''
 );
 """
 
@@ -51,23 +88,40 @@ CREATE TABLE IF NOT EXISTS analyses (
 _INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_analyses_site ON analyses(site);
 CREATE INDEX IF NOT EXISTS idx_analyses_phantom ON analyses(phantom);
+CREATE INDEX IF NOT EXISTS idx_geomhist ON geometry_history(analysis_id, seq);
+CREATE INDEX IF NOT EXISTS idx_profiles_norm ON phantom_profiles(phantom_norm);
 """
 
 # Columns added after the first release; existing databases are migrated in
-# place so an upgrade never loses stored analyses.
+# place so an upgrade never loses stored analyses. Keyed by table, because
+# the side tables gain columns the same way the main one does.
 _ADDED_COLUMNS = {
-    "site": "TEXT DEFAULT ''",
-    "phantom": "TEXT DEFAULT ''",
-    "operator": "TEXT DEFAULT ''",
-    "notes": "TEXT DEFAULT ''",
-    "acquired_at": "TEXT DEFAULT ''",
-    "validation_status": "TEXT DEFAULT ''",
-    "validated_by": "TEXT DEFAULT ''",
-    "validation_comment": "TEXT DEFAULT ''",
-    "validated_at": "TEXT DEFAULT ''",
+    "analyses": {
+        "site": "TEXT DEFAULT ''",
+        "phantom": "TEXT DEFAULT ''",
+        "operator": "TEXT DEFAULT ''",
+        "notes": "TEXT DEFAULT ''",
+        "acquired_at": "TEXT DEFAULT ''",
+        "validation_status": "TEXT DEFAULT ''",
+        "validated_by": "TEXT DEFAULT ''",
+        "validation_comment": "TEXT DEFAULT ''",
+        "validated_at": "TEXT DEFAULT ''",
+        "geometry_seq": "INTEGER DEFAULT 0",
+        "layout_source": "TEXT DEFAULT ''",
+    },
+    "phantom_profiles": {
+        "phantom_norm": "TEXT DEFAULT ''",
+        "algo_version": "TEXT DEFAULT ''",
+        "updated_by": "TEXT DEFAULT ''",
+    },
 }
 
 LABEL_FIELDS = ("site", "phantom", "operator", "notes")
+
+#: How many measuring-point states are kept per analysis. seq 0 (the untouched
+#: automatic proposal) is pinned and never trimmed, so "reset to auto-detected"
+#: keeps working no matter how many edits have been made since.
+GEOMETRY_HISTORY_DEPTH = 30
 
 # The administrator's sign-off on an analysis. "" means nobody has ruled yet.
 VALIDATION_STATES = ("validated", "conditionally_validated", "not_validated")
@@ -93,11 +147,17 @@ class Store:
             c.executescript(_INDEXES)
 
     def _migrate(self, conn):
-        have = {r["name"] for r in
-                conn.execute("PRAGMA table_info(analyses)").fetchall()}
-        for col, decl in _ADDED_COLUMNS.items():
-            if col not in have:
-                conn.execute(f"ALTER TABLE analyses ADD COLUMN {col} {decl}")
+        for table, cols in _ADDED_COLUMNS.items():
+            have = {r["name"] for r in
+                    conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            if not have:
+                # The table does not exist on this database at all. _SCHEMA has
+                # already run, so this can only mean an older layout we do not
+                # migrate column-by-column; leave it alone.
+                continue
+            for col, decl in cols.items():
+                if col not in have:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
 
     def _connect(self) -> sqlite3.Connection:
         """A configured connection. The caller owns it and must close it.
@@ -175,6 +235,320 @@ class Store:
                       (json.dumps(value), aid))
             return out
 
+    # ------------------------------------------- measuring-point undo history
+
+    # Snapshots are stored whole and compressed rather than as deltas. A single
+    # low-contrast block placement rewrites 25 ROIs at once and a re-propose
+    # rewrites everything, so a delta scheme would have to encode the whole
+    # subtree anyway; ~120 kB of geometry compresses to ~50 kB, and the depth
+    # cap bounds the cost per analysis.
+
+    @staticmethod
+    def _pack(geometry) -> bytes:
+        return zlib.compress(json.dumps(geometry).encode("utf-8"), 6)
+
+    @staticmethod
+    def _unpack(blob):
+        if blob is None:
+            return None
+        return json.loads(zlib.decompress(blob).decode("utf-8"))
+
+    def _hist_state(self, c, aid: str) -> dict:
+        """Cursor position and how far it can move, from an open connection."""
+        row = c.execute(
+            "SELECT COALESCE(geometry_seq, 0) AS seq FROM analyses WHERE id=?",
+            (aid,)).fetchone()
+        if row is None:
+            raise KeyError(aid)
+        seq = int(row["seq"] or 0)
+        back = c.execute(
+            "SELECT COUNT(*) FROM geometry_history WHERE analysis_id=? AND seq<?",
+            (aid, seq)).fetchone()[0]
+        fwd = c.execute(
+            "SELECT COUNT(*) FROM geometry_history WHERE analysis_id=? AND seq>?",
+            (aid, seq)).fetchone()[0]
+        has_base = c.execute(
+            "SELECT COUNT(*) FROM geometry_history WHERE analysis_id=? AND seq=0",
+            (aid,)).fetchone()[0]
+        return {"seq": seq, "undo_depth": int(back), "redo_depth": int(fwd),
+                "has_baseline": bool(has_base)}
+
+    def _push_state(self, c, aid: str, geometry, *, action: str,
+                    user: str = "", detail=None) -> dict:
+        """Append one state after the cursor and move the cursor onto it."""
+        state = self._hist_state(c, aid)
+        seq = state["seq"]
+        if not state["has_baseline"]:
+            # A record written before this feature existed, or one whose
+            # baseline was trimmed: seed seq 0 from whatever geometry it holds
+            # so the very first edit still has something to undo back to.
+            row = c.execute("SELECT geometry_json FROM analyses WHERE id=?",
+                            (aid,)).fetchone()
+            base = json.loads(row["geometry_json"]) if row and row["geometry_json"] \
+                else None
+            c.execute(
+                "INSERT OR REPLACE INTO geometry_history"
+                " (analysis_id, seq, created_at, user, action, detail_json,"
+                "  geometry_z) VALUES (?,0,?,?,?,?,?)",
+                (aid, time.strftime("%Y-%m-%d %H:%M:%S"), user, "baseline",
+                 None, self._pack(base)))
+            seq = 0
+        # A new edit discards whatever was redoable — the standard rule.
+        c.execute("DELETE FROM geometry_history WHERE analysis_id=? AND seq>?",
+                  (aid, seq))
+        nxt = seq + 1
+        c.execute(
+            "INSERT INTO geometry_history (analysis_id, seq, created_at, user,"
+            " action, detail_json, geometry_z) VALUES (?,?,?,?,?,?,?)",
+            (aid, nxt, time.strftime("%Y-%m-%d %H:%M:%S"), user, action,
+             json.dumps(detail) if detail is not None else None,
+             self._pack(geometry)))
+        # Trim the oldest edits but never seq 0 — it is the reset-to-auto target.
+        c.execute(
+            "DELETE FROM geometry_history WHERE analysis_id=? AND seq>0"
+            " AND seq<=?", (aid, nxt - GEOMETRY_HISTORY_DEPTH))
+        return nxt
+
+    @staticmethod
+    def _write_geometry(c, aid: str, geometry, seq: int,
+                        invalidate_results: bool):
+        """Store the geometry and, when asked, drop results computed from the
+        geometry that just changed.
+
+        Leaving them would show a report whose overlay comes from the new ROIs
+        and whose numbers come from the old ones."""
+        if invalidate_results:
+            c.execute(
+                "UPDATE analyses SET geometry_json=?, geometry_seq=?,"
+                " results_json=NULL, status='draft' WHERE id=?",
+                (json.dumps(geometry), seq, aid))
+        else:
+            c.execute(
+                "UPDATE analyses SET geometry_json=?, geometry_seq=? WHERE id=?",
+                (json.dumps(geometry), seq, aid))
+
+    def geometry_state(self, aid: str) -> dict:
+        with self._conn() as c:
+            return self._hist_state(c, aid)
+
+    def clear_geometry_history(self, aid: str):
+        """Throw the undo stack away — the states no longer describe anything.
+
+        Used after a re-registration: every snapshot holds pixel coordinates
+        derived from a transform that has been replaced."""
+        with self._conn() as c:
+            c.execute("DELETE FROM geometry_history WHERE analysis_id=?", (aid,))
+
+    def set_geometry_baseline(self, aid: str, geometry, *, action: str = "propose",
+                              user: str = "", detail=None,
+                              invalidate_results: bool = True) -> dict:
+        """Install a fresh automatic proposal as the new seq-0 baseline.
+
+        Everything the user had done before is dropped along with the history:
+        those states were built against a proposal that no longer exists.
+
+        ``invalidate_results`` is False only for a caller that has just
+        computed results FROM the geometry it is installing — a full
+        re-analysis. There the two already agree, so blanking the results would
+        destroy exactly the work that was done."""
+        with self.write_transaction() as c:
+            if c.execute("SELECT 1 FROM analyses WHERE id=?", (aid,)).fetchone() is None:
+                raise KeyError(aid)
+            c.execute("DELETE FROM geometry_history WHERE analysis_id=?", (aid,))
+            c.execute(
+                "INSERT INTO geometry_history (analysis_id, seq, created_at,"
+                " user, action, detail_json, geometry_z) VALUES (?,0,?,?,?,?,?)",
+                (aid, time.strftime("%Y-%m-%d %H:%M:%S"), user, action,
+                 json.dumps(detail) if detail is not None else None,
+                 self._pack(geometry)))
+            self._write_geometry(c, aid, geometry, 0, invalidate_results)
+            return self._hist_state(c, aid)
+
+    def mutate_geometry(self, aid: str, fn, *, action: str, user: str = "",
+                        detail=None, invalidate_results: bool = True):
+        """Edit the geometry blob and record an undo state, in ONE transaction.
+
+        ``fn`` receives the decoded geometry, mutates it in place and may return
+        a value which is handed back to the caller. BEGIN IMMEDIATE serialises
+        two overlapping edits instead of letting the later one silently discard
+        the earlier — the "the point did not register" failure.
+
+        ``fn`` must not call any other Store method: that would open a second
+        connection which, in WAL mode, reads the pre-transaction snapshot and
+        blocks on the write lock."""
+        with self.write_transaction() as c:
+            row = c.execute("SELECT geometry_json FROM analyses WHERE id=?",
+                            (aid,)).fetchone()
+            if row is None:
+                raise KeyError(aid)
+            geometry = json.loads(row["geometry_json"]) if row["geometry_json"] else None
+            out = fn(geometry)
+            seq = self._push_state(c, aid, geometry, action=action, user=user,
+                                   detail=detail)
+            self._write_geometry(c, aid, geometry, seq, invalidate_results)
+            return out, self._hist_state(c, aid)
+
+    def replace_geometry(self, aid: str, geometry, *, action: str,
+                         user: str = "", detail=None) -> dict:
+        """Append a wholly new geometry state (a reset) as an undoable edit."""
+        with self.write_transaction() as c:
+            if c.execute("SELECT 1 FROM analyses WHERE id=?", (aid,)).fetchone() is None:
+                raise KeyError(aid)
+            seq = self._push_state(c, aid, geometry, action=action, user=user,
+                                   detail=detail)
+            self._write_geometry(c, aid, geometry, seq, True)
+            return self._hist_state(c, aid)
+
+    def geometry_at(self, aid: str, seq: int):
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT geometry_z FROM geometry_history"
+                " WHERE analysis_id=? AND seq=?", (aid, seq)).fetchone()
+        return None if row is None else self._unpack(row["geometry_z"])
+
+    def _step_geometry(self, aid: str, direction: int) -> dict:
+        """Move the cursor to the NEAREST SURVIVING state and restore it.
+
+        Nearest rather than exactly one back, because the depth trim leaves a
+        hole: it removes the oldest edits but never seq 0, so after a long
+        session the states run 0, then 35, 36, … Stepping by exactly one would
+        stall at 35 with the Undo button still offering a step that could never
+        be taken, and the pinned automatic proposal would be unreachable by
+        undo. Counting rows either side of the cursor — which is what
+        undo_depth and redo_depth report — then means exactly the number of
+        steps that can really be taken.
+
+        Both ends run inside the transaction that read the cursor, so a
+        double-clicked Undo cannot step twice off one reading."""
+        with self.write_transaction() as c:
+            state = self._hist_state(c, aid)
+            if direction < 0:
+                row = c.execute(
+                    "SELECT seq, geometry_z, action FROM geometry_history"
+                    " WHERE analysis_id=? AND seq<? ORDER BY seq DESC LIMIT 1",
+                    (aid, state["seq"])).fetchone()
+            else:
+                row = c.execute(
+                    "SELECT seq, geometry_z, action FROM geometry_history"
+                    " WHERE analysis_id=? AND seq>? ORDER BY seq ASC LIMIT 1",
+                    (aid, state["seq"])).fetchone()
+            if row is None:
+                raise LookupError("nothing to undo" if direction < 0
+                                  else "nothing to redo")
+            geometry = self._unpack(row["geometry_z"])
+            self._write_geometry(c, aid, geometry, row["seq"], True)
+            out = self._hist_state(c, aid)
+        out["geometry"] = geometry
+        out["action"] = row["action"]
+        return out
+
+    def undo_geometry(self, aid: str) -> dict:
+        return self._step_geometry(aid, -1)
+
+    def redo_geometry(self, aid: str) -> dict:
+        return self._step_geometry(aid, +1)
+
+    # ------------------------------------------------- per-phantom layouts
+
+    @staticmethod
+    def profile_key(phantom: str) -> str:
+        """The exact stored label, trimmed.
+
+        Deliberately NOT case-folded: History, the filters and the trends group
+        on the raw value under SQLite's binary collation, so 'MSF-01' and
+        'msf-01' are two different phantoms there. A folded profile key would
+        serve both buckets and break the delete-when-empty rule."""
+        return str(phantom or "").strip()
+
+    @staticmethod
+    def profile_norm(phantom: str) -> str:
+        """Loose form used ONLY to warn about near-duplicate labels."""
+        return " ".join(str(phantom or "").lower().split())
+
+    def _prune_profile(self, c, label: str) -> bool:
+        """Drop a stored layout once no analysis carries its label any more."""
+        label = self.profile_key(label)
+        if not label:
+            return False
+        n = c.execute("SELECT COUNT(*) FROM analyses WHERE phantom=?",
+                      (label,)).fetchone()[0]
+        if n:
+            return False
+        return c.execute("DELETE FROM phantom_profiles WHERE phantom_key=?",
+                         (label,)).rowcount > 0
+
+    def get_phantom_profile(self, phantom: str) -> dict | None:
+        key = self.profile_key(phantom)
+        if not key:
+            return None
+        with self._conn() as c:
+            row = c.execute("SELECT * FROM phantom_profiles WHERE phantom_key=?",
+                            (key,)).fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        d["layout"] = json.loads(d.pop("layout_json") or "{}")
+        return d
+
+    def save_phantom_profile(self, phantom: str, layout: dict, *,
+                             pdef_version: str = "", algo_version: str = "",
+                             source_analysis_id: str = "",
+                             updated_by: str = "") -> dict:
+        key = self.profile_key(phantom)
+        if not key:
+            raise ValueError("a phantom label is required to store a layout")
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        with self.write_transaction() as c:
+            c.execute(
+                "INSERT INTO phantom_profiles (phantom_key, phantom_norm,"
+                " layout_json, pdef_version, algo_version, source_analysis_id,"
+                " created_at, updated_at, updated_by)"
+                " VALUES (?,?,?,?,?,?,?,?,?)"
+                " ON CONFLICT(phantom_key) DO UPDATE SET"
+                "   phantom_norm=excluded.phantom_norm,"
+                "   layout_json=excluded.layout_json,"
+                "   pdef_version=excluded.pdef_version,"
+                "   algo_version=excluded.algo_version,"
+                "   source_analysis_id=excluded.source_analysis_id,"
+                "   updated_at=excluded.updated_at,"
+                "   updated_by=excluded.updated_by",
+                (key, self.profile_norm(key), json.dumps(layout), pdef_version,
+                 algo_version, source_analysis_id, now, now, updated_by))
+            near = [r["phantom_key"] for r in c.execute(
+                "SELECT phantom_key FROM phantom_profiles"
+                " WHERE phantom_norm=? AND phantom_key<>?",
+                (self.profile_norm(key), key)).fetchall()]
+        return {"phantom": key, "updated_at": now, "updated_by": updated_by,
+                "n_rois": len((layout or {}).get("rois") or {}),
+                "near_miss": near}
+
+    def delete_phantom_profile(self, phantom: str) -> bool:
+        key = self.profile_key(phantom)
+        if not key:
+            return False
+        with self._conn() as c:
+            return c.execute("DELETE FROM phantom_profiles WHERE phantom_key=?",
+                             (key,)).rowcount > 0
+
+    def list_phantom_profiles(self) -> list[dict]:
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT p.phantom_key, p.updated_at, p.updated_by,"
+                " p.pdef_version, p.algo_version, p.source_analysis_id,"
+                " LENGTH(p.layout_json) AS layout_bytes,"
+                " (SELECT COUNT(*) FROM analyses a WHERE a.phantom=p.phantom_key)"
+                "   AS n_analyses"
+                " FROM phantom_profiles p ORDER BY p.phantom_key").fetchall()
+        return [dict(r) for r in rows]
+
+    def count_for_phantom(self, phantom: str) -> int:
+        key = self.profile_key(phantom)
+        if not key:
+            return 0
+        with self._conn() as c:
+            return int(c.execute("SELECT COUNT(*) FROM analyses WHERE phantom=?",
+                                 (key,)).fetchone()[0])
+
     def find_by_sha256(self, sha256: str, exclude_id: str | None = None):
         """Analyses already holding this exact file."""
         with self._conn() as c:
@@ -221,9 +595,16 @@ class Store:
             f.write(file_bytes)
         lab = {k: str((labels or {}).get(k, "") or "").strip()
                for k in LABEL_FIELDS}
-        # Prefer the acquisition time from the scan itself; it is what the
-        # trend axis should use, not the moment the file happened to be uploaded.
-        acquired = _acquired_at(scan.meta) or time.strftime("%Y-%m-%d %H:%M:%S")
+        # The acquisition time comes from the scan itself; it is what the trend
+        # axis should use, not the moment the file happened to be uploaded.
+        #
+        # When the header carries no usable date — a plain image, or a detector
+        # whose clock was reset — this stays EMPTY on purpose. Filling it with
+        # the upload clock (which is what this used to do) made "when the scan
+        # was taken" and "when it was uploaded" indistinguishable afterwards,
+        # which is exactly what the separate upload column exists to fix.
+        # Everything downstream already falls back to created_at for ordering.
+        acquired = _acquired_at(scan.meta)
         with self._conn() as c:
             c.execute(
                 "INSERT INTO analyses (id, created_at, source_name, sha256, kind,"
@@ -254,6 +635,14 @@ class Store:
         return d
 
     def update(self, aid: str, **fields):
+        # The phantom label owns a stored measuring-point layout, and changing
+        # it has to prune the old one. Routing every change through set_labels
+        # is what keeps a renamed phantom from leaving an orphan profile that
+        # would later be replayed onto an unrelated scan.
+        if "phantom" in fields:
+            raise ValueError(
+                "use set_labels() to change the phantom label, so the stored "
+                "measuring-point layout stays consistent")
         cols, vals = [], []
         for k, v in fields.items():
             if k in ("meta", "reg", "geometry", "results", "audit"):
@@ -275,7 +664,8 @@ class Store:
 
     def list_all(self, site: str | None = None, phantom: str | None = None,
                  signature: str | None = None, validation: str | None = None,
-                 completed_only: bool = False) -> list[dict]:
+                 completed_only: bool = False,
+                 order_by: str = "acquired") -> list[dict]:
         sql = ("SELECT id, created_at, acquired_at, source_name, signature,"
                " stage, status, is_baseline, sha256, reduced_precision, sid_mm,"
                " site, phantom, operator, notes,"
@@ -294,10 +684,19 @@ class Store:
             args.append("" if validation == "pending" else validation)
         if completed_only:
             sql += " AND results_json IS NOT NULL"
-        sql += " ORDER BY COALESCE(NULLIF(acquired_at,''), created_at) DESC"
+        # "acquired" still falls back to the upload time for rows with no usable
+        # header date, so the ordering never collapses; "uploaded" is the order
+        # to use when a detector's clock is suspect.
+        sql += (" ORDER BY created_at DESC" if order_by == "uploaded"
+                else " ORDER BY COALESCE(NULLIF(acquired_at,''), created_at) DESC")
         with self._conn() as c:
             rows = c.execute(sql, args).fetchall()
-        return [dict(r) for r in rows]
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["acquired_flag"] = acquisition_flag(d)
+            out.append(d)
+        return out
 
     def labels(self) -> dict:
         """Distinct site / phantom values with counts, for the filter menus."""
@@ -311,11 +710,50 @@ class Store:
                 out[col] = [{"value": r["v"], "count": r["n"]} for r in rows]
         return out
 
-    def set_labels(self, aid: str, labels: dict):
+    def set_labels(self, aid: str, labels: dict) -> dict:
+        """Rewrite the identification labels of one analysis.
+
+        A stored measuring-point layout belongs to the LABEL, never to the
+        analysis. So renaming the phantom does not carry the layout across: the
+        new label keeps whatever layout it already had (or none), and the old
+        label's layout is pruned if that was its last analysis. Anything else
+        would apply one phantom's assembly quirks to a different phantom."""
         fields = {k: str(v or "").strip() for k, v in labels.items()
                   if k in LABEL_FIELDS}
-        if fields:
-            self.update(aid, **fields)
+        if not fields:
+            return {"changed": False, "profile_deleted": False}
+        with self.write_transaction() as c:
+            row = c.execute(
+                "SELECT phantom, signature, is_baseline FROM analyses WHERE id=?",
+                (aid,)).fetchone()
+            if row is None:
+                raise KeyError(aid)
+            before = self.profile_key(row["phantom"])
+            sets = ", ".join(f"{k}=?" for k in fields)
+            c.execute(f"UPDATE analyses SET {sets} WHERE id=?",
+                      [*fields.values(), aid])
+            after = self.profile_key(fields.get("phantom", before))
+            pruned = self._prune_profile(c, before) if after != before else False
+
+            # A baseline belongs to one phantom on one protocol. Renaming it
+            # into a phantom that already has a reference would leave two, and
+            # baseline_for would return whichever the database happened to
+            # reach first. The moved analysis stands down: the phantom it just
+            # joined already has a reference chosen deliberately.
+            demoted = False
+            if row["is_baseline"] and after != before:
+                clash = c.execute(
+                    "SELECT 1 FROM analyses WHERE is_baseline=1 AND id<>?"
+                    " AND COALESCE(TRIM(phantom),'')=?"
+                    " AND COALESCE(signature,'')=? LIMIT 1",
+                    (aid, after, row["signature"] or "")).fetchone()
+                if clash:
+                    c.execute("UPDATE analyses SET is_baseline=0 WHERE id=?",
+                              (aid,))
+                    demoted = True
+        return {"changed": True, "phantom_before": before,
+                "phantom_after": after, "profile_deleted": pruned,
+                "baseline_demoted": demoted}
 
     # ---------------------------------------------------------- validation
 
@@ -340,30 +778,100 @@ class Store:
                 "validation_comment": str(comment or "").strip(),
                 "validated_at": stamp}
 
-    def set_baseline(self, aid: str, value: bool = True):
-        rec = self.get(aid)
-        if value and rec:
-            # single baseline per signature
-            with self._conn() as c:
-                c.execute("UPDATE analyses SET is_baseline=0 WHERE signature=?",
-                          (rec["signature"],))
-        self.update(aid, is_baseline=int(value))
+    # ------------------------------------------------------------- baselines
 
-    def baseline_for(self, signature: str, exclude_id: str | None = None):
+    # A baseline is the reference a constancy test is measured against, and it
+    # is scoped to ONE PHANTOM on ONE PROTOCOL.
+    #
+    # The phantom half matters because two phantoms can differ by design and
+    # both be valid — the reference set here contains two builds whose internal
+    # features sit millimetres apart. Scoping by protocol alone meant the second
+    # phantom's baseline silently demoted the first one's, so a site running two
+    # phantoms on one machine could never have a reference for both.
+    #
+    # The protocol half stays because pixel values in processed radiographs are
+    # not proportional to dose: comparing across kV, detector or processing is
+    # meaningless whatever phantom was used.
+
+    @staticmethod
+    def baseline_scope(rec: dict) -> tuple:
+        return (str((rec or {}).get("phantom") or "").strip(),
+                str((rec or {}).get("signature") or ""))
+
+    def set_baseline(self, aid: str, value: bool = True) -> dict:
+        """Mark or unmark this analysis as its phantom's reference.
+
+        Unmarking is a first-class action: a baseline chosen from a scan that
+        later turns out to be poor has to be retractable, and until now nothing
+        could clear the flag once set."""
+        with self.write_transaction() as c:
+            row = c.execute(
+                "SELECT phantom, signature FROM analyses WHERE id=?",
+                (aid,)).fetchone()
+            if row is None:
+                raise KeyError(aid)
+            phantom, signature = self.baseline_scope(dict(row))
+            replaced = []
+            if value:
+                replaced = [r["id"] for r in c.execute(
+                    "SELECT id FROM analyses WHERE is_baseline=1 AND id<>?"
+                    " AND COALESCE(TRIM(phantom),'')=? AND COALESCE(signature,'')=?",
+                    (aid, phantom, signature)).fetchall()]
+                if replaced:
+                    c.execute(
+                        "UPDATE analyses SET is_baseline=0 WHERE is_baseline=1"
+                        " AND id<>? AND COALESCE(TRIM(phantom),'')=?"
+                        " AND COALESCE(signature,'')=?",
+                        (aid, phantom, signature))
+            c.execute("UPDATE analyses SET is_baseline=? WHERE id=?",
+                      (int(value), aid))
+        return {"is_baseline": bool(value), "phantom": phantom,
+                "signature": signature, "replaced": replaced}
+
+    def baseline_for(self, signature: str, phantom: str = "",
+                     exclude_id: str | None = None):
+        """The reference for one phantom on one protocol."""
         with self._conn() as c:
             row = c.execute(
-                "SELECT * FROM analyses WHERE signature=? AND is_baseline=1"
-                " AND id != ? LIMIT 1", (signature, exclude_id or "")).fetchone()
+                "SELECT id FROM analyses WHERE is_baseline=1"
+                " AND COALESCE(signature,'')=? AND COALESCE(TRIM(phantom),'')=?"
+                " AND id != ? LIMIT 1",
+                (signature or "", str(phantom or "").strip(),
+                 exclude_id or "")).fetchone()
         if row is None:
             return None
         return self.get(row["id"])
 
-    def delete(self, aid: str):
+    def baselines(self) -> list[dict]:
+        """Every current reference, one row per phantom-and-protocol."""
         with self._conn() as c:
+            rows = c.execute(
+                "SELECT id, phantom, site, signature, acquired_at, created_at,"
+                " status FROM analyses WHERE is_baseline=1"
+                " ORDER BY phantom, signature").fetchall()
+        return [dict(r) for r in rows]
+
+    def delete(self, aid: str) -> dict:
+        """Remove an analysis, its stored file, its edit history — and, when it
+        was the last analysis of its phantom, that phantom's stored layout.
+
+        The cascade lives here rather than in the web endpoint so a deletion
+        from the CLI, a test or a future admin command cannot leave an orphan
+        layout behind that would later be replayed onto an unrelated scan.
+        Count-then-delete runs inside BEGIN IMMEDIATE, so two workers deleting
+        the last two analyses of one phantom cannot both see a non-zero count."""
+        with self.write_transaction() as c:
+            row = c.execute("SELECT phantom FROM analyses WHERE id=?",
+                            (aid,)).fetchone()
+            label = self.profile_key(row["phantom"]) if row else ""
             c.execute("DELETE FROM analyses WHERE id=?", (aid,))
+            c.execute("DELETE FROM geometry_history WHERE analysis_id=?", (aid,))
+            pruned = self._prune_profile(c, label)
         p = self.upload_path(aid)
         if os.path.exists(p):
             os.remove(p)
+        return {"deleted": row is not None, "phantom": label,
+                "profile_deleted": pruned}
 
     # ----------------------------------------------------------- integrity
 
@@ -412,21 +920,82 @@ class Store:
         return [self.verify_integrity(item["id"]) for item in self.list_all()]
 
 
+_DATE_TAGS = ("StudyDate", "AcquisitionDate", "ContentDate", "SeriesDate",
+              "InstanceCreationDate")
+_TIME_TAGS = ("SeriesTime", "AcquisitionTime", "StudyTime", "ContentTime")
+
+
+def _first_str(meta: dict, tags) -> str:
+    """First non-empty tag value as a plain string.
+
+    pydicom hands back a MultiValue for a multi-valued tag; str() on that gives
+    "['20260727']", which fails every digit test below and silently produces no
+    date at all. Take the first element instead."""
+    for tag in tags:
+        v = (meta or {}).get(tag)
+        if isinstance(v, (list, tuple)):
+            v = v[0] if v else None
+        s = str(v or "").strip()
+        if s:
+            return s
+    return ""
+
+
 def _acquired_at(meta: dict) -> str:
-    """Acquisition timestamp from the DICOM header, as 'YYYY-MM-DD HH:MM:SS'."""
-    d = str((meta or {}).get("StudyDate") or "").strip()
-    t = str((meta or {}).get("SeriesTime")
-            or (meta or {}).get("AcquisitionTime")
-            or (meta or {}).get("StudyTime") or "").strip()
+    """Acquisition timestamp from the DICOM header, as 'YYYY-MM-DD HH:MM:SS'.
+
+    Empty when the header carries no usable date. That is a real answer, not a
+    failure: it is what lets the History table say "unknown" instead of quietly
+    showing the upload time in the acquisition column."""
+    d = _first_str(meta, _DATE_TAGS)
+    t = _first_str(meta, _TIME_TAGS)
     if len(d) != 8 or not d.isdigit():
         return ""
     stamp = f"{d[0:4]}-{d[4:6]}-{d[6:8]}"
     digits = "".join(ch for ch in t if ch.isdigit())
     if len(digits) >= 6:
         stamp += f" {digits[0:2]}:{digits[2:4]}:{digits[4:6]}"
+    elif len(digits) == 4:
+        # A valid DICOM TM may carry only HHMM. Reading it as midnight loses
+        # real information and makes same-day scans unorderable.
+        stamp += f" {digits[0:2]}:{digits[2:4]}:00"
     else:
         stamp += " 00:00:00"
     return stamp
+
+
+def acquisition_flag(rec: dict) -> str:
+    """How far the recorded acquisition time can be trusted.
+
+    '' the header gave a plausible time; 'missing' it gave none, so anything
+    date-driven falls back to the upload time; 'implausible' it gave one that
+    cannot be right — a detector whose clock was reset reports 1980, and a scan
+    cannot have been taken appreciably after it was uploaded.
+
+    The tolerance is a whole day on purpose: DICOM times are scanner-local and
+    the upload time is server-local, and nothing records either offset."""
+    acq = str((rec or {}).get("acquired_at") or "").strip()
+    if not acq:
+        return "missing"
+    year = acq[:4]
+    if not year.isdigit() or int(year) < 2000:
+        return "implausible"
+    created = str((rec or {}).get("created_at") or "").strip()
+    if created:
+        try:
+            a = time.mktime(time.strptime(acq[:19], "%Y-%m-%d %H:%M:%S"))
+            c = time.mktime(time.strptime(created[:19], "%Y-%m-%d %H:%M:%S"))
+            if a - c > 86400:
+                return "implausible"
+        except ValueError:
+            return "implausible"
+    return ""
+
+
+def acquired_or_uploaded(rec: dict) -> str:
+    """The timestamp to sort and plot by when no explicit choice was made."""
+    return (str((rec or {}).get("acquired_at") or "").strip()
+            or str((rec or {}).get("created_at") or "").strip())
 
 
 # ------------------------------------------------------------------ flattening
@@ -527,8 +1096,8 @@ def csv_export(records: list[dict]) -> str:
     buf = _io.StringIO()
     wr = csv.writer(buf, lineterminator="\n")
     wr.writerow(["analysis_id", "site", "phantom", "operator", "acquired_at",
-                 "created_at", "source", "signature", "is_baseline",
-                 "validation", "validated_by", "validated_at",
+                 "acquired_flag", "created_at", "source", "signature",
+                 "is_baseline", "validation", "validated_by", "validated_at",
                  "test", "object", "metric", "value", "unit", "status"])
     for rec in records:
         res = rec.get("results")
@@ -537,6 +1106,7 @@ def csv_export(records: list[dict]) -> str:
         for row in flatten_results(res):
             wr.writerow([rec["id"], rec.get("site", ""), rec.get("phantom", ""),
                          rec.get("operator", ""), rec.get("acquired_at", ""),
+                         acquisition_flag(rec),
                          rec["created_at"], rec["source_name"],
                          rec["signature"], rec.get("is_baseline", 0),
                          VALIDATION_LABELS.get(rec.get("validation_status", ""),
@@ -555,8 +1125,7 @@ def wide_csv_export(records: list[dict]) -> str:
     long format is better for pivot tables, this one is better for reading."""
     import csv
     import io as _io
-    ordered = sorted(records,
-                     key=lambda r: (r.get("acquired_at") or r["created_at"]))
+    ordered = sorted(records, key=acquired_or_uploaded)
     ordered = [r for r in ordered if r.get("results")]
     metrics: list[tuple] = []
     seen = set()
@@ -575,10 +1144,16 @@ def wide_csv_export(records: list[dict]) -> str:
     wr = csv.writer(buf, lineterminator="\n")
     wr.writerow(["test", "object", "metric", "unit"]
                 + [r["id"] for r in ordered])
-    for label in ("site", "phantom", "operator", "acquired_at", "signature",
-                  "status", "validation_status", "validated_by", "validated_at"):
+    # The two dates are separate rows on purpose: a detector whose clock was
+    # reset makes "acquired" untrustworthy, and "uploaded" is then the only
+    # timestamp that can order a large dataset.
+    for label in ("site", "phantom", "operator", "acquired_at", "created_at",
+                  "signature", "status", "validation_status", "validated_by",
+                  "validated_at"):
         wr.writerow(["", "", f"# {label}", ""]
                     + [str(r.get(label, "") or "") for r in ordered])
+    wr.writerow(["", "", "# acquired_flag", ""]
+                + [acquisition_flag(r) or "ok" for r in ordered])
     for key, unit in metrics:
         wr.writerow(list(key) + [unit]
                     + [m.get(key, "") for m in per_rec])

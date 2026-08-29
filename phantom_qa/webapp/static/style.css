@@ -255,6 +255,66 @@ tr.reason-row td {
   font-style: italic;
 }
 
+/* ---- collapsible detail ----
+   The numbers behind a result, folded away by default. Most operators need the
+   verdict; the ones checking a suspect measurement need everything. A native
+   <details> gives both without a mode switch, and prints expanded. */
+details.advanced {
+  border: 1px solid var(--border); border-radius: 8px;
+  margin: 8px 0; background: var(--panel2);
+}
+details.advanced > summary {
+  cursor: pointer; padding: 8px 11px; font-size: 12.5px; font-weight: 600;
+  list-style: none; display: flex; align-items: center; gap: 8px;
+}
+details.advanced > summary::-webkit-details-marker { display: none; }
+details.advanced > summary::before {
+  content: "▸"; color: var(--muted); font-weight: 400;
+}
+details.advanced[open] > summary::before { content: "▾"; }
+details.advanced > summary:hover { color: var(--accent); }
+details.advanced[open] > summary { border-bottom: 1px solid var(--border); }
+details.advanced > *:not(summary) { padding: 0 11px 10px; }
+details.advanced .card { background: none; border: none; padding: 0; margin: 8px 0; }
+@media print { details.advanced { border: none; } details.advanced > *:not(summary) { display: block !important; } }
+
+/* ---- delete confirmation panel ----
+   A panel with real fields rather than a chain of browser prompts: the target
+   is visible while the operator types, a wrong password shows an error in
+   place instead of a status line that fades after six seconds, and nothing
+   can be dismissed into an ambiguous state. */
+#del-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 65;
+  display: flex; align-items: center; justify-content: center;
+}
+#del-backdrop.hidden { display: none; }
+#del-card {
+  background: var(--panel); border: 1px solid var(--fail); border-radius: 12px;
+  padding: 20px 22px; width: 480px; max-width: 94vw;
+  max-height: 92vh; overflow-y: auto;
+}
+#del-card h3 { margin: 0 0 6px; font-size: 15px; color: var(--fail); }
+button.danger {
+  background: var(--fail); color: #fff; border: none; padding: 8px 16px;
+  border-radius: 6px; font-weight: 600; cursor: pointer; margin-top: 10px;
+}
+button.danger:disabled { opacity: 0.45; cursor: default; }
+
+/* ---- Stage C: layout source + undo/redo ---- */
+.layout-bar {
+  background: var(--panel2); border: 1px solid var(--border);
+  border-left: 3px solid var(--accent); border-radius: 6px;
+  padding: 7px 10px; margin: 8px 0; font-size: 11.5px;
+}
+.layout-bar.profile { border-left-color: var(--pass); }
+.layout-bar b { font-size: 12px; }
+.btn-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.btn-row .secondary-sm { margin-top: 0; }
+.rot-row input[type="number"] { width: 78px; }
+.roi-badge { font-size: 10px; padding: 1px 6px; border-radius: 8px;
+  background: var(--panel); border: 1px solid var(--border);
+  color: var(--muted); margin-left: 4px; }
+
 /* ---- duplicate-upload dialog ---- */
 #dup-backdrop {
   position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 55;

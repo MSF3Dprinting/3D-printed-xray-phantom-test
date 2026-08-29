@@ -168,10 +168,20 @@ def test_listing_is_ordered_by_acquisition_time(store):
     ({"StudyDate": "20260727", "SeriesTime": "093726.000000"},
      "2026-07-27 09:37:26"),
     ({"StudyDate": "20260727"}, "2026-07-27 00:00:00"),
+    # a valid DICOM TM may carry only HHMM — reading it as midnight would lose
+    # real information and leave same-day scans unorderable
     ({"StudyDate": "20260727", "AcquisitionTime": "1415"},
-     "2026-07-27 00:00:00"),
+     "2026-07-27 14:15:00"),
     ({}, ""),
     ({"StudyDate": "bad"}, ""),
+    # the date falls back through the header's other date tags
+    ({"AcquisitionDate": "20260727", "SeriesTime": "093726"},
+     "2026-07-27 09:37:26"),
+    ({"ContentDate": "20260727"}, "2026-07-27 00:00:00"),
+    # pydicom hands back a MultiValue for a multi-valued tag; str() on the list
+    # used to yield "['20260727']" and silently produce no date at all
+    ({"StudyDate": ["20260727"], "SeriesTime": ["093726.0"]},
+     "2026-07-27 09:37:26"),
 ])
 def test_acquired_at_parsing(meta, expected):
     assert _acquired_at(meta) == expected

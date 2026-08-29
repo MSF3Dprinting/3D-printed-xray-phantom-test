@@ -10,7 +10,12 @@ fastapi>=0.110
 uvicorn>=0.29
 python-multipart>=0.0.9
 pytest>=8.0
-httpx>=0.27          # required by fastapi.testclient for the auth test suite
+# fastapi.testclient needs whichever HTTP client its Starlette expects, and that
+# changed: Starlette < 1.0 imports httpx, Starlette >= 1.0 imports httpx2 and
+# fails at IMPORT time without it — which looks like a broken test suite rather
+# than a missing dependency. Installing both is harmless and covers either.
+httpx>=0.27
+httpx2>=2.12; python_version >= "3.9"
 
 # --- server deployment only (not needed to run locally via run_app.py)
 # gunicorn>=22.0

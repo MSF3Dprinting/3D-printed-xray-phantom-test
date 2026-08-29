@@ -169,6 +169,73 @@ def test_results_mode_keeps_the_confirmed_geometry(store, pdef):
     assert store.get(aid)["geometry"].get("_user_marker") == "manually adjusted"
 
 
+def _full_mode(monkeypatch, geometry=None):
+    """Run a full re-analysis without needing a real phantom in the image.
+
+    Full mode re-detects everything, which a 16x16 placeholder PNG cannot
+    support; the point being tested is what the store does with the results
+    afterwards, not the detection itself."""
+    from phantom_qa import pipeline
+    from phantom_qa.registration import Transform
+    import numpy as np
+    from test_store_labels import results_for
+
+    reg = pipeline.registration_from_dict(
+        {"transform": {"A": [[7.0, 0.0], [0.0, -7.0]], "t": [8.0, 8.0]},
+         "corners_px": [[0, 0], [1, 0], [1, 1], [0, 1]]})
+    monkeypatch.setattr(pipeline, "run_stage_a", lambda *a, **k: reg)
+    monkeypatch.setattr(pipeline, "propose_all",
+                        lambda ctx: geometry or {"geometry": {"redetected": 1}})
+    monkeypatch.setattr(pipeline, "compute_all", lambda ctx, g: results_for())
+    monkeypatch.setattr(pipeline, "overall_status", lambda r: "pass")
+
+
+def test_full_mode_keeps_the_results_it_just_computed(store, pdef, monkeypatch):
+    """A full re-analysis computes results FROM the geometry it then installs,
+    so the two already agree — invalidating them destroys exactly the work the
+    command was run to do, while the CLI still prints 'pass -> pass'."""
+    aid = add(store, pdef, algo="0.9.0")
+    _full_mode(monkeypatch)
+
+    out = reanalyze_one(store, pdef, aid, mode="full")
+
+    assert out["status"] == "updated"
+    rec = store.get(aid)
+    assert rec["results"] is not None, (
+        "the full re-analysis blanked the results it had just computed")
+    assert rec["status"] == out["new_overall"]
+    assert rec["geometry"] == {"geometry": {"redetected": 1}}
+
+
+def test_full_mode_still_discards_the_measuring_point_history(store, pdef,
+                                                              monkeypatch):
+    """Re-detection replaces the transform, so every stored undo state holds
+    pixel coordinates from a registration that no longer exists."""
+    aid = add(store, pdef, algo="0.9.0")
+    store.set_geometry_baseline(aid, {"geometry": {"old": 1}})
+    store.mutate_geometry(aid, lambda g: g.__setitem__("edited", 1),
+                          action="roi")
+    assert store.geometry_state(aid)["undo_depth"] == 1
+
+    _full_mode(monkeypatch)
+    reanalyze_one(store, pdef, aid, mode="full")
+
+    st = store.geometry_state(aid)
+    assert st == {"seq": 0, "undo_depth": 0, "redo_depth": 0,
+                  "has_baseline": True}
+    assert store.geometry_at(aid, 0) == {"geometry": {"redetected": 1}}
+
+
+def test_full_mode_leaves_the_record_in_every_export(store, pdef, monkeypatch):
+    """The symptom a user would actually notice: a blanked record silently
+    drops out of trends, both CSV exports and the comparison report, all of
+    which select on completed results."""
+    aid = add(store, pdef, algo="0.9.0")
+    _full_mode(monkeypatch)
+    reanalyze_one(store, pdef, aid, mode="full")
+    assert [r["id"] for r in store.list_all(completed_only=True)] == [aid]
+
+
 def test_dry_run_writes_nothing(store, pdef):
     aid = add(store, pdef, algo="0.9.0")
     out = reanalyze_one(store, pdef, aid, mode="results", dry_run=True)

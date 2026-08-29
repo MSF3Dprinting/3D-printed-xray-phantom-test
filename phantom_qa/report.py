@@ -259,10 +259,25 @@ def _geometry_section(res, bmap):
     return _section("Geometry & dimensions", g.get("dimension_status"), body)
 
 
+def _not_analysed(title: str, res: dict, key: str) -> str:
+    """A section for a test that produced no rows at all.
+
+    Returning "" instead — which is what this replaces — silently dropped the
+    test from the report, so a scan where a pattern was never measured read
+    exactly like one where it passed. On a document somebody signs, an absent
+    answer has to look absent."""
+    t = res.get(key) or {}
+    why = t.get("error") or "no result was produced for this test"
+    return _section(
+        title, t.get("status") or "n/a",
+        f'<p class="warnbox">This test could not be analysed on this scan: '
+        f'{html.escape(str(why))}</p>')
+
+
 def _linepairs_section(res, bmap):
     lp = res.get("linepairs") or {}
     if not lp.get("rows"):
-        return ""
+        return _not_analysed("Line patterns", res, "linepairs")
     rows = ""
     for r in lp["rows"]:
         lin = r.get("linearity") or {}
@@ -290,7 +305,7 @@ def _linepairs_section(res, bmap):
 def _lowcontrast_section(res, bmap, baseline_rows):
     lc = res.get("lowcontrast") or {}
     if not lc.get("rows"):
-        return ""
+        return _not_analysed("Low contrast", res, "lowcontrast")
     rows = ""
     for r in lc["rows"]:
         b = bmap.get(("lowcontrast", r["id"], "cnr"))
@@ -317,7 +332,7 @@ def _lowcontrast_section(res, bmap, baseline_rows):
 def _uniformity_section(res, bmap):
     u = res.get("uniformity") or {}
     if not u.get("rows"):
-        return ""
+        return _not_analysed("Uniformity", res, "uniformity")
     rows = ""
     for r in u["rows"]:
         b = bmap.get(("uniformity", r["id"], "snr"))
@@ -340,7 +355,7 @@ def _uniformity_section(res, bmap):
 def _wedge_section(res, bmap):
     w = res.get("wedge") or {}
     if not w.get("rows"):
-        return ""
+        return _not_analysed("Wedge", res, "wedge")
     resid = (w.get("fit") or {}).get("residuals_pct_of_span") or []
     rows = ""
     for i, r in enumerate(w["rows"]):
@@ -408,10 +423,21 @@ def _validation_block(record: dict) -> str:
 
 
 def _identity_block(record: dict) -> str:
+    from .store import acquisition_flag
+    flag = acquisition_flag(record)
+    acquired = (record.get("acquired_at") or "")[:16]
+    if flag == "missing":
+        acquired = "not recorded by the scanner"
+    elif flag == "implausible":
+        acquired += " (implausible — check the scanner clock)"
     rows = [("Site", record.get("site")),
             ("Phantom", record.get("phantom")),
             ("Operator", record.get("operator")),
-            ("Acquired", (record.get("acquired_at") or "")[:16]),
+            # Both dates: a scanner clock that was never set, or was reset,
+            # makes the acquisition date unusable for tracing a scan, and the
+            # upload date is then the only reliable ordering.
+            ("Acquired", acquired),
+            ("Uploaded", (record.get("created_at") or "")[:16]),
             ("Notes", record.get("notes"))]
     cells = "".join(
         f'<div class="idcell"><span class="idk">{html.escape(k)}</span>'

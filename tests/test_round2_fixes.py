@@ -104,8 +104,10 @@ def test_duplicate_check_ignores_deleted_records(client):
     aid = client.post("/api/analyses",
                       files={"file": ("s.dcm", io.BytesIO(data))}
                       ).json()["analyses"][0]["id"]
-    client.post(f"/api/analyses/{aid}/delete",
-                json={"admin_password": ADMIN_PW, "confirm_id": aid})
+    deleted = client.post(f"/api/analyses/{aid}/delete",
+                          json={"admin_password": ADMIN_PW,
+                                "reason": "re-upload regression check"})
+    assert deleted.status_code == 200, deleted.text
     again = client.post("/api/analyses",
                         files={"file": ("s.dcm", io.BytesIO(data))})
     assert again.status_code == 200, "re-upload after deletion must be allowed"

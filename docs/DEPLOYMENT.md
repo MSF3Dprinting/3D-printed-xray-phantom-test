@@ -292,14 +292,29 @@ user or admin, so the matrix cannot drift.
 
 ### Deletion
 
-Deleting an analysis also removes its stored source file. It requires all of:
-the administrator password, the analysis id typed back as confirmation, and
+Deleting an analysis also removes its stored source file, its measuring-point
+edit history, and — when it was the last analysis carrying that phantom name —
+that phantom's stored measuring-point layout. It requires all of: the
+administrator password, a written reason of at least five characters, and
 passing a throttle stricter than sign-in. With no administrator password
 configured, deletion is refused and the interface explains how to enable it.
 
+The reason is mandatory because the audit log is the only surviving record of
+why data was destroyed. It is capped at 500 characters before being logged.
+
+> Typing the analysis id back was required until the third tester round. It was
+> dropped: a copy-paste satisfied it, while its refusal surfaced only as a
+> transient status message — an operator could believe a deletion had happened
+> when it had not. The confirmation panel now shows the target record and keeps
+> every refusal on screen until it is dealt with.
+
 Every attempt — refusals, wrong passwords, and successful deletions with the
-site, phantom, source name and SHA-256 of what was removed — is written to
-`logs/audit.log`. Nothing is soft-deleted.
+site, phantom, source name, SHA-256, both dates and whether a stored layout went
+with it — is written to `logs/audit.log`. Nothing is soft-deleted.
+
+Removing a phantom's stored measuring-point layout on its own
+(`POST /api/phantom_profiles/forget`) is gated by the same administrator
+password, because that layout is shared by every future scan of that phantom.
 
 ### Validation
 

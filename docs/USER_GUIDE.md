@@ -55,7 +55,9 @@ offered:
 | **Analyse again anyway** | Deliberately create a second record — for a re-analysis after a code or definition change |
 | **Cancel** | Do nothing |
 
-Re-uploading a file whose record was deleted is allowed and creates a new one.
+Re-uploading a file whose record was deleted is allowed and creates a new one —
+with no geometry, no edit history and no stored layout carried over from the
+deleted record.
 
 ### A — Registration
 
@@ -68,6 +70,11 @@ choose **Manual corners** and click the four phantom corners yourself; the order
 does not matter.
 
 ### B — Patterns
+
+The step opens with one line: how many patterns were found, and which were not.
+That is normally all you need — the check that matters is on the **image**, not
+in this panel. **Detection detail** opens the full table for anyone who wants
+the measured values.
 
 Every detected pattern is outlined and labelled: the five line-pair groups with
 their frequencies, the low-contrast block, the wedge steps, the uniformity
@@ -97,8 +104,26 @@ orange, and both the automatic and the manual position are kept in the audit
 trail.
 
 **Rotating.** Select an ROI and use the angle slider in the details panel at the
-bottom, the ±1° buttons, or the `[` and `]` keys. This matters when a phantom
-differs from the definition and the automatic orientation is wrong.
+bottom, type an exact angle in the box beside it, or use the ±1° buttons and the
+`[` and `]` keys. This matters when a phantom differs from the definition and
+the automatic orientation is wrong.
+
+**Undoing.** Every change to a measuring point can be undone — **↶ Undo** and
+**↷ Redo** at the top of the step, and the count on the button says how many
+steps are available. The history is kept on the server with the analysis, so it
+survives closing the analysis and coming back to it. A slip never costs more
+than a click, and never costs a re-upload.
+
+**Starting again.** Two resets, because "start again" is ambiguous once a
+phantom has a stored layout:
+
+| Button | Goes back to |
+|---|---|
+| **Reset to auto-detected** | This scan's own automatic detection, exactly as it was proposed — not a re-detection |
+| **Reset to stored layout** | The measuring points confirmed for this phantom previously (only shown when there is one) |
+
+A reset is itself an undoable step, so pressing one by mistake does not destroy
+an afternoon's work.
 
 For a line-pattern group, rotating the square also sets the profile direction by
 hand, overriding the automatic one. Move the square first, then rotate only if
@@ -111,7 +136,44 @@ click the visible field edge on the image.
 > from the stored phantom geometry, so on a different build — or a different
 > X-ray unit — some patterns will be found in the wrong place. That is expected.
 > Correct them here by dragging and rotating; every measurement is taken from
-> where you put the ROI.
+> where you put the ROI. You only have to do it once per phantom — see
+> [Measuring points remembered per phantom](#measuring-points-remembered-per-phantom).
+
+#### Measuring points remembered per phantom
+
+Two phantoms built to the same drawing are not the same object: on the reference
+scans the printed internal features sit several millimetres apart between two
+builds, while repeat scans of one build reproduce to a few tenths of a
+millimetre. That difference is assembly. It does not drift over time, so
+correcting it on every scan is wasted work.
+
+So when you press **Measuring points confirmed ✓**, the positions are stored
+against the **Phantom** name on the analysis. The next scan you upload with that
+same name starts from them instead of from automatic detection, and the step
+says so at the top:
+
+> *Measuring points: stored layout for phantom MSF-01 — saved 2026-08-14 09:12
+> by S. Tkac · 31 measuring area(s)*
+
+Things worth knowing:
+
+* **Name the phantom.** The name is the only thing that identifies it — the
+  DICOM header of two different phantoms on the same X-ray unit is identical.
+  Use the same spelling every time; `MSF-01` and `msf-01` are two phantoms as
+  far as the software is concerned, and it will warn you when you create a
+  layout for a name that differs from an existing one only in spelling.
+* **The phantom may lie differently on the detector each time.** The positions
+  are stored in the phantom's own frame, not in image pixels, so a scan with the
+  phantom turned 90° or flipped replays them correctly.
+* **A stored layout is never applied blindly.** It is laid on top of a fresh
+  detection of this scan, and if the two disagree about where the phantom's
+  patterns are — which is what a mis-registered scan looks like — the layout is
+  refused and the step tells you why. Check step A in that case.
+* **Field edges are never stored.** Collimation belongs to the exposure, not to
+  the phantom.
+* **It is not permanent.** **Reset to auto-detected** ignores it for this scan;
+  confirming step C again replaces it; and it is deleted automatically when the
+  last analysis carrying that phantom name is deleted or renamed.
 
 #### Reading the overlays
 
@@ -137,9 +199,22 @@ block and all eight follow. Three ways, in the block's own panel in step C:
 
 | Action | How |
 |---|---|
+| **Turn end for end** | **⟲ Turn 180°** — one button, see below |
 | **Move** | Drag the block rectangle itself (not a circle) |
-| **Rotate** | **Set block angle…** and type the angle in degrees |
+| **Fine rotation** | Type the angle in the **fine angle** box in the step panel — the image previews as you type, Enter or **Apply** commits, `[` and `]` nudge by 1° |
 | **Redefine completely** | **Click 4 block corners…** then click the block's four corners on the image, in order around the rectangle |
+
+**Turn 180° first, if at all.** The block outline is symmetrical, so detection
+can only ever determine its angle to within 180° — it genuinely cannot tell
+which end is which. When it guesses wrong, all eight ROIs still land on real
+discs: L1 sits on L5's disc, L2 on L6's, L3 on L7's, L4 on L8's. Nothing looks
+wrong on the image and no geometric check fails. The one symptom is step E
+reporting that **|CNR| is not in design order**.
+
+That makes it a yes-or-no mistake rather than a matter of degrees, which is why
+it has its own button. Press it, and the fine angle box is for everything else.
+The turn is stored with the phantom's layout like any other correction, so the
+next scan of that phantom starts the right way round.
 
 The four-corner method is the same idea as manual phantom corners in step A and
 is the one to use when the block is both shifted and rotated: the centre and the
@@ -150,6 +225,11 @@ discards the automatic grid refinement — that refinement was a correction to t
 *old* placement and would otherwise pull the circles back off the objects.
 
 ### D — Dimensions
+
+Two lines at the top say whether the phantom measures the size it should and
+whether the X-ray field is centred. If both are green, carry on. **Measured
+dimensions** opens the corner measurements, the ruler pitches, the scale
+cross-check and the per-side field deviations.
 
 Verification of the millimetre calibration before any measurement depends on it:
 
@@ -172,6 +252,15 @@ cross-checked, and the step says so: treat the dimensions as indicative and fix
 the ruler probes in step C before relying on them.
 
 ### E — Analysis
+
+The results open as a **summary table**: one row per test, its verdict, and the
+single number that verdict rests on. Below it, a line naming anything that needs
+attention.
+
+Each test's full detail — every ROI, every measured value, the charts, and the
+reason behind the verdict — is in a collapsible section beneath. **Anything that
+did not pass is already open**, so you never have to go looking for the part
+that matters. Nothing has been removed; it is one click away.
 
 All tests are computed from the confirmed geometry:
 
@@ -205,7 +294,7 @@ exposure.
 
 The analysis is stored with its full audit trail. From here you can:
 
-- mark it as the **baseline** for its protocol signature
+- mark it as the **reference scan** for its phantom (see below)
 - open the **printable report**, or download **CSV** or **JSON**
 - **verify the source file** against its recorded SHA-256
 - set the **validation** state
@@ -239,6 +328,13 @@ person approving**, and an optional comment. The name is stored separately from
 the password: a shared credential establishes the right to sign off, not who
 did.
 
+**A signed-off analysis is locked.** Once a ruling is recorded, the measuring
+points, the registration and the results cannot be changed — the wizard refuses
+with a message naming who signed it. Validation means a person took
+responsibility for a specific set of numbers, so those numbers cannot quietly
+become different ones. To rework an analysis, withdraw the ruling first; the
+withdrawal is itself recorded.
+
 Set it from the identity bar, from step F, or from the **validate** link in the
 History table. A ruling can be changed or withdrawn later; every ruling and
 reversal is written to the audit log with the previous state.
@@ -257,16 +353,39 @@ The History tab works from either a **filter** or a **manual selection**:
 - or tick individual rows — as soon as anything is ticked, the ticked rows take
   precedence over the filter, and a note states which is in effect
 
-Analyses are ordered by **acquisition time taken from the DICOM header**, not by
-upload time, so re-analysing an old scan does not disturb the ordering.
+### Two dates, kept apart
+
+The table carries both:
+
+| Column | Where it comes from |
+|---|---|
+| **acquired** | The scanner's own clock, from the DICOM header |
+| **uploaded** | This server's clock, when the file arrived |
+
+They are not interchangeable. A detector's clock can be unset, reset during
+service, or simply wrong, and nothing in DICOM records a timezone. When the
+header carries no usable date the acquired cell reads **unknown ⚠**; when it
+carries one that cannot be right — a year before 2000, or a time after the
+upload — it is shown with a ⚠ as well, and the count of such rows appears beside
+the filter. The acquisition column is never quietly filled in from the upload
+clock.
+
+**Order by** switches the table between the two. Acquisition order is the
+default and is what you want normally, because re-analysing an old scan should
+not disturb the sequence. Upload order is what you want when a unit's clock is
+suspect: on a large dataset it is the only ordering that is certainly real.
+
+The trend chart has the same choice in **Date axis**, and marks points with no
+trustworthy acquisition date in amber so a run of them cannot be mistaken for a
+real chronology.
 
 Three outputs follow the current selection:
 
 | Output | Contents |
 |---|---|
 | **Comparison report** | A visual comparison of the whole selection — see below |
-| **Trend chart** | One metric across the selection, baseline starred, dashed band at ±20 % of baseline |
-| **CSV export** | *Long*: one row per metric per analysis, for pivot tables. *Wide*: one row per metric, one column per analysis, for reading drift directly. Both carry site, phantom, operator and acquisition time |
+| **Trend chart** | One metric across the selection, the reference scan starred, dashed band at ±20 % of it |
+| **CSV export** | *Long*: one row per metric per analysis, for pivot tables. *Wide*: one row per metric, one column per analysis, for reading drift directly. Both carry site, phantom, operator, acquisition time, upload time and whether the acquisition time is trustworthy |
 
 ### The comparison report
 
@@ -302,12 +421,38 @@ near zero.
 ## Comparing like with like
 
 Pixel values in processed radiographs are not proportional to dose, so all tests
-are **constancy tests**: compare against the baseline of the same protocol.
+are **constancy tests**: each scan is compared against a reference.
 
-Each analysis records a **protocol signature** — detector model, kV, pixel
-spacing and processing family. Filtering by signature alongside Site and Phantom
-keeps comparisons honest, and the comparison report prints each analysis's
-signature so a mixed series is visible.
+### The reference scan
+
+A reference belongs to **one phantom on one protocol**.
+
+The phantom half matters because two phantoms built to the same drawing are not
+the same object — on the reference set here, two builds have internal features
+several millimetres apart, and both are perfectly valid. A site running two
+phantoms on one machine needs a reference for each. Marking one phantom's
+reference therefore never disturbs another's.
+
+The protocol half stays because comparing across kV, detector or processing is
+meaningless whatever the phantom. Each analysis records a **protocol
+signature** — detector model, kV, pixel spacing and processing family — and the
+comparison report prints it so a mixed series is visible.
+
+Set or remove a reference from step F, or with the ★ in the History table:
+
+| Symbol | Meaning |
+|---|---|
+| ★ | This is the reference for its phantom on its protocol. Click to remove it |
+| ☆ | Click to make this the reference; whatever held the role for that phantom stands down |
+
+A reference can always be removed, leaving that phantom with none until another
+is chosen — a reference picked from a scan that later turns out to be poor must
+not be permanent. Reduced-precision analyses and analyses without results cannot
+be references.
+
+Because each phantom has its own, a trend chart covering several phantoms
+contains several references, and the ±20 % band is then not drawn: it would be a
+band around an arbitrary one. Filter to a single phantom to see it.
 
 ---
 
@@ -317,6 +462,32 @@ Every analysis records a SHA-256 fingerprint of the file it was computed from
 and keeps a copy of that file. See
 [MAINTENANCE.md](MAINTENANCE.md#source-file-integrity) for what it detects and
 how to check it.
+
+---
+
+## Deleting an analysis
+
+The **delete** link in the History table opens a panel that shows exactly what
+is about to be destroyed — the id, the site and phantom, both dates, the source
+file name and the result — and asks for two things:
+
+1. a **reason**, at least five characters, recorded in the audit log next to who
+   did it and from where. It is the only record of why the data went;
+2. the **administrator password** — not your everyday login.
+
+Deleting removes the record, the stored source file and the measuring-point edit
+history. If it was the last analysis carrying its phantom name, that phantom's
+stored measuring-point layout goes too, and the panel warns you before you
+confirm.
+
+The panel stays open until the server accepts. A wrong password or a missing
+reason is shown in the panel itself, so a deletion can never appear to have
+happened when it did not.
+
+> Typing the analysis id back is no longer required. It protected nothing that a
+> copy-paste did not satisfy, while its refusal was a message that cleared
+> itself after a few seconds — which is how a failed deletion could be mistaken
+> for a successful one.
 
 ---
 

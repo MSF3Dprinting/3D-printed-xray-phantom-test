@@ -9,7 +9,7 @@ Backups, integrity checks, re-analysis and logs.
 | Path | Contents | Version controlled | Back up |
 |---|---|---|---|
 | `data/phantom_definitions/*.json` | Calibrated phantom geometry — source, not runtime data | **yes** | with the code |
-| `data/phantom_qa.sqlite3` | All analyses: labels, geometry, results, validation, audit trail | no | **yes** |
+| `data/phantom_qa.sqlite3` | All analyses: labels, geometry, results, validation, audit trail; the per-phantom measuring-point layouts; the Stage C undo history | no | **yes** |
 | `data/phantom_qa.sqlite3-wal`, `-shm` | SQLite runtime companions | no | no |
 | `data/uploads/*.bin` | The original scan of every analysis | no | **yes** |
 | `logs/*` | Application, error and audit logs | no | per retention policy |
@@ -237,10 +237,27 @@ since they distinguish a mis-placed ROI from a genuine detector problem.
 
 Correct the placement by hand in Stage C: drag each ROI onto the right object
 and rotate it to match. Every measurement is taken from where you put the ROI,
-and the profile line follows the square. This is enough for a one-off scan.
+and the profile line follows the square. Undo, Redo and the two Reset buttons
+mean a slip costs a click rather than a re-upload.
 
-Bear in mind that a hand-placed series is only comparable with itself if the
-placement is consistent, so record what you did in the analysis notes.
+**Do it once per phantom, not once per scan.** Confirming Stage C stores the
+corrected positions against the analysis's **Phantom** name, and the next scan
+of that phantom starts from them. This is what makes a hand-placed series
+comparable with itself: the placement is no longer re-done by hand, it is
+replayed. Positions are stored in the phantom's own frame, so a scan with the
+phantom turned differently on the detector replays correctly; and a layout that
+disagrees with the new scan's own detection about where the patterns are — the
+signature of a mis-registered scan — is refused rather than applied.
+
+A stored layout is bound to the phantom name and dies with it: deleting or
+renaming the last analysis carrying that name deletes the layout. An
+administrator can also discard one deliberately (`POST
+/api/phantom_profiles/forget`, admin password required); `GET
+/api/phantom_profiles` lists them with how many analyses still use each.
+
+A stored layout is not a substitute for a calibrated definition. It freezes ROI
+positions; it does not change the nominal geometry the software measures
+against. For a phantom you will use regularly, do both.
 
 ### Calibrating a definition for that build
 

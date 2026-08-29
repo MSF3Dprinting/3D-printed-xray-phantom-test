@@ -474,7 +474,8 @@ def build_comparison_report(records: list[dict], title_suffix: str = "",
         f"<tr><td><b>{html.escape(labels[i].replace(chr(10), ' '))}</b></td>"
         f"<td>{html.escape(r.get('site') or '—')}</td>"
         f"<td>{html.escape(r.get('phantom') or '—')}</td>"
-        f"<td>{html.escape((r.get('acquired_at') or r['created_at'])[:16])}</td>"
+        f"<td>{html.escape((r.get('acquired_at') or '')[:16] or '—')}</td>"
+        f"<td>{html.escape((r.get('created_at') or '')[:16])}</td>"
         f"<td><span class='chip' style='background:"
         f"{_STATUS_COLOR.get(r.get('status'), '#9aa4b2')}'>"
         f"{html.escape(str(r.get('status') or 'n/a'))}</span></td>"
@@ -540,8 +541,10 @@ def build_comparison_report(records: list[dict], title_suffix: str = "",
         parts = [f"{k}: {v}" for k, v in filters.items() if v]
         filt = " · ".join(html.escape(p) for p in parts)
 
-    span = (f"{(ordered[0].get('acquired_at') or ordered[0]['created_at'])[:16]}"
-            f" → {(ordered[-1].get('acquired_at') or ordered[-1]['created_at'])[:16]}")
+    def _stamp(r):
+        return (r.get("acquired_at") or "")[:16] or (r.get("created_at") or "")[:16]
+
+    span = f"{_stamp(ordered[0])} → {_stamp(ordered[-1])}"
 
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <title>Phantom QA — comparison</title>
@@ -584,7 +587,7 @@ def build_comparison_report(records: list[dict], title_suffix: str = "",
   </div>
   <div class="scroll"><table>
     <tr><th>label used in the plots</th><th>site</th><th>phantom</th>
-        <th>acquired</th><th>overall</th><th>validation</th>
+        <th>acquired</th><th>uploaded</th><th>overall</th><th>validation</th>
         <th>protocol</th><th>id</th></tr>
     {key_rows}
   </table></div>
