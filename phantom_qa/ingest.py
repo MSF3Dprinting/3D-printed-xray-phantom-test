@@ -27,8 +27,13 @@ class ScanData:
     source_name: str
     kind: str                     # 'dicom' | 'image'
     reduced_precision: bool       # True for plain-image fallback
-    header_dump: str = ""         # full DICOM header as text (traceability)
     spacing_candidates: dict = field(default_factory=dict)  # name -> mm/px
+    #: The exact bytes this scan was decoded from. For a zip (CD export) that
+    #: is the extracted MEMBER, which is what sha256 fingerprints — the caller
+    #: that persists an upload must store these, not the container, or every
+    #: later integrity check compares the container's hash against the
+    #: member's and fails. Never serialised; in-memory hand-off only.
+    source_bytes: bytes | None = None
 
     @property
     def shape(self):
@@ -115,8 +120,8 @@ def load_dicom_bytes(data: bytes, source_name: str) -> ScanData:
         source_name=source_name,
         kind="dicom",
         reduced_precision=False,
-        header_dump=str(ds),
         spacing_candidates=spacing,
+        source_bytes=data,
     )
 
 
@@ -138,6 +143,7 @@ def load_image_bytes(data: bytes, source_name: str) -> ScanData:
         kind="image",
         reduced_precision=True,
         spacing_candidates={},
+        source_bytes=data,
     )
 
 
@@ -150,10 +156,19 @@ def load_any_bytes(data: bytes, source_name: str) -> list[ScanData]:
     DICOM images; DICOMDIR indexes are skipped in favor of scanning actual files."""
     name_lower = source_name.lower()
     if name_lower.endswith(".zip"):
+        # Decompression bombs: infolist() reports the DECLARED uncompressed
+        # size, so both caps are enforced before a byte is inflated. A real
+        # detector image is tens of MB; the caps are far above any legitimate
+        # CD export and far below what would take a gunicorn worker down.
+        MAX_MEMBER = 512 * 1024 * 1024
+        MAX_TOTAL = 1024 * 1024 * 1024
+        total = 0
         scans = []
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             for info in zf.infolist():
                 if info.is_dir() or info.file_size < 5000:
+                    continue
+                if info.file_size > MAX_MEMBER:
                     continue
                 base = os.path.basename(info.filename).lower()
                 if base in ("dicomdir",) or base.endswith((".jar", ".exe", ".pdf",
@@ -161,6 +176,10 @@ def load_any_bytes(data: bytes, source_name: str) -> list[ScanData]:
                                                            ".css", ".png", ".txt",
                                                            ".inf", ".cmd", ".sh")):
                     continue
+                # budget only what is actually inflated
+                if total + info.file_size > MAX_TOTAL:
+                    break
+                total += info.file_size
                 content = zf.read(info)
                 if _is_dicom_bytes(content):
                     try:

@@ -77,7 +77,7 @@ gunicorn -c gunicorn.conf.py phantom_qa.webapp.main:app
 | Level | Credential | Permitted actions |
 |---|---|---|
 | **User** | login password | Upload, run the wizard, edit labels, read reports, verify integrity, export |
-| **Admin** | additionally the administrator password | Delete an analysis, validate one |
+| **Admin** | additionally the administrator password | Delete an analysis, validate one, discard a phantom's stored measuring-point layout |
 
 The administrator password is entered per action rather than at sign-in, so an
 administrator works as an ordinary user and supplies it only when deleting or

@@ -118,6 +118,17 @@ def get_logger(name: str = "") -> logging.Logger:
     return logging.getLogger(f"{APP_LOGGER}.{name}" if name else APP_LOGGER)
 
 
+def _field(value, limit: int = 200) -> str:
+    """One fixed audit field, safe to interpolate into the line format.
+
+    The JSON tail escapes newlines on its own, but the fixed fields are
+    interpolated raw — and one of them, the username on a failed sign-in, is
+    attacker-typed. A newline there would forge a second line that greps
+    exactly like a real audit record, which defeats the file's purpose."""
+    s = "".join(ch if ch.isprintable() else " " for ch in str(value))
+    return s[:limit] if s else "-"
+
+
 def audit(event: str, *, user: str = "-", client: str = "-",
           analysis: str = "-", outcome: str = "ok", **detail):
     """Write one structured audit line.
@@ -131,4 +142,5 @@ def audit(event: str, *, user: str = "-", client: str = "-",
         blob = str(safe)
     logging.getLogger(AUDIT_LOGGER).info(
         "event=%s outcome=%s user=%s client=%s analysis=%s detail=%s",
-        event, outcome, user, client, analysis, blob)
+        _field(event), _field(outcome), _field(user), _field(client),
+        _field(analysis), blob)

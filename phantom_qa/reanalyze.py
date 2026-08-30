@@ -58,11 +58,22 @@ def find_outdated(store, pdef: PhantomDef) -> list[dict]:
 
 
 def reanalyze_one(store, pdef: PhantomDef, aid: str, mode: str = "results",
-                  dry_run: bool = False, user: str = "cli") -> dict:
+                  dry_run: bool = False, user: str = "cli",
+                  include_validated: bool = False) -> dict:
     """Recompute one analysis. Returns a summary of what changed."""
     rec = store.get(aid)
     if rec is None:
         return {"id": aid, "status": "not_found"}
+    if rec.get("validation_status") and not include_validated and not dry_run:
+        # The module's promise — signed-off analyses are skipped unless
+        # explicitly included — has to hold on THIS path too. Naming an id
+        # used to bypass it silently, recomputing numbers an administrator
+        # had put their name to. The web endpoints refuse the same way.
+        return {"id": aid, "status": "skipped_validated",
+                "site": rec.get("site", ""), "phantom": rec.get("phantom", ""),
+                "message": f"signed off by "
+                           f"{rec.get('validated_by') or 'someone'}; "
+                           f"re-run with --include-validated to recompute it"}
     if mode == "results":
         # Results mode replays the stored geometry, whose pixel coordinates
         # only mean anything together with the transform that produced them.
@@ -139,6 +150,9 @@ def reanalyze_one(store, pdef: PhantomDef, aid: str, mode: str = "results",
         fields["geometry"] = geometry
         fields["reg"] = pipeline.registration_to_dict(reg)
         fields["geometry_seq"] = 0
+        # full mode re-detects from scratch, so whatever stored layout the
+        # geometry used to carry is gone with it
+        fields["layout_source"] = "auto"
     store.update(aid, **fields)
     if mode == "full":
         # Re-detection replaces the transform, so every stored measuring-point
@@ -210,5 +224,6 @@ def reanalyze_all(store, pdef: PhantomDef, mode: str = "results",
                                    f"use --include-validated to recompute"})
             continue
         out.append(reanalyze_one(store, pdef, rec["id"], mode=mode,
-                                 dry_run=dry_run, user=user))
+                                 dry_run=dry_run, user=user,
+                                 include_validated=include_validated))
     return out

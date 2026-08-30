@@ -122,7 +122,9 @@ MISMATCH d4df2f8f0132  10000005
 2/3 verified.
 ```
 
-Every check is written to `logs/audit.log` as an `event=verify` line.
+Checks made through the web interface are written to `logs/audit.log` as
+`event=verify` lines. The CLI prints its results to the terminal instead —
+capture its output if the run needs to be kept.
 
 ### Responding to a mismatch
 
@@ -252,7 +254,9 @@ signature of a mis-registered scan — is refused rather than applied.
 A stored layout is bound to the phantom name and dies with it: deleting or
 renaming the last analysis carrying that name deletes the layout. An
 administrator can also discard one deliberately (`POST
-/api/phantom_profiles/forget`, admin password required); `GET
+/api/phantom_profiles/forget`, admin password required — the request body
+names the layout under the key `phantom`, and the listing below carries the
+same value as both `phantom` and `phantom_key`); `GET
 /api/phantom_profiles` lists them with how many analyses still use each.
 
 A stored layout is not a substitute for a calibrated definition. It freezes ROI

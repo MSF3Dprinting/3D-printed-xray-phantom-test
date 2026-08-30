@@ -384,8 +384,26 @@ Three outputs follow the current selection:
 | Output | Contents |
 |---|---|
 | **Comparison report** | A visual comparison of the whole selection — see below |
-| **Trend chart** | One metric across the selection, the reference scan starred, dashed band at ±20 % of it |
+| **Trend chart** | One metric over one phantom's scans — see below |
 | **CSV export** | *Long*: one row per metric per analysis, for pivot tables. *Wide*: one row per metric, one column per analysis, for reading drift directly. Both carry site, phantom, operator, acquisition time, upload time and whether the acquisition time is trustworthy |
+
+### The trend chart
+
+Collapsed by default — open **Trend of a single metric** when you want it.
+
+The chart draws nothing until you have said which scans belong together:
+pick a **Phantom** in the filter, or tick rows in the table. That is not a
+limitation but the point — two phantoms differ by design, so a line drawn
+across them would show their assembly differences as if a detector were
+drifting.
+
+Once a phantom is selected: pick the metric, hover any point for its exact
+value, date and scan, and switch the **Date axis** to the upload date when the
+scanner's clock is suspect. The reference scan is the highlighted point, the
+dashed band is ±20 % of it, and amber points carry no trustworthy acquisition
+date. With a long series (a hundred scans and more) the date labels thin out
+automatically so they stay readable — the hover readout always has the exact
+date.
 
 ### The comparison report
 

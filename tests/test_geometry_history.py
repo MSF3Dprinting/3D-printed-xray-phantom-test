@@ -62,7 +62,7 @@ def aid(store):
 def test_a_fresh_proposal_has_nothing_to_undo(store, aid):
     st = store.geometry_state(aid)
     assert st == {"seq": 0, "undo_depth": 0, "redo_depth": 0,
-                  "has_baseline": True}
+                  "has_auto_proposal": True}
 
 
 def test_an_edit_can_be_undone_and_redone(store, aid):
@@ -215,7 +215,7 @@ def test_a_record_written_before_the_feature_gains_a_baseline(store):
     a = store.new_analysis(fake_scan(sha=hashlib.sha256(payload).hexdigest()),
                            payload, "sig", "1.0.0", "1.0", labels={})
     store.update(a, geometry=_geom(5.0))          # no history rows at all
-    assert store.geometry_state(a)["has_baseline"] is False
+    assert store.geometry_state(a)["has_auto_proposal"] is False
     store.mutate_geometry(
         a, lambda g: g["uniformity"]["squares"][0]["roi"].update(
             {"center_mm": [6.0, 0.0]}), action="roi")

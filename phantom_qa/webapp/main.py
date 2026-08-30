@@ -319,7 +319,13 @@ def secrets_equal(a: str, b: str) -> bool:
 
 def _scan(aid: str) -> ingest.ScanData:
     if aid in _scans:
-        return _scans[aid]
+        # The cache is per gunicorn worker. A delete served by ANOTHER worker
+        # cannot reach this dict, so an existence check is what keeps a deleted
+        # scan's pixels from being served forever. One indexed SELECT — cheap
+        # next to decoding an image.
+        if store.exists(aid):
+            return _scans[aid]
+        _forget(aid)
     rec = store.get(aid)
     if rec is None:
         raise HTTPException(404, "analysis not found")
@@ -355,15 +361,24 @@ def _reg(aid: str, rec: dict | None = None) -> Registration:
     key = (aid, json_dumps_stable(r.get("transform")))
     if key in _regs:
         return _regs[key]
-    reg = Registration(
-        transform=Transform.from_dict(r["transform"]),
-        corners_px=np.asarray(r["corners_px"], float),
-        coarse_angle_deg=r.get("coarse_angle_deg", float("nan")),
-        score=r.get("score", {}),
-        candidate_scores=r.get("candidate_scores", []),
-        landmarks=r.get("landmarks", {}),
-        residual_rms_mm=r.get("residual_rms_mm", float("nan")),
-    )
+    try:
+        reg = Registration(
+            transform=Transform.from_dict(r["transform"]),
+            corners_px=np.asarray(r["corners_px"], float),
+            coarse_angle_deg=r.get("coarse_angle_deg", float("nan")),
+            score=r.get("score", {}),
+            candidate_scores=r.get("candidate_scores", []),
+            landmarks=r.get("landmarks", {}),
+            residual_rms_mm=r.get("residual_rms_mm", float("nan")),
+        )
+    except (KeyError, TypeError, ValueError) as e:
+        # A corrupted stored registration must not 500 every endpoint that
+        # builds a context from it — say what is wrong and how to recover.
+        log.error("stored registration for analysis=%s is corrupted: %s",
+                  aid, e)
+        raise HTTPException(
+            409, "The stored registration for this analysis is corrupted. "
+                 "Re-register it in Stage A (manual corners work too).")
     if len(_regs) > 64:
         _regs.clear()
     _regs[key] = reg
@@ -448,7 +463,6 @@ def _reg_payload(aid: str, reg: Registration) -> dict:
 def _do_register(aid: str, corners_hint=None):
     scan = _scan(aid)
     reg = pipeline.run_stage_a(scan, pdef, corners_hint=corners_hint)
-    _regs[aid] = reg
     store.update(aid, reg=pipeline.to_jsonable({
         "transform": reg.transform.to_dict(),
         "corners_px": reg.corners_px,
@@ -470,6 +484,14 @@ async def upload(request: Request, file: UploadFile = File(...),
                  allow_duplicate: bool = Form(False)):
     user, client = _current_user(request), _client_key(request)
     data = await file.read()
+    # The middleware caps the DECLARED size, but a chunked upload carries no
+    # Content-Length and a hostile client can lie in the header. Measuring the
+    # bytes actually received closes both holes; starlette has already spooled
+    # them to disk by now, so this costs nothing extra in memory.
+    if len(data) > cfg.max_upload_mb * 1024 * 1024:
+        audit("upload", user=user, client=client, outcome="rejected",
+              filename=file.filename, error="body larger than declared cap")
+        raise HTTPException(413, f"Upload exceeds {cfg.max_upload_mb} MB")
     try:
         scans = ingest.load_any_bytes(data, file.filename or "upload")
     except Exception as e:
@@ -507,7 +529,12 @@ async def upload(request: Request, file: UploadFile = File(...),
 
     created = []
     for scan in scans:
-        aid = store.new_analysis(scan, data, ingest.protocol_signature(scan.meta),
+        # Store the bytes the recorded hash actually describes. For a zip
+        # (CD export) that is the extracted member, NOT the container:
+        # storing the container made every integrity check fail, because the
+        # recorded sha256 is the member's.
+        aid = store.new_analysis(scan, scan.source_bytes or data,
+                                 ingest.protocol_signature(scan.meta),
                                  ALGO_VERSION, pdef.version, labels=labels)
         _scans[aid] = scan
         store.audit(aid, "A", "uploaded",
@@ -533,10 +560,28 @@ async def upload(request: Request, file: UploadFile = File(...),
     return {"analyses": created, "phantom_profile": stored_layout}
 
 
+_VALIDATION_FILTERS = ("", "pending") + VALIDATION_STATES
+
+
+def _check_filters(validation: str, order: str = "acquired"):
+    """Reject filter values nothing recognises.
+
+    Both parameters used to fall back silently — order=newest listed by
+    acquisition date, validation=Validated exported every analysis — which on
+    a scripted export reads as a correct answer to the wrong question."""
+    if validation not in _VALIDATION_FILTERS:
+        raise HTTPException(
+            400, f"unknown validation filter {validation!r} — one of "
+                 f"{', '.join(v or 'pending' for v in _VALIDATION_FILTERS)}")
+    if order not in ("acquired", "uploaded"):
+        raise HTTPException(400, "order must be 'acquired' or 'uploaded'")
+
+
 @app.get("/api/analyses")
 def list_analyses(site: str = "", phantom: str = "", signature: str = "",
                   validation: str = "", completed_only: bool = False,
                   order: str = "acquired"):
+    _check_filters(validation, order)
     return {"analyses": store.list_all(site=site or None,
                                        phantom=phantom or None,
                                        signature=signature or None,
@@ -615,7 +660,10 @@ def set_labels(aid: str, body: LabelBody, request: Request):
         raise HTTPException(404, "not found")
     fields = {k: v for k, v in body.model_dump().items() if v is not None}
     before = {k: rec.get(k) for k in fields}
-    out = store.set_labels(aid, fields)
+    try:
+        out = store.set_labels(aid, fields)
+    except KeyError:
+        raise HTTPException(404, "not found")   # deleted while we were editing
     store.audit(aid, "F", "labels edited",
                 {**fields, "layout_deleted": out.get("profile_deleted", False),
                  "baseline_demoted": out.get("baseline_demoted", False)})
@@ -667,12 +715,23 @@ def get_analysis(aid: str):
         payload["registration"] = _reg_payload(aid, _reg(aid, rec))
     except HTTPException:
         payload["registration"] = None
+    except Exception as e:                     # corrupted reg or missing file
+        log.error("registration payload failed for analysis=%s: %s", aid, e)
+        payload["registration"] = None
     return pipeline.to_jsonable(payload)
 
 
 @app.get("/api/analyses/{aid}/image.png")
 def image_png(aid: str, wc: float | None = None, ww: float | None = None,
               scale: int = 1600):
+    # Query values are viewer state, not trusted input: a zero or negative
+    # scale crashes PIL's thumbnail, a huge one asks for a gigapixel resample,
+    # and NaN passes FastAPI's float parsing and poisons the window arithmetic.
+    scale = min(max(scale, 64), 4096)
+    if wc is not None and not math.isfinite(wc):
+        wc = None
+    if ww is not None and not math.isfinite(ww):
+        ww = None
     key = (aid, wc, ww, scale)
     if key not in _img_cache:
         from PIL import Image
@@ -687,8 +746,10 @@ def image_png(aid: str, wc: float | None = None, ww: float | None = None,
             pil.thumbnail((scale, scale), Image.LANCZOS)
         buf = io.BytesIO()
         pil.save(buf, format="png")
-        if len(_img_cache) > 24:
-            _img_cache.clear()
+        # FIFO eviction: clearing the whole cache meant one operator paging
+        # through History threw away every other operator's rendered view.
+        while len(_img_cache) > 24:
+            _img_cache.pop(next(iter(_img_cache)), None)
         _img_cache[key] = buf.getvalue()
     return Response(_img_cache[key], media_type="image/png")
 
@@ -753,7 +814,10 @@ def propose(aid: str, body: ProposeBody | None = None, request: Request = None):
     user = _current_user(request) if request is not None else ""
 
     # seq 0 is the untouched automatic proposal, always.
-    store.set_geometry_baseline(aid, geom, action="propose", user=user)
+    try:
+        store.set_geometry_baseline(aid, geom, action="propose", user=user)
+    except KeyError:
+        raise HTTPException(404, "not found")   # deleted while proposing
     store.audit(aid, "B", "proposals generated")
 
     want = (body.use_profile if body.use_profile is not None
@@ -812,31 +876,6 @@ class RoiMove(BaseModel):
         return _finite_point(v)
 
 
-def _finite_point(v):
-    """A pixel coordinate pair that numpy can actually use.
-
-    `list[float]` alone accepts [], [1.0] and [1, 2, 3]: the first two reach
-    numpy and raise, giving a 500 for what is plainly a bad request, and a
-    one-element list silently indexes as a coordinate of (1, 1)."""
-    if v is None:
-        return v
-    if len(v) != 2:
-        raise ValueError("expected exactly two coordinates, x and y")
-    if not all(math.isfinite(c) for c in v):
-        raise ValueError("coordinates must be finite")
-    return v
-
-
-class RoiMove(BaseModel):
-    roi_id: str
-    center_px: conlist(float, min_length=2, max_length=2)
-
-    @field_validator("center_px")
-    @classmethod
-    def _finite(cls, v):
-        return _finite_point(v)
-
-
 # The lookup semantics are shared with the layout-profile writer/reader, so
 # the two cannot drift apart about what counts as an ROI.
 _ROI_TYPES = layout_profile.ROI_TYPES
@@ -861,6 +900,10 @@ def move_roi(aid: str, body: RoiMove, request: Request):
     if rec is None:
         raise HTTPException(404, "analysis not found")
     _require_unsigned(rec, "moving a measuring area")
+    if body.roi_id == "lowcontrast/block":
+        raise HTTPException(
+            400, "The low-contrast block is a rigid group — use the "
+                 "lowcontrast_block endpoint so the eight circles move with it.")
     ctx = _ctx(aid, rec)
     from ..analysis.common import roi_center_mm, roi_translate_mm
 
@@ -934,6 +977,10 @@ def rotate_roi(aid: str, body: RoiRotate, request: Request):
     if rec is None:
         raise HTTPException(404, "analysis not found")
     _require_unsigned(rec, "rotating a measuring area")
+    if body.roi_id == "lowcontrast/block":
+        raise HTTPException(
+            400, "The low-contrast block is a rigid group — use the "
+                 "lowcontrast_block endpoint so the eight circles turn with it.")
     ctx = _ctx(aid, rec)
     from ..analysis.common import roi_angle_deg, roi_rotate
 
@@ -1183,6 +1230,19 @@ def set_field_edge(aid: str, body: FieldEdgeSet, request: Request):
 
 # ------------------------------------------- measuring-point undo / redo / reset
 
+def _layout_source_of(geometry) -> str:
+    """What a geometry state's measuring points are actually based on.
+
+    Undo and redo can step across the point where a stored layout was applied,
+    so the column cannot simply be left as it was — it would then say
+    "profile" over a state that is pure detection, or the reverse, and the
+    Stage C banner and the next propose would both act on the lie."""
+    for _, node in layout_profile.walk_rois(geometry or {}):
+        if node.get("from_profile"):
+            return "profile"
+    return "auto"
+
+
 @app.post("/api/analyses/{aid}/geometry/undo")
 def geometry_undo(aid: str, request: Request):
     """Step the measuring points back one edit.
@@ -1199,8 +1259,10 @@ def geometry_undo(aid: str, request: Request):
     except LookupError as e:
         raise HTTPException(409, str(e))
     store.audit(aid, "C", "undo", {"to_seq": out["seq"]})
+    source = _layout_source_of(out["geometry"])
+    store.update(aid, layout_source=source)
     return pipeline.to_jsonable({"geometry": out.pop("geometry"),
-                                 "history": out})
+                                 "history": out, "layout_source": source})
 
 
 @app.post("/api/analyses/{aid}/geometry/redo")
@@ -1214,8 +1276,10 @@ def geometry_redo(aid: str, request: Request):
     except LookupError as e:
         raise HTTPException(409, str(e))
     store.audit(aid, "C", "redo", {"to_seq": out["seq"]})
+    source = _layout_source_of(out["geometry"])
+    store.update(aid, layout_source=source)
     return pipeline.to_jsonable({"geometry": out.pop("geometry"),
-                                 "history": out})
+                                 "history": out, "layout_source": source})
 
 
 class GeometryReset(BaseModel):
@@ -1244,7 +1308,11 @@ def geometry_reset(aid: str, body: GeometryReset, request: Request):
             raise HTTPException(
                 409, "there is no automatic proposal to go back to — confirm "
                      "the registration in Stage A to generate one")
-        hist = store.replace_geometry(aid, base, action="reset_auto", user=user)
+        try:
+            hist = store.replace_geometry(aid, base, action="reset_auto",
+                                          user=user)
+        except KeyError:
+            raise HTTPException(404, "not found")
         store.update(aid, layout_source="auto")
         store.audit(aid, "C", "measuring points reset to auto-detected")
         return pipeline.to_jsonable({"geometry": base, "history": hist,
@@ -1346,6 +1414,10 @@ def compute(aid: str, body: ComputeBody, request: Request):
         raise HTTPException(400, "no confirmed geometry")
     _require_unsigned(rec, "recomputing the results")
     store.update(aid, sid_mm=body.sid_mm)
+    # Keep the in-hand record in step with what was just written: building the
+    # context from the stale copy analysed with the PREVIOUS SID, so the
+    # field-alignment %-of-SID verdict disagreed with the SID shown everywhere.
+    rec["sid_mm"] = body.sid_mm
     ctx = _ctx(aid, rec)
     results = pipeline.compute_all(ctx, rec["geometry"])
     status = pipeline.overall_status(results)
@@ -1383,7 +1455,10 @@ def _set_baseline(aid: str, rec: dict, value: bool, request: Request) -> dict:
         raise HTTPException(
             400, "This analysis has no results yet, so there is nothing for "
                  "later scans to be compared against.")
-    out = store.set_baseline(aid, value)
+    try:
+        out = store.set_baseline(aid, value)
+    except KeyError:
+        raise HTTPException(404, "not found")   # deleted while we were editing
     store.audit(aid, "F", "baseline set" if value else "baseline cleared",
                 {"phantom": out["phantom"], "replaced": out["replaced"]})
     audit("baseline", user=_current_user(request), client=_client_key(request),
@@ -1551,7 +1626,7 @@ def set_validation(aid: str, body: ValidationBody, request: Request):
 
     if not cfg.deletion_enabled:
         audit("validation", user=user, client=client, analysis=aid,
-              outcome="refused", reason="no administrator password configured")
+              outcome="refused", refusal="no administrator password configured")
         raise HTTPException(
             403, "Validation requires an administrator password. Set "
                  "PHANTOMQA_ADMIN_PASSWORD_HASH in .env "
@@ -1567,7 +1642,7 @@ def set_validation(aid: str, body: ValidationBody, request: Request):
     if not verify_password(body.admin_password, cfg.admin_password_hash):
         admin_throttle.record_failure(client)
         audit("validation", user=user, client=client, analysis=aid,
-              outcome="denied", reason="bad admin password")
+              outcome="denied", refusal="bad admin password")
         log.warning("validation denied (bad admin password) analysis=%s "
                     "client=%s", aid, client)
         raise HTTPException(401, "Incorrect administrator password.")
@@ -1631,23 +1706,22 @@ def _selected_records(ids: str = "", site: str = "", phantom: str = "",
     off" silently produced a file covering all of them — the sort of thing that
     is only noticed once the wrong list has been acted on."""
     if ids:
-        out = []
-        for a in ids.split(","):
-            rec = store.get(a.strip())
-            if rec:
-                out.append(rec)
-        return out
+        wanted = [a.strip() for a in ids.split(",") if a.strip()]
+        return store.get_slim(wanted)
     listing = store.list_all(site=site or None, phantom=phantom or None,
                              signature=signature or None,
                              validation=validation or None,
                              completed_only=True)
-    return [store.get(item["id"]) for item in listing]
+    # One batched query instead of a full get() per row — the exports and the
+    # comparison report read labels and results, never the geometry blob.
+    return store.get_slim([item["id"] for item in listing])
 
 
 @app.get("/api/export.csv", response_class=PlainTextResponse)
 def export_csv_many(ids: str = "", site: str = "", phantom: str = "",
                     signature: str = "", validation: str = "",
                     layout: str = "long"):
+    _check_filters(validation)
     recs = _selected_records(ids, site, phantom, signature, validation)
     if not recs:
         raise HTTPException(404, "no matching analyses")
@@ -1657,6 +1731,7 @@ def export_csv_many(ids: str = "", site: str = "", phantom: str = "",
 @app.get("/api/comparison_report.html", response_class=HTMLResponse)
 def comparison_report(ids: str = "", site: str = "", phantom: str = "",
                       signature: str = "", validation: str = ""):
+    _check_filters(validation)
     recs = _selected_records(ids, site, phantom, signature, validation)
     if not recs:
         raise HTTPException(404, "no matching analyses")
@@ -1696,6 +1771,7 @@ def report_html(aid: str):
 def trends(signature: str = "", site: str = "", phantom: str = "",
            validation: str = "", ids: str = ""):
     """Trend data for a label filter, a signature, or an explicit id list."""
+    _check_filters(validation)
     if ids:
         listing = [{"id": a.strip()} for a in ids.split(",") if a.strip()]
     else:
@@ -1704,9 +1780,8 @@ def trends(signature: str = "", site: str = "", phantom: str = "",
                                  validation=validation or None,
                                  completed_only=True)
     out = []
-    for item in listing:
-        rec = store.get(item["id"])
-        if not rec or not rec.get("results"):
+    for rec in store.get_slim([item["id"] for item in listing]):
+        if not rec.get("results"):
             continue
         # Both dates travel separately. Collapsing them here is what made a
         # detector with a reset clock indistinguishable from a correct one.

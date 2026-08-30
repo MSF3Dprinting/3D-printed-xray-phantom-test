@@ -1781,6 +1781,7 @@ async function stepHistory(which) {
   try {
     const r = await postJSON(`api/analyses/${S.aid}/geometry/${which}`, {});
     S.geometry = r.geometry;
+    if (r.layout_source) S.layoutSource = r.layout_source;
     noteHistory(r);
     // An undo can revert any part of the tree, so the whole blob is replaced
     // rather than patched ROI by ROI.
@@ -2429,9 +2430,11 @@ function updateSelectionNote() {
 async function loadHistory() {
   const lab = await api("api/labels");
   const fill = (sel, items, cur) => {
+    // the values are operator-typed labels; escape the display text the same
+    // way the attribute is escaped, or a crafted label injects markup here
     sel.innerHTML = '<option value="">(all)</option>' + items.map(s =>
       `<option value="${s.value.replace(/"/g, "&quot;")}"${s.value === cur ? " selected" : ""}>` +
-      `${s.value} (${s.count})</option>`).join("");
+      `${html_escape(s.value)} (${s.count})</option>`).join("");
   };
   fill($("#f-site"), lab.site || [], H.filter.site);
   fill($("#f-phantom"), lab.phantom || [], H.filter.phantom);
@@ -2458,13 +2461,13 @@ async function loadHistory() {
       <td><input type="checkbox" class="sel" data-id="${a.id}"></td>
       <td>${dateCell(a)}</td>
       <td>${(a.created_at || "").slice(0, 16)}</td>
-      <td>${a.site || "<span class='hint'>—</span>"}</td>
-      <td>${a.phantom || "<span class='hint'>—</span>"}</td>
-      <td>${a.source_name}${a.reduced_precision ? " ⚠" : ""}</td>
-      <td style="font-size:11px">${a.signature || ""}</td>
+      <td>${a.site ? html_escape(a.site) : "<span class='hint'>—</span>"}</td>
+      <td>${a.phantom ? html_escape(a.phantom) : "<span class='hint'>—</span>"}</td>
+      <td>${html_escape(a.source_name || "")}${a.reduced_precision ? " ⚠" : ""}</td>
+      <td style="font-size:11px">${a.signature ? html_escape(a.signature) : ""}</td>
       <td>${a.stage}</td><td>${chip(a.status)}</td>
       <td>${valChip(a.validation_status)}${a.validated_by
-            ? `<br><span class="hint">${a.validated_by}</span>` : ""}</td>
+            ? `<br><span class="hint">${html_escape(a.validated_by)}</span>` : ""}</td>
       <td><a href="#" class="base ${a.is_baseline ? "" : "hint"}"
              data-id="${a.id}" data-on="${a.is_baseline ? 1 : 0}"
              title="${a.is_baseline
@@ -2581,16 +2584,56 @@ $("#btn-export-wide").addEventListener("click", () => {
 });
 
 let trendData = null;
+let trendLayout = null;          // point positions of the last draw, for hover
+let trendWired = false;
+
+/* A trend line through scans of DIFFERENT phantoms is not a trend — two
+   builds legitimately differ, so the line would show assembly differences as
+   if they were drift. The chart therefore draws nothing until the operator
+   has said which scans belong together: the Phantom filter, or ticked rows. */
+function trendSelectionMissing() {
+  return !H.filter.phantom && !selectedIds().length;
+}
+
+//: X labels are only drawn as densely as they stay readable. ~80 px fits a
+//: full YYYY-MM-DD at the chart's 11 px face with air on both sides.
+const TREND_MIN_XLABEL_PX = 80;
+const TREND_H = 340;
+const TREND_PAD = { l: 64, r: 18, t: 30, b: 34 };
+
+const cssVar = (name) =>
+  getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
 async function loadTrends() {
+  const sect = $("#trend-section");
+  if (sect && !sect.open) return;        // collapsed: fetch nothing
+  const msel = $("#trend-metric");
+  const cv = $("#trend-chart");
+
+  if (trendSelectionMissing()) {
+    trendData = null;
+    trendLayout = null;
+    msel.innerHTML = "";
+    sizeTrendCanvas(cv);
+    drawTrendMessage(cv,
+      "Pick a Phantom in the filter above, or tick rows in the table.",
+      "A line through different phantoms would show their assembly "
+      + "differences as if they were drift over time.");
+    $("#trend-note").textContent = "";
+    return;
+  }
+
   const q = filterQuery();
   try {
     trendData = await api("api/trends?" + q);
   } catch (e) { trendData = null; }
-  const msel = $("#trend-metric");
   if (!trendData || !trendData.analyses.length) {
     msel.innerHTML = "";
-    const cv = $("#trend-chart");
-    cv.getContext("2d").clearRect(0, 0, cv.width, cv.height);
+    trendLayout = null;
+    sizeTrendCanvas(cv);
+    drawTrendMessage(cv, "No completed analyses in this selection.",
+      "Only analyses whose results were computed appear in a trend.");
+    $("#trend-note").textContent = "";
     return;
   }
   const metrics = new Set();
@@ -2602,90 +2645,247 @@ async function loadTrends() {
     `<option${m === prev ? " selected" : ""}>${m}</option>`).join("");
   msel.onchange = drawTrend;
   $("#trend-axis").onchange = drawTrend;
+  wireTrendHover(cv);
   drawTrend();
 }
+
+/* Crisp on any display: the bitmap is sized to the element times the device
+   pixel ratio. The old fixed 1000-px bitmap was CSS-scaled to fit, which
+   blurred every label and let the rotated dates run off the bottom edge. */
+function sizeTrendCanvas(cv) {
+  // The layout width stays CSS's business ("100%"): pinning an inline pixel
+  // width measured from the PARENT's clientWidth included the section's
+  // padding, so the canvas came out wider than the space it sits in and
+  // overflowed the container on the right. Only the BITMAP is sized here,
+  // to the content box the canvas actually got (clientWidth excludes the
+  // element's own border).
+  cv.style.width = "100%";
+  cv.style.height = TREND_H + "px";
+  const cssW = Math.max(420, cv.clientWidth ||
+                        (cv.parentElement.clientWidth - 24));
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(cssW * dpr);
+  cv.height = Math.round(TREND_H * dpr);
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, w: cssW, h: TREND_H };
+}
+
+let trendMessage = null;             // last placeholder, for resize redraws
+
+function drawTrendMessage(cv, line1, line2) {
+  trendMessage = [line1, line2];
+  const { ctx, w, h } = sizeTrendCanvas(cv);
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = cssVar("--bg");
+  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = cssVar("--muted");
+  ctx.textAlign = "center";
+  ctx.font = "600 13px 'Segoe UI', system-ui, sans-serif";
+  ctx.fillText(line1, w / 2, h / 2 - 10);
+  ctx.font = "12px 'Segoe UI', system-ui, sans-serif";
+  ctx.fillText(line2, w / 2, h / 2 + 12);
+  ctx.textAlign = "left";
+}
+
+/* Round axis bounds to 1/2/5 steps so tick values read like numbers a person
+   would choose, not like float noise. */
+function niceTicks(lo, hi, target = 5) {
+  const span = hi - lo || Math.abs(hi) || 1;
+  const raw = span / target;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 5, 10].map(m => m * mag).find(st => span / st <= target)
+            || 10 * mag;
+  const first = Math.ceil(lo / step) * step;
+  const out = [];
+  for (let v = first; v <= hi + step * 1e-9; v += step) out.push(v);
+  return out;
+}
+
+const fmtTick = (v) => {
+  const a = Math.abs(v);
+  if (a >= 10000 || (a > 0 && a < 0.01)) return v.toExponential(1);
+  return (+v.toPrecision(4)).toLocaleString("en-US");
+};
 
 function drawTrend() {
   if (!trendData) return;
   const key = ($("#trend-metric").value || "").split(" | ");
   const axis = ($("#trend-axis") || {}).value || "acquired";
-  // Which clock orders the series. The acquisition axis still falls back to the
-  // upload time for a scan whose header carried no date, but says so with ⚠ so
+  // Which clock orders the series. The acquisition axis still falls back to
+  // the upload time for a scan whose header carried no date, but marks it so
   // a run of such points cannot be mistaken for a real chronology.
   const stampOf = (a) => (axis === "uploaded"
     ? (a.created_at || "")
     : (a.acquired_at || a.created_at || "")).slice(0, 16);
+
   const pts = [];
-  // Each phantom has its own reference now, so a selection spanning several
-  // phantoms legitimately contains several. A +/-20 % band drawn around one of
-  // them would be a band around an arbitrary phantom, so it is drawn only when
-  // the selection has exactly one reference.
+  // Each phantom has its own reference, so a manual selection spanning
+  // several can contain several. The +/-20 % band is only meaningful around
+  // exactly one.
   const baseVals = [];
   const ordered = trendData.analyses.slice().sort(
     (p, q) => (stampOf(p) < stampOf(q) ? -1 : stampOf(p) > stampOf(q) ? 1 : 0));
   ordered.forEach(a => {
     const row = a.rows.find(r => r.test === key[0] && r.object === key[1]
                                  && r.metric === key[2]);
-    if (row && typeof row.value === "number") {
+    if (row && typeof row.value === "number" && isFinite(row.value)) {
       const flagged = axis !== "uploaded" && !!a.acquired_flag;
-      pts.push({ x: stampOf(a) + (flagged ? " ⚠" : ""), y: row.value,
-                 baseline: a.is_baseline, flagged,
-                 label: [a.site, a.phantom].filter(Boolean).join(" / ") });
+      pts.push({ stamp: stampOf(a), y: row.value, id: a.id,
+                 baseline: !!a.is_baseline, flagged,
+                 who: [a.site, a.phantom].filter(Boolean).join(" / ") });
       if (a.is_baseline) baseVals.push(row.value);
     }
   });
-  const cv = $("#trend-chart"), ctx = cv.getContext("2d");
-  ctx.clearRect(0, 0, cv.width, cv.height);
-  if (!pts.length) { ctx.fillText("no data", 30, 30); return; }
+
+  const cv = $("#trend-chart");
+  const { ctx, w, h } = sizeTrendCanvas(cv);
+  const C = {
+    bg: cssVar("--bg"), panel: cssVar("--panel2"), border: cssVar("--border"),
+    text: cssVar("--text"), muted: cssVar("--muted"),
+    accent: cssVar("--accent"), pass: cssVar("--pass"), warn: cssVar("--warn"),
+  };
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = C.bg;
+  ctx.fillRect(0, 0, w, h);
+  if (!pts.length) {
+    drawTrendMessage(cv, "No values for this metric in the selection.", "");
+    trendLayout = null;
+    return;
+  }
+
   const baseVal = baseVals.length === 1 ? baseVals[0] : null;
   const ys = pts.map(p => p.y);
   let ymin = Math.min(...ys), ymax = Math.max(...ys);
   if (baseVal !== null) {
-    ymin = Math.min(ymin, baseVal * 0.75);
-    ymax = Math.max(ymax, baseVal * 1.25);
+    ymin = Math.min(ymin, baseVal * 0.78);
+    ymax = Math.max(ymax, baseVal * 1.22);
   }
-  const range = (ymax - ymin) || Math.abs(ymax) * 0.2 || 1;
-  ymin -= range * 0.1; ymax += range * 0.1;
-  const pad = 60;
-  const sx = (i) => pad + i / Math.max(pts.length - 1, 1) * (cv.width - pad - 20);
-  const sy = (y) => (cv.height - 40) - (y - ymin) / (ymax - ymin) * (cv.height - 60);
-  ctx.strokeStyle = "#999";
-  ctx.strokeRect(pad, 20, cv.width - pad - 20, cv.height - 60);
-  ctx.fillStyle = "#555"; ctx.font = "11px Segoe UI";
-  ctx.fillText(ymax.toPrecision(5), 4, 26);
-  ctx.fillText(ymin.toPrecision(5), 4, cv.height - 40);
+  const spread = (ymax - ymin) || Math.abs(ymax) * 0.2 || 1;
+  ymin -= spread * 0.08; ymax += spread * 0.08;
+
+  const plotW = w - TREND_PAD.l - TREND_PAD.r;
+  const plotH = h - TREND_PAD.t - TREND_PAD.b;
+  const sx = (i) => TREND_PAD.l + (pts.length === 1 ? plotW / 2
+    : i / (pts.length - 1) * plotW);
+  const sy = (y) => TREND_PAD.t + plotH - (y - ymin) / (ymax - ymin) * plotH;
+  const font = (px, weight = "") =>
+    `${weight ? weight + " " : ""}${px}px 'Segoe UI', system-ui, sans-serif`;
+
+  // horizontal gridlines on nice values, labels in the left gutter
+  ctx.font = font(11);
+  ctx.textBaseline = "middle";
+  niceTicks(ymin, ymax).forEach(v => {
+    const y = sy(v);
+    ctx.strokeStyle = C.border;
+    ctx.globalAlpha = 0.45;
+    ctx.beginPath(); ctx.moveTo(TREND_PAD.l, y);
+    ctx.lineTo(w - TREND_PAD.r, y); ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = C.muted;
+    ctx.textAlign = "right";
+    ctx.fillText(fmtTick(v), TREND_PAD.l - 8, y);
+  });
+
+  // the constancy band around the single reference
   if (baseVal !== null) {
-    ctx.strokeStyle = "rgba(53,180,92,0.8)";
-    ctx.setLineDash([6, 5]);
-    [0.8 * baseVal, 1.2 * baseVal].forEach(v => {
-      ctx.beginPath(); ctx.moveTo(pad, sy(v));
-      ctx.lineTo(cv.width - 20, sy(v)); ctx.stroke();
+    const yTop = sy(1.2 * baseVal), yBot = sy(0.8 * baseVal);
+    ctx.fillStyle = C.pass;
+    ctx.globalAlpha = 0.08;
+    ctx.fillRect(TREND_PAD.l, yTop, plotW, yBot - yTop);
+    ctx.globalAlpha = 0.6;
+    ctx.strokeStyle = C.pass;
+    ctx.setLineDash([5, 4]);
+    [yTop, yBot].forEach(y => {
+      ctx.beginPath(); ctx.moveTo(TREND_PAD.l, y);
+      ctx.lineTo(w - TREND_PAD.r, y); ctx.stroke();
     });
     ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
   }
-  ctx.strokeStyle = "#4a7dbd"; ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  pts.forEach((p, i) => i === 0 ? ctx.moveTo(sx(i), sy(p.y))
-                                : ctx.lineTo(sx(i), sy(p.y)));
-  ctx.stroke();
-  pts.forEach((p, i) => {
-    ctx.fillStyle = p.baseline ? "#35b45c" : (p.flagged ? "#d9a021" : "#4a7dbd");
+
+  // soft area fill under the series, then the line itself
+  if (pts.length > 1) {
+    const grad = ctx.createLinearGradient(0, TREND_PAD.t, 0, h - TREND_PAD.b);
+    grad.addColorStop(0, C.accent + "2e");
+    grad.addColorStop(1, C.accent + "00");
     ctx.beginPath();
-    ctx.arc(sx(i), sy(p.y), p.baseline ? 6 : 4, 0, Math.PI * 2);
+    pts.forEach((p, i) => i ? ctx.lineTo(sx(i), sy(p.y))
+                            : ctx.moveTo(sx(0), sy(p.y)));
+    ctx.lineTo(sx(pts.length - 1), h - TREND_PAD.b);
+    ctx.lineTo(sx(0), h - TREND_PAD.b);
+    ctx.closePath();
+    ctx.fillStyle = grad;
     ctx.fill();
-    if (p.baseline) {
-      ctx.fillStyle = "#35b45c"; ctx.font = "12px Segoe UI";
-      ctx.fillText("★", sx(i) - 4, sy(p.y) - 9);
+    ctx.beginPath();
+    pts.forEach((p, i) => i ? ctx.lineTo(sx(i), sy(p.y))
+                            : ctx.moveTo(sx(0), sy(p.y)));
+    ctx.strokeStyle = C.accent;
+    ctx.lineWidth = 2;
+    ctx.lineJoin = "round";
+    ctx.stroke();
+    ctx.lineWidth = 1;
+  }
+
+  // points: smaller and unstroked in a dense series, ringed when sparse
+  const dense = pts.length > 120;
+  pts.forEach((p, i) => {
+    const r = p.baseline ? 5 : (dense ? 2 : 3.5);
+    ctx.beginPath();
+    ctx.arc(sx(i), sy(p.y), r, 0, Math.PI * 2);
+    ctx.fillStyle = p.baseline ? C.pass : (p.flagged ? C.warn : C.accent);
+    ctx.fill();
+    if (!dense || p.baseline) {
+      ctx.strokeStyle = C.bg;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.lineWidth = 1;
     }
-    ctx.fillStyle = "#777"; ctx.font = "9px Segoe UI";
-    ctx.save();
-    ctx.translate(sx(i), cv.height - 34);
-    ctx.rotate(0.5);
-    ctx.fillText(p.x, 0, 8);
-    ctx.restore();
   });
-  ctx.fillStyle = "#333"; ctx.font = "11px Segoe UI";
-  ctx.fillText($("#trend-metric").value || "", pad, 14);
+
+  // x labels: horizontal, thinned so neighbours never collide, always the
+  // first; later ones only where a full label fits
+  const maxTicks = Math.max(2, Math.floor(plotW / TREND_MIN_XLABEL_PX));
+  const every = Math.max(1, Math.ceil(pts.length / maxTicks));
+  ctx.fillStyle = C.muted;
+  ctx.font = font(11);
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  let lastX = -1e9;
+  pts.forEach((p, i) => {
+    if (i % every !== 0 && i !== pts.length - 1) return;
+    const x = sx(i);
+    if (x - lastX < TREND_MIN_XLABEL_PX * 0.9) return;
+    lastX = x;
+    ctx.strokeStyle = C.border;
+    ctx.beginPath(); ctx.moveTo(x, h - TREND_PAD.b);
+    ctx.lineTo(x, h - TREND_PAD.b + 4); ctx.stroke();
+    // The tick stays on its point, but the TEXT is clamped inside the canvas:
+    // the last point sits at the plot's right edge, and a label centred there
+    // hangs half outside — the rightmost date was always cut.
+    const text = p.stamp.slice(0, 10);
+    const half = ctx.measureText(text).width / 2;
+    const lx = Math.min(Math.max(x, half + 2), w - half - 2);
+    ctx.fillText(text, lx, h - TREND_PAD.b + 8);
+  });
+
+  // header: the metric on the left, the series size on the right
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = C.text;
+  ctx.font = font(12, "600");
+  ctx.fillText($("#trend-metric").value || "", TREND_PAD.l, 18);
+  ctx.fillStyle = C.muted;
+  ctx.font = font(11);
+  const nText = `${pts.length} scan${pts.length === 1 ? "" : "s"}`;
+  ctx.textAlign = "right";
+  ctx.fillText(nText, w - TREND_PAD.r, 18);
+  ctx.textAlign = "left";
+
+  trendMessage = null;
+  trendLayout = { pts, w, h, sx: pts.map((_, i) => sx(i)),
+                  sy: pts.map(p => sy(p.y)) };
+
   const note = $("#trend-note");
   if (note) {
     note.textContent = baseVals.length > 1
@@ -2693,6 +2893,81 @@ function drawTrend() {
         + " so no tolerance band is drawn — filter to a single phantom to see it."
       : (baseVals.length ? "" : "No reference scan in this selection.");
   }
+}
+
+/* Hover: the nearest point gets a crosshair and a card with the exact value —
+   with a hundred points on screen, reading numbers off the line is guesswork. */
+function wireTrendHover(cv) {
+  if (trendWired) return;
+  trendWired = true;
+  cv.addEventListener("mousemove", (ev) => {
+    if (!trendLayout) return;
+    drawTrend();                                    // clean frame
+    const L = trendLayout;
+    const rect = cv.getBoundingClientRect();
+    const mx = ev.clientX - rect.left;
+    let best = -1, bestD = 24;
+    L.sx.forEach((x, i) => {
+      const d = Math.abs(x - mx);
+      if (d < bestD) { bestD = d; best = i; }
+    });
+    if (best < 0) return;
+    const ctx = cv.getContext("2d");
+    const p = L.pts[best], x = L.sx[best], y = L.sy[best];
+    const C = { border: cssVar("--border"), panel: cssVar("--panel"),
+                text: cssVar("--text"), muted: cssVar("--muted"),
+                accent: cssVar("--accent"), pass: cssVar("--pass"),
+                warn: cssVar("--warn") };
+    ctx.strokeStyle = C.border;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.moveTo(x, TREND_PAD.t);
+    ctx.lineTo(x, L.h - TREND_PAD.b); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2);
+    ctx.strokeStyle = p.baseline ? C.pass : C.accent;
+    ctx.lineWidth = 2; ctx.stroke(); ctx.lineWidth = 1;
+
+    const lines = [
+      p.stamp,
+      fmtTick(p.y),
+      p.who || "(unlabelled)",
+      p.baseline ? "★ reference scan" : "",
+      p.flagged ? "⚠ acquisition date unreliable" : "",
+    ].filter(Boolean);
+    ctx.font = "11px 'Segoe UI', system-ui, sans-serif";
+    const bw = Math.max(...lines.map(t => ctx.measureText(t).width)) + 20;
+    const bh = lines.length * 16 + 12;
+    let bx = x + 12, by = Math.max(TREND_PAD.t, y - bh - 10);
+    if (bx + bw > L.w - 4) bx = x - bw - 12;
+    ctx.fillStyle = C.panel;
+    ctx.strokeStyle = C.border;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(bx, by, bw, bh, 6);
+    else ctx.rect(bx, by, bw, bh);       // pre-2022 browsers: square corners
+    ctx.fill(); ctx.stroke();
+    lines.forEach((t, i) => {
+      ctx.fillStyle = i === 1 ? C.text : C.muted;
+      ctx.font = i === 1 ? "600 12px 'Segoe UI', system-ui, sans-serif"
+                         : "11px 'Segoe UI', system-ui, sans-serif";
+      ctx.fillText(t, bx + 10, by + 18 + i * 16);
+    });
+  });
+  cv.addEventListener("mouseleave", () => { if (trendLayout) drawTrend(); });
+}
+
+// Redraw at the new width when the window changes, and populate lazily the
+// first time the collapsed section is opened.
+window.addEventListener("resize", () => {
+  const sect = $("#trend-section");
+  if (!sect || !sect.open) return;
+  if (trendData) drawTrend();
+  else if (trendMessage) drawTrendMessage($("#trend-chart"), ...trendMessage);
+});
+const _trendSection = $("#trend-section");
+if (_trendSection) {
+  _trendSection.addEventListener("toggle", () => {
+    if (_trendSection.open) loadTrends();
+  });
 }
 
 /* ================= sign-out ================= */

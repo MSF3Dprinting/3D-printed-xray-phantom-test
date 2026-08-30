@@ -604,7 +604,7 @@ def build_report(record: dict, overlay_png: bytes | None = None,
 <h1>MSF Phantom QA report</h1>
 <p class="muted" style="font-size:12px">
 <b>Analysis</b> {html.escape(record['id'])} ·
-<b>Created</b> {html.escape(record['created_at'])} ·
+<b>Uploaded</b> {html.escape(record['created_at'])} ·
 <b>Source</b> {html.escape(record['source_name'])} ·
 <b>SID</b> {record.get('sid_mm') or 1000.0} mm ·
 <b>Algorithm</b> v{html.escape(record.get('algo_version') or '')}<br>

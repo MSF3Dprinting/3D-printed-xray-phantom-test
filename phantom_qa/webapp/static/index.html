@@ -187,24 +187,29 @@
   </section>
 
   <section class="history-block">
-    <h2>Trend of a single metric</h2>
-    <div class="filter-bar">
-      <label>Metric <select id="trend-metric"></select></label>
-      <label title="Which date orders and labels the points">Date axis
-        <select id="trend-axis">
-          <option value="acquired">acquisition date</option>
-          <option value="uploaded">upload date</option>
-        </select></label>
-    </div>
-    <canvas id="trend-chart" width="1000" height="380"></canvas>
-    <p class="hint" id="trend-note" style="color:var(--warn)"></p>
-    <p class="hint">★ = the reference scan for that phantom. Dashed green band
-    = ±20 % of the reference
-    (constancy default), drawn only when the selection contains exactly one
-    reference — each phantom has its own. Points marked ⚠ have no acquisition
-    date from the scanner, or one that cannot be right; switch the date axis to
-    the upload date to place them reliably. For everything at once, use the
-    comprehensive comparison report above.</p>
+    <details class="advanced" id="trend-section">
+      <summary>Trend of a single metric</summary>
+      <p class="hint">A trend only means something within ONE phantom's series
+      — two builds differ by design, so a line across phantoms would show
+      assembly differences as drift. Pick a <b>Phantom</b> in the filter, or
+      tick the rows to compare, and the chart follows.</p>
+      <div class="filter-bar">
+        <label>Metric <select id="trend-metric"></select></label>
+        <label title="Which date orders and labels the points">Date axis
+          <select id="trend-axis">
+            <option value="acquired">acquisition date</option>
+            <option value="uploaded">upload date</option>
+          </select></label>
+      </div>
+      <div id="trend-wrap"><canvas id="trend-chart"></canvas></div>
+      <p class="hint" id="trend-note" style="color:var(--warn)"></p>
+      <p class="hint">Hover a point for its exact value and scan. ★ = the
+      reference scan; the dashed band is ±20 % of it (constancy default),
+      drawn only when the selection contains exactly one reference. ⚠ points
+      have no trustworthy acquisition date — switch the date axis to the
+      upload date to place them reliably. For everything at once, use the
+      comprehensive comparison report above.</p>
+    </details>
   </section>
 </main>
 

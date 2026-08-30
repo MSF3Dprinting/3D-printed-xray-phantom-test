@@ -111,8 +111,12 @@ canvas.mini-chart { background: #fff; border-radius: 6px; width: 100%; margin: 4
 }
 #history-table th { background: var(--panel2); }
 .history-block { margin-bottom: 30px; }
-#trend-chart { background: #fff; border-radius: 8px; margin-top: 10px;
-  max-width: 100%; }
+/* The chart draws itself in the app's own palette and sizes its bitmap to
+   the element, so nothing here may fight the JS sizing (a CSS max-width on a
+   fixed bitmap is what used to blur it). */
+#trend-wrap { margin-top: 10px; }
+#trend-chart { display: block; width: 100%; border-radius: 8px;
+  border: 1px solid var(--border); cursor: crosshair; }
 select { background: var(--panel2); color: var(--text); border: 1px solid var(--border);
   padding: 5px 8px; border-radius: 6px; }
 input[type="number"] { background: var(--panel2); color: var(--text);

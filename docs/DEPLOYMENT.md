@@ -76,7 +76,10 @@ validation sign-off.
 venv/bin/python -m phantom_qa.manage check    # must exit 0
 ```
 
-All settings are listed in `.env.example`.
+Application settings are listed in `.env.example`, including the server-level
+keys read by `gunicorn.conf.py` (`PHANTOMQA_BIND`, `PHANTOMQA_WORKERS`,
+`PHANTOMQA_TIMEOUT`, `PHANTOMQA_FORWARDED_ALLOW_IPS`) and by `run_app.py`
+(`PHANTOMQA_HOST`, `PHANTOMQA_PORT`).
 
 ## 3. Sub-path mounting
 
@@ -268,7 +271,7 @@ curl -sI https://something.example.org/<other-app>/ | head -1
 | Control | Implementation |
 |---|---|
 | Authentication | Username and password; stored only as a PBKDF2-HMAC-SHA256 hash (240 000 rounds, per-password salt). Plain-text passwords are rejected in production |
-| Authorization | Private by default: an explicit allow-list of five public paths; everything else requires a session. Administrator actions verify the administrator password in the handler |
+| Authorization | Private by default: an explicit allow-list of six public paths; everything else requires a session. Administrator actions verify the administrator password in the handler |
 | Sessions | HMAC-SHA256-signed cookie, `HttpOnly`, `SameSite=Strict`, `Secure` under HTTPS, scoped to the mount path. Expiry is inside the signed payload, default 12 hours |
 | Brute force | Shared per-client throttle: 8 failed sign-ins or 4 failed administrator attempts lock that client out for 15 minutes |
 | CSRF | Double-submit token; `POST`, `PUT`, `PATCH` and `DELETE` are rejected without a matching `X-CSRF-Token` |
@@ -281,7 +284,7 @@ curl -sI https://something.example.org/<other-app>/ | head -1
 | Error handling | Unhandled exceptions return a bare 500 with no traceback. A corrupt or missing stored file returns 422 or 410 with an explanation |
 | Request validation | Malformed request bodies return 422 with the field location and message only — the rejected value is never echoed back |
 | Duplicate uploads | A file whose SHA-256 already exists is refused with 409 unless the operator explicitly confirms a re-analysis |
-| Deletion | Administrator password plus typing the analysis id; throttled; disabled entirely when unconfigured |
+| Deletion | Administrator password plus a written reason; throttled; disabled entirely when unconfigured |
 | Validation | Administrator password; records the approver's name and comment |
 | Integrity | SHA-256 per analysis, re-checked in every report |
 | Logging | Rotating application, error and audit logs with secrets redacted |

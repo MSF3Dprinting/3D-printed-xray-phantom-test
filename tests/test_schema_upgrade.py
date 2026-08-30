@@ -116,7 +116,7 @@ def test_a_legacy_row_becomes_undoable_without_a_data_migration(tmp_path):
                  "geometry_json": json.dumps({"u": {"c": 1.0}})}])
     store = Store(str(tmp_path))
     assert store.geometry_state("old1") == {
-        "seq": 0, "undo_depth": 0, "redo_depth": 0, "has_baseline": False}
+        "seq": 0, "undo_depth": 0, "redo_depth": 0, "has_auto_proposal": False}
 
     store.mutate_geometry("old1", lambda g: g["u"].__setitem__("c", 2.0),
                           action="roi")

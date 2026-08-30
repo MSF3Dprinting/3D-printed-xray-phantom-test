@@ -267,6 +267,99 @@ def test_the_reference_scan_can_be_removed(app_js):
         "the old set-only baseline checkbox is still there")
 
 
+def test_the_trend_section_is_collapsed_and_gated(app_js, index_html):
+    """The trend chart draws nothing until the operator has said which scans
+    belong together — a line across different phantoms would show assembly
+    differences as if they were drift. And the whole section is folded away
+    by default, because most History visits are not about trending."""
+    m = re.search(r'<details class="advanced" id="trend-section"([^>]*)>',
+                  index_html)
+    assert m, "the trend section is not a collapsible <details>"
+    assert "open" not in m.group(1), "the trend section must start collapsed"
+    assert "trendSelectionMissing" in app_js
+    assert "!H.filter.phantom && !selectedIds().length" in app_js, (
+        "the chart no longer requires a phantom filter or ticked rows")
+
+
+def test_the_trend_chart_renders_crisply_and_in_theme(app_js, index_html):
+    """The old chart was a fixed 1000-px white bitmap, CSS-scaled to fit (so
+    blurry), with 9-px labels rotated off the bottom edge of the canvas."""
+    assert 'width="1000"' not in index_html, (
+        "the trend canvas is still a fixed-size bitmap")
+    assert "devicePixelRatio" in app_js, "no HiDPI scaling in the chart"
+    assert "cssVar" in app_js and 'cssVar("--accent")' in app_js, (
+        "the chart does not draw in the app's own palette")
+    # rotated x labels were what ran off the canvas edge
+    trend = app_js[app_js.index("function drawTrend"):
+                   app_js.index("function wireTrendHover")]
+    assert "rotate(" not in trend, "x labels are rotated again"
+    assert "9px" not in trend, "the 9px label font is back"
+
+
+def test_trend_x_labels_cannot_overlap_at_200_records(app_js):
+    """The rule the chart uses, checked arithmetically at the sizes the field
+    actually produces: labels are thinned so that drawn neighbours are at
+    least TREND_MIN_XLABEL_PX apart, whatever the point count."""
+    m = re.search(r"TREND_MIN_XLABEL_PX = (\d+)", app_js)
+    assert m, "the label-spacing constant is gone"
+    min_px = int(m.group(1))
+    assert min_px >= 60, "labels narrower than a date cannot stay readable"
+    # the exact thinning formula the chart applies
+    assert "Math.floor(plotW / TREND_MIN_XLABEL_PX)" in app_js
+    assert "Math.ceil(pts.length / maxTicks)" in app_js
+
+    pad = re.search(r"TREND_PAD = \{ l: (\d+), r: (\d+)", app_js)
+    pad_l, pad_r = int(pad.group(1)), int(pad.group(2))
+    for css_w in (600, 900, 1200, 1600):          # laptop to wide desktop
+        plot_w = css_w - pad_l - pad_r
+        for n in (100, 150, 200):
+            max_ticks = max(2, plot_w // min_px)
+            every = max(1, -(-n // max_ticks))    # ceil
+            spacing = every * plot_w / (n - 1)
+            assert spacing >= min_px * 0.9, (
+                f"{n} points at {css_w}px: labels {spacing:.0f}px apart "
+                f"(minimum {min_px}px) — they would overlap")
+
+
+def test_the_trend_canvas_cannot_outgrow_its_container(app_js):
+    """The bitmap is sized from the canvas's OWN content box, and the layout
+    width stays CSS's business. Measuring the PARENT's clientWidth included
+    the section's padding, so the chart was pinned ~20px wider than its
+    container and visually overflowed on the right."""
+    sizing = app_js[app_js.index("function sizeTrendCanvas"):
+                    app_js.index("function drawTrendMessage")]
+    assert 'cv.style.width = "100%";' in sizing, (
+        "the canvas pins an inline pixel width again — that is what overflowed")
+    assert "cv.clientWidth" in sizing, (
+        "the bitmap is no longer sized from the canvas's own content box")
+
+
+def test_the_rightmost_date_label_stays_inside_the_canvas(app_js):
+    """The last point sits at the plot's right edge; a label centred on it
+    hangs half outside, so the newest date — the one an operator most wants —
+    was always cut. Labels are clamped by their measured width."""
+    trend = app_js[app_js.index("function drawTrend"):
+                   app_js.index("function wireTrendHover")]
+    assert "ctx.measureText(text).width / 2" in trend
+    assert "Math.min(Math.max(x, half + 2), w - half - 2)" in trend, (
+        "x labels are no longer clamped inside the canvas")
+
+
+def test_the_trend_has_a_hover_readout(app_js):
+    """With 100+ points on screen, reading values off the line is guesswork;
+    hovering a point shows its exact value, date and scan."""
+    assert "wireTrendHover" in app_js
+    assert 'addEventListener("mousemove"' in app_js
+    assert 'addEventListener("mouseleave"' in app_js
+
+
+def test_the_collapsed_trend_costs_no_requests(app_js):
+    """Collapsed means dormant: the section only fetches when opened, and a
+    resize only redraws while it is open."""
+    assert "if (sect && !sect.open) return;" in app_js
+    assert 'addEventListener("toggle"' in app_js
+
+
 def test_delete_panel_markup_is_present(index_html):
     for el_id in ("del-backdrop", "del-card", "del-reason", "del-pw",
                   "del-error", "del-confirm", "del-cancel", "del-layout-warn"):

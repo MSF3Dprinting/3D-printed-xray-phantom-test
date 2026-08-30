@@ -222,7 +222,7 @@ def test_full_mode_still_discards_the_measuring_point_history(store, pdef,
 
     st = store.geometry_state(aid)
     assert st == {"seq": 0, "undo_depth": 0, "redo_depth": 0,
-                  "has_baseline": True}
+                  "has_auto_proposal": True}
     assert store.geometry_at(aid, 0) == {"geometry": {"redetected": 1}}
 
 

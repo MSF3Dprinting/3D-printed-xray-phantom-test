@@ -20,11 +20,14 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 import time
 import uuid
 import zlib
+
+log = logging.getLogger("phantomqa.store")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS analyses (
@@ -253,6 +256,37 @@ class Store:
             return None
         return json.loads(zlib.decompress(blob).decode("utf-8"))
 
+    @staticmethod
+    def _loads_geometry(raw, aid: str):
+        """The live geometry blob, or None when it is missing OR corrupted.
+
+        The edit callbacks already answer 'no geometry yet' for None, which is
+        the right degradation for corruption too - the alternative was a 500
+        on every Stage C interaction with that analysis."""
+        if not raw:
+            return None
+        try:
+            value = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            log.error("corrupted geometry_json for analysis=%s", aid)
+            return None
+        if not isinstance(value, dict):
+            log.error("geometry_json for analysis=%s is not an object", aid)
+            return None
+        return value
+
+    @classmethod
+    def _unpack_or_none(cls, blob, what: str):
+        """A snapshot that no longer decompresses is corruption on disk.
+        Callers treat it as absent rather than exploding — losing one undo
+        step is recoverable, a 500 on every undo click is not."""
+        try:
+            return cls._unpack(blob)
+        except (zlib.error, json.JSONDecodeError, UnicodeDecodeError, TypeError):
+            log.error("corrupted geometry snapshot (%s) — treating as absent",
+                      what)
+            return None
+
     def _hist_state(self, c, aid: str) -> dict:
         """Cursor position and how far it can move, from an open connection."""
         row = c.execute(
@@ -270,21 +304,25 @@ class Store:
         has_base = c.execute(
             "SELECT COUNT(*) FROM geometry_history WHERE analysis_id=? AND seq=0",
             (aid,)).fetchone()[0]
+        # 'has_auto_proposal', not 'has_baseline': this dict travels in the
+        # same API payload as is_baseline (the reference SCAN), and two
+        # unrelated meanings of 'baseline' side by side invited wiring the
+        # undo anchor to the reference star.
         return {"seq": seq, "undo_depth": int(back), "redo_depth": int(fwd),
-                "has_baseline": bool(has_base)}
+                "has_auto_proposal": bool(has_base)}
 
     def _push_state(self, c, aid: str, geometry, *, action: str,
                     user: str = "", detail=None) -> dict:
         """Append one state after the cursor and move the cursor onto it."""
         state = self._hist_state(c, aid)
         seq = state["seq"]
-        if not state["has_baseline"]:
+        if not state["has_auto_proposal"]:
             # A record written before this feature existed, or one whose
             # baseline was trimmed: seed seq 0 from whatever geometry it holds
             # so the very first edit still has something to undo back to.
             row = c.execute("SELECT geometry_json FROM analyses WHERE id=?",
                             (aid,)).fetchone()
-            base = json.loads(row["geometry_json"]) if row and row["geometry_json"] \
+            base = self._loads_geometry(row["geometry_json"], aid) if row \
                 else None
             c.execute(
                 "INSERT OR REPLACE INTO geometry_history"
@@ -381,7 +419,7 @@ class Store:
                             (aid,)).fetchone()
             if row is None:
                 raise KeyError(aid)
-            geometry = json.loads(row["geometry_json"]) if row["geometry_json"] else None
+            geometry = self._loads_geometry(row["geometry_json"], aid)
             out = fn(geometry)
             seq = self._push_state(c, aid, geometry, action=action, user=user,
                                    detail=detail)
@@ -404,7 +442,9 @@ class Store:
             row = c.execute(
                 "SELECT geometry_z FROM geometry_history"
                 " WHERE analysis_id=? AND seq=?", (aid, seq)).fetchone()
-        return None if row is None else self._unpack(row["geometry_z"])
+        if row is None:
+            return None
+        return self._unpack_or_none(row["geometry_z"], f"{aid} seq={seq}")
 
     def _step_geometry(self, aid: str, direction: int) -> dict:
         """Move the cursor to the NEAREST SURVIVING state and restore it.
@@ -435,7 +475,12 @@ class Store:
             if row is None:
                 raise LookupError("nothing to undo" if direction < 0
                                   else "nothing to redo")
-            geometry = self._unpack(row["geometry_z"])
+            geometry = self._unpack_or_none(
+                row["geometry_z"], f"{aid} seq={row['seq']}")
+            if geometry is None:
+                raise LookupError(
+                    "that stored state is corrupted and cannot be restored — "
+                    "the current measuring points are unaffected")
             self._write_geometry(c, aid, geometry, row["seq"], True)
             out = self._hist_state(c, aid)
         out["geometry"] = geometry
@@ -487,7 +532,16 @@ class Store:
         if row is None:
             return None
         d = dict(row)
-        d["layout"] = json.loads(d.pop("layout_json") or "{}")
+        try:
+            d["layout"] = json.loads(d.pop("layout_json") or "{}")
+            if not isinstance(d["layout"], dict):
+                raise TypeError("layout is not an object")
+        except (json.JSONDecodeError, TypeError):
+            # A corrupted stored layout must degrade to "no layout": the scan
+            # then runs on its own detection, which is always a valid answer.
+            log.error("corrupted stored layout for phantom=%r — ignoring it",
+                      d.get("phantom_key"))
+            return None
         return d
 
     def save_phantom_profile(self, phantom: str, layout: dict, *,
@@ -539,7 +593,9 @@ class Store:
                 " (SELECT COUNT(*) FROM analyses a WHERE a.phantom=p.phantom_key)"
                 "   AS n_analyses"
                 " FROM phantom_profiles p ORDER BY p.phantom_key").fetchall()
-        return [dict(r) for r in rows]
+        # both spellings: phantom_key is the stored column, but every sibling
+        # payload (and the forget endpoint's request body) says 'phantom'
+        return [{**dict(r), "phantom": r["phantom_key"]} for r in rows]
 
     def count_for_phantom(self, phantom: str) -> int:
         key = self.profile_key(phantom)
@@ -620,6 +676,58 @@ class Store:
                  acquired))
         return aid
 
+    #: The four blobs a record carries that the collection views never read.
+    #: geometry_json alone is ~120 kB per analysis.
+    _HEAVY_JSON = ("meta_json", "reg_json", "geometry_json", "audit_json")
+
+    def get_slim(self, ids: list[str]) -> list[dict]:
+        """Many records at once, without the blobs the collection views skip.
+
+        Trends, the CSV exports and the comparison report used to call get()
+        once PER ROW, deserialising a quarter-megabyte of JSON each time to
+        read a few labels and the results — at 300 analyses that was seconds
+        of pure parsing per request, multiplied by every operator with the
+        History tab open. One query, results only, order preserved.
+
+        The skipped fields are present as None, so a consumer that does stray
+        onto one degrades exactly like a record whose blob is corrupted."""
+        if not ids:
+            return []
+        with self._conn() as c:
+            cols = [r["name"] for r in
+                    c.execute("PRAGMA table_info(analyses)").fetchall()
+                    if r["name"] not in self._HEAVY_JSON]
+            by_id: dict[str, dict] = {}
+            CHUNK = 400                     # stay far below SQLite's 999 limit
+            for i in range(0, len(ids), CHUNK):
+                chunk = ids[i:i + CHUNK]
+                marks = ",".join("?" for _ in chunk)
+                for row in c.execute(
+                        f"SELECT {', '.join(cols)} FROM analyses"
+                        f" WHERE id IN ({marks})", chunk).fetchall():
+                    d = dict(row)
+                    raw = d.pop("results_json", None)
+                    try:
+                        value = json.loads(raw) if raw else None
+                        if value is not None and not isinstance(value, dict):
+                            raise TypeError("expected dict")
+                        d["results"] = value
+                    except (json.JSONDecodeError, TypeError):
+                        log.error("corrupted results_json for analysis=%s — "
+                                  "treating as absent", d.get("id"))
+                        d["results"] = None
+                    for k in ("meta", "reg", "geometry", "audit"):
+                        d[k] = None
+                    by_id[d["id"]] = d
+        return [by_id[a] for a in ids if a in by_id]
+
+    def exists(self, aid: str) -> bool:
+        """One indexed SELECT - for cache-validation paths where get() would
+        pointlessly deserialise a quarter-megabyte of JSON."""
+        with self._conn() as c:
+            return c.execute("SELECT 1 FROM analyses WHERE id=?",
+                             (aid,)).fetchone() is not None
+
     def upload_path(self, aid: str) -> str:
         return os.path.join(self.root, "data", "uploads", f"{aid}.bin")
 
@@ -631,7 +739,27 @@ class Store:
         d = dict(row)
         for k in ("meta_json", "reg_json", "geometry_json", "results_json",
                   "audit_json"):
-            d[k[:-5]] = json.loads(d.pop(k)) if d.get(k) else None
+            raw = d.pop(k)
+            if not raw:
+                d[k[:-5]] = None
+                continue
+            try:
+                value = json.loads(raw)
+                # A decoded blob of the wrong shape (a bare string, a list
+                # where a dict belongs) crashes every consumer just as surely
+                # as one that does not decode.
+                want = list if k == "audit_json" else dict
+                if value is not None and not isinstance(value, want):
+                    raise TypeError(f"expected {want.__name__}")
+                d[k[:-5]] = value
+            except (json.JSONDecodeError, TypeError):
+                # Disk corruption or a botched restore. One damaged blob must
+                # not make the whole record unreachable through every endpoint
+                # that reads it — the report and the exports degrade instead,
+                # and the integrity check is the tool for diagnosing it.
+                log.error("corrupted %s for analysis=%s — treating as absent",
+                          k, aid)
+                d[k[:-5]] = None
         return d
 
     def update(self, aid: str, **fields):
@@ -647,7 +775,10 @@ class Store:
         for k, v in fields.items():
             if k in ("meta", "reg", "geometry", "results", "audit"):
                 cols.append(f"{k}_json=?")
-                vals.append(json.dumps(v))
+                # None must become SQL NULL: json.dumps(None) is the text
+                # 'null', which passes every IS NOT NULL filter, so a
+                # re-registered analysis still counted as completed.
+                vals.append(json.dumps(v) if v is not None else None)
             else:
                 cols.append(f"{k}=?")
                 vals.append(v)
@@ -656,11 +787,36 @@ class Store:
             c.execute(f"UPDATE analyses SET {', '.join(cols)} WHERE id=?", vals)
 
     def audit(self, aid: str, stage: str, action: str, detail=None):
-        rec = self.get(aid)
-        log = rec["audit"] or []
-        log.append({"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "stage": stage,
-                    "action": action, "detail": detail})
-        self.update(aid, audit=log)
+        """Append one entry to the record's own audit trail.
+
+        Reads ONLY the trail column — this runs on every edit, and it used to
+        deserialise the whole record (a quarter-megabyte of JSON) to append
+        one line. The append runs under the write lock, because two concurrent
+        edits both doing read-append-write outside it could lose one
+        another's line even though the edits themselves were serialised."""
+        with self.write_transaction() as c:
+            row = c.execute("SELECT audit_json FROM analyses WHERE id=?",
+                            (aid,)).fetchone()
+            if row is None:
+                # Deleted between a colleague's edit and this note about it.
+                # The race is legitimate — the edit answered before the
+                # delete — and there is no record left for the note to live
+                # on, so dropping it beats a 500 on work that succeeded.
+                log.info("audit note dropped — analysis %s was deleted "
+                         "first (%s)", aid, action)
+                return
+            try:
+                trail = json.loads(row["audit_json"]) if row["audit_json"] else []
+            except (json.JSONDecodeError, TypeError):
+                log.error("corrupted audit_json for analysis=%s — starting a "
+                          "fresh trail", aid)
+                trail = []
+            if not isinstance(trail, list):
+                trail = []
+            trail.append({"ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+                          "stage": stage, "action": action, "detail": detail})
+            c.execute("UPDATE analyses SET audit_json=? WHERE id=?",
+                      (json.dumps(trail), aid))
 
     def list_all(self, site: str | None = None, phantom: str | None = None,
                  signature: str | None = None, validation: str | None = None,
@@ -1154,6 +1310,12 @@ def wide_csv_export(records: list[dict]) -> str:
                     + [str(r.get(label, "") or "") for r in ordered])
     wr.writerow(["", "", "# acquired_flag", ""]
                 + [acquisition_flag(r) or "ok" for r in ordered])
+    # the long CSV's 'validation' column uses the human labels; mirror them so
+    # the two exports agree about what a ruling is called
+    wr.writerow(["", "", "# validation", ""]
+                + [VALIDATION_LABELS.get(r.get("validation_status", ""),
+                                         r.get("validation_status", ""))
+                   for r in ordered])
     for key, unit in metrics:
         wr.writerow(list(key) + [unit]
                     + [m.get(key, "") for m in per_rec])

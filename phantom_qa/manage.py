@@ -2,7 +2,8 @@
 
     python -m phantom_qa.manage gen-secret
     python -m phantom_qa.manage set-password         # everyday login
-    python -m phantom_qa.manage set-admin-password   # required to delete
+    python -m phantom_qa.manage set-admin-password   # delete / validate /
+                                                     # discard stored layouts
     python -m phantom_qa.manage check
     python -m phantom_qa.manage verify [<id> | --all]
     python -m phantom_qa.manage backup [<dest.sqlite3>]
@@ -60,9 +61,11 @@ def main(argv=None):
 
     if cmd == "set-admin-password":
         print("This password gates the administrator decisions: DELETING an "
-              "analysis and VALIDATING one (validated / conditionally validated "
-              "/ not validated). Give it only to people entitled to make those "
-              "calls — it should not be the everyday login password.\n")
+              "analysis, VALIDATING one (validated / conditionally validated "
+              "/ not validated), and DISCARDING a phantom's stored "
+              "measuring-point layout. Give it only to people entitled to "
+              "make those calls — it should not be the everyday login "
+              "password.\n")
         pw = _read_new_password("administrator password")
         if pw is None:
             return 1
@@ -104,7 +107,8 @@ def main(argv=None):
 
         store, pdef = Store(ROOT), load_default()
         if ids:
-            results = [reanalyze_one(store, pdef, a, mode=mode, dry_run=dry)
+            results = [reanalyze_one(store, pdef, a, mode=mode, dry_run=dry,
+                                     include_validated=include_validated)
                        for a in ids]
         else:
             results = reanalyze_all(store, pdef, mode=mode, dry_run=dry,
