@@ -14,6 +14,11 @@ import re
 
 import pytest
 
+try:
+    import esprima as _esprima
+except ImportError:      # optional: a real parse when available
+    _esprima = None
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATIC = os.path.join(ROOT, "phantom_qa", "webapp", "static")
 
@@ -365,3 +370,93 @@ def test_delete_panel_markup_is_present(index_html):
                   "del-error", "del-confirm", "del-cancel", "del-layout-warn"):
         assert f'id="{el_id}"' in index_html, f"delete panel lacks #{el_id}"
     assert "confirm_id" not in index_html
+
+
+# --------------------------------------------- the page must survive surprises
+
+@pytest.mark.skipif(_esprima is None,
+                    reason="esprima not installed (pip install esprima)")
+def test_the_browser_code_actually_parses(app_js):
+    """A real parse, not a brace count.
+
+    Nothing else in the deployment ever compiles this file: a syntax error
+    reaches the operator as a blank wizard. esprima targets ES2017, so passing
+    also keeps the code inside a dialect any browser on a field machine can
+    read."""
+    _esprima.parseScript(app_js)
+    _esprima.parseScript(_read("login.js"))
+
+
+def test_a_failing_step_cannot_leave_the_page_looking_busy(app_js):
+    """The "stuck at Computing…" failure, in structural form.
+
+    stageE wrote "Computing…", awaited the measurement, and then drew the
+    results OUTSIDE any error handling. When drawing threw — on a value the
+    server had every right to send — the word stayed on screen and the
+    operator reloaded a page whose analysis had already finished."""
+    assert "function renderResults(" in app_js, \
+        "drawing the results must be separable from computing them"
+    stage_e = app_js[app_js.index("async function stageE("):
+                     app_js.index("function renderResults(")]
+    assert "renderResults(c, r)" in stage_e
+    assert stage_e.count("try {") >= 2, \
+        "both the request and the drawing must be guarded"
+    assert stage_e.count("stepFailed(") >= 2, \
+        "either failure must replace the page with something actionable"
+
+
+def test_every_step_is_guarded_and_unexpected_failures_are_surfaced(app_js):
+    render = app_js[app_js.index("function renderStage()"):]
+    render = render[:render.index("\n}")]
+    assert "catch" in render, "a step that throws must not be swallowed"
+    assert "stepFailed(" in render
+    assert 'addEventListener("unhandledrejection"' in app_js, \
+        "an async failure nobody awaited must still reach the operator"
+    assert 'addEventListener("error"' in app_js
+
+
+def test_result_values_are_never_formatted_unguarded(app_js):
+    """Measured values reach the page as null when nothing could be measured.
+
+    fmt() renders that as an em dash; calling a number method on it throws and
+    takes the page down, which is exactly what happened with the low-contrast
+    discs on a saturated exposure."""
+    offenders = re.findall(r"\b(?:row|r|x)\.[A-Za-z_]+\.toFixed\(", app_js)
+    assert not offenders, f"unguarded numeric formatting of result rows: {offenders}"
+
+
+def test_a_test_with_no_measurable_rows_falls_through_to_an_explanation(app_js):
+    """An empty table reads as "nothing wrong". It has to read as "not measured".
+
+    `[]` is truthy in JavaScript, so a bare `if (lc.rows)` built a card with an
+    empty table instead of letting the not-measured fallback explain itself."""
+    for test in ("lp", "w", "lc", "u"):
+        assert f"if ({test}.rows && {test}.rows.length)" in app_js, \
+            f"{test}.rows is tested for truthiness, not for content"
+    assert "not_measured" in app_js, \
+        "what could not be measured, and why, must reach the operator"
+
+
+def test_the_browser_declares_which_state_it_edited(app_js):
+    """Every measuring-point edit says what it was based on.
+
+    Under one shared account two operators can hold the same analysis open.
+    An edit that declares nothing overwrites whatever it finds, which is how
+    one person's correction disappears without trace."""
+    for call in ("/roi`", "/roi_rotate`", "/lowcontrast_block`", "/field_edge`"):
+        where = app_js.index(call)
+        window = app_js[where:where + 400]
+        assert "expect_seq" in window, \
+            f"the edit posted to {call} does not declare the state it edited"
+
+
+def test_a_refused_edit_reloads_the_page_and_says_so(app_js):
+    """The operator has to see the current points before redoing the change."""
+    assert "function handleStaleGeometry(" in app_js
+    body = app_js[app_js.index("function handleStaleGeometry("):]
+    body = body[:body.index("\n}")]
+    assert "openAnalysis(S.aid)" in body, "the page must resynchronise"
+    assert "true, true" in body or "sticky" in body, \
+        "this refusal must not clear itself before it is read"
+    assert app_js.count("handleStaleGeometry(e)") >= 4, \
+        "every editing path must route a refusal through it"

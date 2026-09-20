@@ -73,38 +73,85 @@ def propose(ctx: Ctx) -> dict:
 
 
 def compute(ctx: Ctx, geometry: dict) -> dict:
+    """SNR uniformity across the five squares.
+
+    A square with no variation at all (sigma = 0) has no SNR: the ratio is not
+    large, it is undefined. That happens when the exposure is pinned at the
+    detector's limit, and it used to be carried along as a NaN — which made the
+    worst deviation ``max(0.0, nan)`` = 0.0 and reported the test as **passed**
+    on an image holding no signal whatsoever, while every one of its own rows
+    said "fail".
+
+    So an unmeasurable square is not a row with an empty number in it. It is
+    kept out of ``rows`` entirely and named in ``not_measured``, which leaves
+    one rule for everything downstream: a row always carries real numbers, and
+    a test that could not measure says so in its status.
+    """
     tol = ctx.pdef.tolerances.get("uniformity_dsnr_pct", 20.0)
-    rows = []
+    rows, not_measured = [], []
     for sq in geometry["squares"]:
         s = stats_for_roi(ctx, sq["roi"])
-        snr = s["mean"] / s["std"] if s["std"] > 0 else float("nan")
+        if not np.isfinite(s["mean"]) or not np.isfinite(s["std"]) \
+                or s["std"] <= 0:
+            not_measured.append({
+                "id": sq["id"], "mean": s["mean"], "std": s["std"], "n": s["n"],
+                "reason": "every pixel in this square has the same value, so "
+                          "signal-to-noise cannot be formed. The usual cause "
+                          "is an exposure pinned at the detector's limit.",
+            })
+            continue
         rows.append({"id": sq["id"], "mean": s["mean"], "std": s["std"],
-                     "n": s["n"], "snr": snr})
-    snrs = np.array([r["snr"] for r in rows], float)
-    means = np.array([r["mean"] for r in rows], float)
-    snr_avg = float(np.nanmean(snrs))
-    mean_avg = float(np.nanmean(means))
+                     "n": s["n"], "snr": s["mean"] / s["std"]})
+
+    missing = [e["id"] for e in not_measured]
+    if not rows:
+        return {
+            "rows": [], "not_measured": not_measured,
+            "snr_avg": None, "mean_avg": None, "max_abs_dsnr_pct": None,
+            "tolerance_pct": tol, "status": "n/a",
+            "reasons": [
+                f"not one of the {len(not_measured)} squares carries any "
+                f"variation, so uniformity could not be measured at all. "
+                f"This is what a saturated or blank exposure looks like — "
+                f"repeat the exposure rather than reading anything into it.",
+            ],
+            "affected": missing,
+        }
+
+    snr_avg = float(np.mean([r["snr"] for r in rows]))
+    mean_avg = float(np.mean([r["mean"] for r in rows]))
     worst = 0.0
     for r in rows:
         r["dsnr_pct"] = 100.0 * (r["snr"] - snr_avg) / snr_avg
         r["dmean_pct"] = 100.0 * (r["mean"] - mean_avg) / mean_avg
         r["status"] = "pass" if abs(r["dsnr_pct"]) <= tol else "fail"
         worst = max(worst, abs(r["dsnr_pct"]))
-    status = "pass" if worst <= tol else "fail"
     bad = [r for r in rows if r["status"] != "pass"]
-    if status == "pass":
-        reasons = [f"every square is within +/-{tol:g}% of the mean SNR "
-                   f"(worst {worst:.1f}%)."]
-    else:
-        reasons = [f"{r['id']}: SNR {r['snr']:.1f} is {r['dsnr_pct']:+.1f}% from "
-                   f"the scan mean of {snr_avg:.1f} (tolerance +/-{tol:g}%)."
-                   for r in bad]
+
+    reasons = []
+    if bad:
+        reasons += [f"{r['id']}: SNR {r['snr']:.1f} is {r['dsnr_pct']:+.1f}% from "
+                    f"the scan mean of {snr_avg:.1f} (tolerance +/-{tol:g}%)."
+                    for r in bad]
         reasons.append("A single deviating corner usually means the ROI is not "
                        "inside its printed square; a consistent gradient across "
                        "several means genuine non-uniformity.")
+    else:
+        reasons.append(f"every square that could be measured is within "
+                       f"+/-{tol:g}% of the mean SNR (worst {worst:.1f}%).")
+    if not_measured:
+        reasons.append(
+            f"{', '.join(missing)} carried no variation and were left out of "
+            f"the comparison, so this result covers only {len(rows)} of "
+            f"{len(rows) + len(not_measured)} squares.")
+
+    # An incomplete answer is not a pass: with a square missing, the comparison
+    # is against a mean that square never contributed to.
+    status = "fail" if bad else ("n/a" if not_measured else "pass")
     return {
-        "rows": rows, "snr_avg": snr_avg, "mean_avg": mean_avg,
+        "rows": rows, "not_measured": not_measured,
+        "snr_avg": snr_avg, "mean_avg": mean_avg,
         "max_abs_dsnr_pct": worst, "tolerance_pct": tol,
         "status": status, "reasons": reasons,
-        "affected": [r["id"] for r in bad],
+        "affected": [r["id"] for r in bad] + missing,
     }

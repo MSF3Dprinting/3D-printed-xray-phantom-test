@@ -20,7 +20,65 @@ const S = {
   history: { seq: 0, undo_depth: 0, redo_depth: 0 },
   layoutSource: "", phantomProfile: null,
   lcAngleCommitted: 0, rotTargetId: null, previewPending: false,
+  /* Server-side analysis budget, learned at boot from /api/auth. The browser
+     waits a little longer than the server does, so a bounded analysis reports
+     its own failure rather than being cut off by the page. */
+  analysisTimeoutS: 120,
 };
+
+/* Milliseconds before the page stops waiting for a measuring call. The margin
+   covers sending the request and receiving a result over a slow link — the
+   server's own deadline is what actually bounds the work. */
+function analysisTimeoutMs() {
+  return (S.analysisTimeoutS + 60) * 1000;
+}
+
+/* ---------------------------------------------- surviving a page reload
+
+   Reloading the window used to lose the open analysis entirely, and the only
+   way back an operator could see was to upload the same file again — which is
+   both a multi-minute transfer on a field link and the true cause of the
+   "different scans identified as same" reports, since the server correctly
+   refused the byte-identical duplicate.
+
+   What is remembered is deliberately thin: WHICH analysis was open, and enough
+   words to describe it. Not the stage's work, and nothing is re-run. The
+   record itself lives on the server, which stays the single source of truth.
+
+   It lives in this browser only. Two operators on two machines therefore have
+   independent memories — not because the software can tell them apart (there
+   is one shared account) but because the note never leaves the device. On a
+   SHARED machine the second person sees the first person's banner, which is
+   why it names the file, the phantom, the step and the operator: enough to
+   recognise that it is not yours, and nothing happens until it is clicked. */
+const OPEN_KEY = "phantomqa_open_analysis";
+
+function rememberOpenAnalysis() {
+  const rec = S.record;
+  if (!S.aid || !rec) return;
+  // Only work still in progress is worth offering back. A finished analysis is
+  // in History where it belongs.
+  if (rec.results || rec.validation_status) { forgetOpenAnalysis(); return; }
+  try {
+    localStorage.setItem(OPEN_KEY, JSON.stringify({
+      aid: S.aid, source_name: rec.source_name || "", stage: S.stage,
+      phantom: rec.phantom || "", operator: rec.operator || "",
+      saved_at: new Date().toISOString(),
+    }));
+  } catch (e) { /* private mode, or storage full — resume is a convenience */ }
+}
+
+function forgetOpenAnalysis() {
+  try { localStorage.removeItem(OPEN_KEY); } catch (e) { /* noop */ }
+}
+
+function rememberedAnalysis() {
+  try {
+    const raw = localStorage.getItem(OPEN_KEY);
+    const v = raw ? JSON.parse(raw) : null;
+    return v && v.aid ? v : null;
+  } catch (e) { return null; }
+}
 
 /* Everything the viewer knows about ONE analysis. Cleared as a unit whenever
    an analysis is closed or deleted, so no fragment of the previous scan — a
@@ -37,6 +95,7 @@ function clearAnalysisState() {
   S.lcAngleCommitted = 0; S.rotTargetId = null; S.previewPending = false;
   const d = document.querySelector("#roi-details");
   if (d) d.remove();
+  forgetOpenAnalysis();
 }
 
 const $ = (sel) => document.querySelector(sel);
@@ -64,13 +123,39 @@ function csrfToken() {
    there would log the operator out mid-action and never show them why. Those
    callers pass adminAuth so the error comes back for the panel to display. */
 async function api(path, opts = {}) {
-  const { adminAuth = false, ...rest } = opts;
+  const { adminAuth = false, timeoutMs = 0, ...rest } = opts;
   const o = { credentials: "same-origin", ...rest };
   const method = (o.method || "GET").toUpperCase();
   if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
     o.headers = { ...(o.headers || {}), "X-CSRF-Token": csrfToken() };
   }
-  const r = await fetch(path, o);
+  // Opt-in per call, never a blanket default: a 7.5 MB upload over a field
+  // link legitimately takes minutes, and a timeout that killed it would be a
+  // far worse failure than the one it guards against. Only the measuring
+  // calls, which the server itself bounds, set one.
+  let timer = null;
+  if (timeoutMs > 0 && typeof AbortController === "function") {
+    const ac = new AbortController();
+    o.signal = ac.signal;
+    timer = setTimeout(() => ac.abort(), timeoutMs);
+  }
+  let r;
+  try {
+    r = await fetch(path, o);
+  } catch (e) {
+    if (e && e.name === "AbortError") {
+      const err = new Error(
+        `The server did not answer within ${Math.round(timeoutMs / 1000)} s. `
+        + `The scan is stored — nothing needs re-uploading — so you can try `
+        + `again, or open it later from History.`);
+      err.status = 0;
+      err.timedOut = true;
+      throw err;
+    }
+    throw e;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
   let msg = r.statusText, body = null;
   if (!r.ok) {
     try { body = await r.json(); msg = body.detail || msg; } catch (e) { /* noop */ }
@@ -90,6 +175,7 @@ async function api(path, opts = {}) {
     const err = new Error(typeof msg === "string" ? msg : r.statusText);
     err.status = r.status;
     if (body && body.duplicate_of) err.duplicateOf = body.duplicate_of;
+    if (body && body.stale_geometry) err.staleGeometry = body;
     throw err;
   }
   return r.json();
@@ -98,11 +184,63 @@ const postJSON = (path, body, opts = {}) => api(path, {
   method: "POST", headers: { "Content-Type": "application/json" },
   body: JSON.stringify(body), ...opts });
 
-function status(msg, isErr = false) {
+/* `sticky` keeps a message up until something replaces it. Anything the
+   operator has to act on must not evaporate after six seconds — a failure that
+   clears itself looks exactly like a screen that is still working. */
+function status(msg, isErr = false, sticky = false) {
   const n = $("#app-status");
   n.textContent = msg;
   n.style.color = isErr ? "var(--fail)" : "var(--muted)";
-  if (msg) setTimeout(() => { if (n.textContent === msg) n.textContent = ""; }, 6000);
+  if (msg && !sticky) {
+    setTimeout(() => { if (n.textContent === msg) n.textContent = ""; }, 6000);
+  }
+}
+
+/* The last line of defence against a dead screen.
+
+   A step that throws while drawing leaves whatever it had written standing —
+   which is how an analysis that had actually FINISHED on the server sat on
+   "Computing…" until the window was reloaded. Nothing here can know what went
+   wrong, so it says so plainly and leaves the page usable. */
+function unexpectedFailure(err) {
+  const detail = (err && (err.message || err.reason)) || err || "unknown error";
+  console.error("unexpected failure:", err);
+  status(`Something went wrong while showing this page: ${detail}. `
+         + `Your analysis is safe — reopen it from History.`, true, true);
+}
+window.addEventListener("error", (e) => unexpectedFailure(e.error || e.message));
+window.addEventListener("unhandledrejection", (e) => unexpectedFailure(e.reason));
+
+/* Someone else edited the same analysis while this change was in hand.
+
+   Under one shared account two operators can work on the same record — the
+   audit log shows it happening. The edit is refused rather than applied, and
+   the page is reloaded from the server so the operator sees the current
+   measuring points before deciding what to do. The message stays up: this is
+   the one refusal that must not scroll past unnoticed, because the work it
+   protects is someone else's. */
+function handleStaleGeometry(err) {
+  if (!err || !err.staleGeometry) return false;
+  status(err.message, true, true);
+  if (S.aid) openAnalysis(S.aid).catch(() => { /* gone; History will say */ });
+  return true;
+}
+
+/* Replaces a half-drawn step with something the operator can act on. */
+function stepFailed(container, err, retry) {
+  const detail = (err && err.message) || String(err || "unknown error");
+  console.error(err);
+  container.innerHTML = `<h2>This step could not be shown</h2>
+    <p style="color:var(--fail)">${html_escape(detail)}</p>
+    <p class="hint">The scan and everything measured so far are stored on the
+      server — nothing has been lost, and re-uploading the file is never
+      necessary.</p>
+    <button class="primary" id="btn-step-retry">Try again</button>
+    <button class="secondary" id="btn-step-history">Go to history</button>`;
+  const again = $("#btn-step-retry");
+  if (again) again.addEventListener("click", () => (retry || renderStage)());
+  const hist = $("#btn-step-history");
+  if (hist) hist.addEventListener("click", () => showTab("history"));
 }
 
 /* ================= coordinate transforms ================= */
@@ -439,14 +577,17 @@ canvas.addEventListener("mouseup", async (ev) => {
     if (hit.block) { await placeBlock({ center_px: roi.center_px }); return; }
     try {
       const r = await postJSON(`api/analyses/${S.aid}/roi`,
-        { roi_id: roi.id, center_px: roi.center_px });
+        { roi_id: roi.id, center_px: roi.center_px,
+          expect_seq: S.history.seq });
       applyChanged(r);
       showRoiDetails(r.roi, r.stats);
       status(`${roi.id} moved — measurement updated`);
       draw();
     } catch (e) {
-      status("ROI update failed: " + e.message, true);
-      openAnalysis(S.aid);            // resync rather than show a stale ROI
+      if (!handleStaleGeometry(e)) {
+        status("ROI update failed: " + e.message, true);
+        openAnalysis(S.aid);          // resync rather than show a stale ROI
+      }
     }
     return;
   }
@@ -662,13 +803,15 @@ async function commitRotation(roiId, angleDeg) {
   if (roiId === "lowcontrast/block") { await commitBlockAngle(angleDeg); return; }
   try {
     const r = await postJSON(`api/analyses/${S.aid}/roi_rotate`,
-                             { roi_id: roiId, angle_deg: angleDeg });
+                             { roi_id: roiId, angle_deg: angleDeg,
+                               expect_seq: S.history.seq });
     applyChanged(r);
     S.previewPending = false;
     showRoiDetails(r.roi, r.stats);
     status(`${roiId} rotated to ${angleDeg.toFixed(1)}° — measurement updated`);
     draw();
   } catch (e) {
+    if (handleStaleGeometry(e)) return;
     status("Rotation failed: " + e.message, true);
     openAnalysis(S.aid);
   }
@@ -942,7 +1085,8 @@ function duplicateDialog(d) {
    the natural handle: place it once and all eight circles follow. */
 async function placeBlock(payload) {
   try {
-    const r = await postJSON(`api/analyses/${S.aid}/lowcontrast_block`, payload);
+    const r = await postJSON(`api/analyses/${S.aid}/lowcontrast_block`,
+                             { ...payload, expect_seq: S.history.seq });
     S.geometry.lowcontrast = r.lowcontrast;
     S.previewPending = false;
     noteHistory(r);
@@ -966,10 +1110,11 @@ async function placeBlock(payload) {
         if (num) num.value = S.lcAngleCommitted.toFixed(1);
       }
     }
-    status(`Low-contrast block placed at ${r.angle_deg.toFixed(1)}° — `
+    status(`Low-contrast block placed at ${fmt(r.angle_deg, 1)}° — `
            + `all 8 circles moved with it`);
     draw();
   } catch (e) {
+    if (handleStaleGeometry(e)) return;
     status("Could not place block: " + e.message, true);
     // The local preview already moved the block; the server did not accept it,
     // so re-read rather than leave the two disagreeing.
@@ -1227,6 +1372,11 @@ async function deleteAnalysis(aid) {
             ? ` The stored measuring-point layout for phantom ${r.phantom} `
               + `was removed with it.`
             : ""));
+  // Deleting from History need not be the analysis currently open, so the
+  // remembered note is cleared on its own account — otherwise the next reload
+  // offers to continue a record that no longer exists.
+  const remembered = rememberedAnalysis();
+  if (remembered && remembered.aid === aid) forgetOpenAnalysis();
   if (S.aid === aid) {
     clearAnalysisState();
     setStage("U");
@@ -1255,6 +1405,7 @@ function setStage(st) {
   renderIdentityBar();
   renderStage();
   draw();
+  rememberOpenAnalysis();
   if (leavingWithPreview) discardPreview();
 }
 
@@ -1274,13 +1425,123 @@ async function discardPreview() {
 
 function renderStage() {
   const c = $("#stage-content");
-  ({ U: stageU, A: stageA, B: stageB, C: stageC, D: stageD, E: stageE,
-     F: stageF }[S.stage])(c);
+  const draw = { U: stageU, A: stageA, B: stageB, C: stageC, D: stageD,
+                 E: stageE, F: stageF }[S.stage];
+  // The step functions are async, so a failure inside one is a rejected
+  // promise nobody was waiting on: the browser swallows it and the half-drawn
+  // step stays on screen. Catch both shapes and show something actionable.
+  try {
+    const running = draw(c);
+    if (running && typeof running.catch === "function") {
+      running.catch((e) => stepFailed(c, e));
+    }
+  } catch (e) {
+    stepFailed(c, e);
+  }
 }
 
 /* ---- Stage U: upload (choose file, fill identity, then confirm) ---- */
+/* How long ago, in words an operator reads faster than a timestamp. */
+function agoWords(iso) {
+  const then = Date.parse(iso || "");
+  if (!then) return "";
+  const mins = Math.max(0, Math.round((Date.now() - then) / 60000));
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours} h ago`;
+  return `${Math.round(hours / 24)} days ago`;
+}
+
+/* The analysis this browser had open when the window was last closed.
+
+   Drawn entirely from what was remembered locally — no request is made, and
+   nothing is resumed, until the operator presses a button. That is the whole
+   safety property: an analysis that misbehaved cannot re-enter the state it
+   misbehaved in merely because the page was reloaded. */
+function resumeBanner() {
+  const m = rememberedAnalysis();
+  if (!m) return "";
+  const who = m.operator ? ` · started by ${html_escape(m.operator)}` : "";
+  const what = m.phantom ? ` · phantom ${html_escape(m.phantom)}` : "";
+  return `<div class="reasons-why" id="resume-box">
+    <b>You have an unfinished analysis on this computer.</b>
+    <p>${html_escape(m.source_name || "(scan)")}${what}${who} ·
+       reached step ${html_escape(m.stage || "A")} · ${agoWords(m.saved_at)}</p>
+    <p class="hint">It is stored on the server — continuing costs nothing, and
+      the file never needs uploading again.</p>
+    <button class="primary" id="btn-resume">Continue this analysis</button>
+    <button class="secondary" id="btn-forget-resume">Not mine / hide</button>
+  </div>`;
+}
+
+function wireResumeBanner() {
+  const go = $("#btn-resume");
+  if (go) {
+    go.addEventListener("click", async () => {
+      const m = rememberedAnalysis();
+      if (!m) return;
+      try {
+        await openAnalysis(m.aid);
+      } catch (e) {
+        // Deleted, or on a different server than this browser remembers.
+        forgetOpenAnalysis();
+        const box = $("#resume-box");
+        if (box) box.remove();
+        status("That analysis is no longer on the server.", true);
+      }
+    });
+  }
+  const hide = $("#btn-forget-resume");
+  if (hide) {
+    // Only forgets the note in this browser. The analysis itself is untouched
+    // and still in History — this button must never destroy someone's work,
+    // least of all on a machine two operators share.
+    hide.addEventListener("click", () => {
+      forgetOpenAnalysis();
+      const box = $("#resume-box");
+      if (box) box.remove();
+    });
+  }
+}
+
+/* Everything started and never measured, from the server — so work handed
+   between machines is findable, which a browser-local note cannot do. Under
+   one shared account this is everyone's list, and it says so. */
+async function renderUnfinishedList() {
+  const box = $("#unfinished-box");
+  if (!box) return;
+  try {
+    const r = await api("api/analyses?unfinished_only=true&limit=5");
+    const rows = r.analyses || [];
+    if (!rows.length) { box.innerHTML = ""; return; }
+    box.innerHTML = `<h3>Unfinished analyses</h3>
+      <p class="hint">Started but never measured, by anyone using this
+        installation. Continue one instead of uploading its file again.</p>
+      <table><tr><th>scan</th><th>phantom</th><th>operator</th>
+        <th>uploaded</th><th></th></tr>
+      ${rows.map(a => `<tr>
+        <td>${html_escape(a.source_name || "")}</td>
+        <td>${a.phantom ? html_escape(a.phantom) : "<span class='hint'>—</span>"}</td>
+        <td>${a.operator ? html_escape(a.operator) : "<span class='hint'>—</span>"}</td>
+        <td class="hint">${agoWords(a.created_at)}</td>
+        <td><a href="#" class="resume-one" data-id="${a.id}">continue</a></td>
+      </tr>`).join("")}</table>`;
+    box.querySelectorAll("a.resume-one").forEach(a =>
+      a.addEventListener("click", (e) => {
+        e.preventDefault();
+        openAnalysis(a.dataset.id).catch(() =>
+          status("That analysis is no longer on the server.", true));
+      }));
+  } catch (e) {
+    box.innerHTML = "";          // never let this block starting a new scan
+  }
+}
+
 async function stageU(c) {
   c.innerHTML = `<h2>New analysis</h2>
+    ${resumeBanner()}
+    <div id="unfinished-box"></div>
     <p class="hint">DICOM file (preferred), zipped DICOM CD export, or a plain
     image (reduced precision). Nothing is uploaded until you press
     <b>Upload &amp; analyse</b>, so you can set the file and the labels in any
@@ -1308,6 +1569,11 @@ async function stageU(c) {
     <h3>3 · Confirm</h3>
     <button class="primary" id="btn-upload" disabled>Upload &amp; analyse</button>
     <button class="secondary" id="btn-clear-file">Clear file</button>`;
+
+  // Wired before anything is awaited: on a slow link the labels round-trip
+  // takes seconds, and the resume button has to work the moment it is visible.
+  wireResumeBanner();
+  renderUnfinishedList();
 
   try {
     const lab = await api("api/labels");
@@ -1426,10 +1692,48 @@ async function openAnalysis(aid) {
   S.nativeRows = S.reg ? S.reg.image.rows : (rec.meta.Rows || 3000);
   loadImage();
   showTab("analyze");
-  setStage(rec.geometry ? (rec.results ? "F" : rec.stage || "B") : "A");
+  setStage(openingStage(rec));
+}
+
+/* Which step to open a stored analysis at.
+
+   Never step E. Rendering step E starts a measurement — it POSTs /compute the
+   moment it is drawn — so opening a record that had reached E would begin the
+   work again unasked. For a record interrupted mid-measurement that turns a
+   reload into a loop: resume, recompute, reload, recompute, with no way out.
+   Such a record opens at D instead, one press away from measuring, so starting
+   the work is the operator's decision. */
+function openingStage(rec) {
+  if (!rec.geometry) return "A";
+  if (rec.results) return "F";
+  const stage = rec.stage || "B";
+  return stage === "E" ? "D" : stage;
 }
 
 /* ---- Stage A ---- */
+/* The verdict of the acquisition-quality check, where the operator can still
+   do something about it.
+
+   Stage A is the right place: the phantom is usually still on the table, so an
+   exposure worth repeating can be repeated. Every check that failed is listed
+   with what it measured, because a refusal an operator cannot understand is a
+   refusal they will work around. */
+function qualityBanner() {
+  const q = (S.record && S.record.quality) || null;
+  if (!q || q.verdict === "ok") return "";
+  const failed = (q.checks || []).filter(c => !c.ok);
+  const rows = failed.map(c =>
+    `<li><b>${html_escape(c.label)}</b> — ${html_escape(c.detail)}</li>`).join("");
+  return `<div class="reasons-why" style="border-color:var(--fail)">
+    <b>This image did not pass the quality check.</b>
+    <p>${html_escape(q.summary || "")}</p>
+    <ul>${rows}</ul>
+    <p class="hint">You can still analyse it — the numbers may be useful to
+      show what went wrong — but it cannot become the reference scan for this
+      phantom, and it will not set the measuring points that future scans of
+      this phantom start from.</p></div>`;
+}
+
 function stageA(c) {
   if (!S.reg) { c.innerHTML = "<p>Registration unavailable.</p>"; return; }
   const s = S.reg.summary;
@@ -1439,7 +1743,7 @@ function stageA(c) {
   const rp = S.record.reduced_precision
     ? `<p class="hint" style="color:var(--warn)">⚠ reduced-precision input
        (plain image, no metadata)</p>` : "";
-  c.innerHTML = `<h2>Stage A — Registration check</h2>${rp}
+  c.innerHTML = `<h2>Stage A — Registration check</h2>${rp}${qualityBanner()}
     <div class="card"><div class="kv">
       <div>rotation</div><div>${fmt(s.rotation_deg, 2)}°</div>
       <div>mirrored</div><div>${s.mirrored}</div>
@@ -1457,7 +1761,8 @@ function stageA(c) {
     status("Detecting patterns…");
     try {
       await postJSON(`api/analyses/${S.aid}/confirm`, { stage: "A" });
-      const r = await postJSON(`api/analyses/${S.aid}/propose`, {});
+      const r = await postJSON(`api/analyses/${S.aid}/propose`, {},
+                               { timeoutMs: analysisTimeoutMs() });
       applyProposal(r);
       setStage("B");
     } catch (e) { status(e.message, true); }
@@ -1769,7 +2074,9 @@ function stageC(c) {
                + `spelling.`;
         status(msg);
       } else if (r.profile_error) {
-        status(r.profile_error, true);
+        // A refusal on quality grounds is a decision the operator should see
+        // and understand, not a notice that clears itself after six seconds.
+        status(r.profile_error, true, !!r.profile_blocked_by_quality);
       }
       setStage("D");
     } catch (e) { status(e.message, true); }
@@ -1827,12 +2134,15 @@ async function submitFieldEdge(natPoint) {
   S.mode = "normal";
   try {
     const f = await postJSON(`api/analyses/${S.aid}/field_edge`,
-      { side: S.fieldEdgeSide, point_px: natPoint });
+      { side: S.fieldEdgeSide, point_px: natPoint,
+        expect_seq: S.history.seq });
     S.geometry.geometry.field_edges[S.fieldEdgeSide] = f;
     noteHistory(f);
     status(`Field edge ${S.fieldEdgeSide} set (${fmt(f.offset_from_edge_mm, 1)} mm outside phantom edge).`);
     draw();
-  } catch (e) { status("Failed: " + e.message, true); }
+  } catch (e) {
+    if (!handleStaleGeometry(e)) status("Failed: " + e.message, true);
+  }
   S.fieldEdgeSide = null;
 }
 
@@ -1844,7 +2154,8 @@ async function stageD(c) {
   let gr;
   try {
     const r = await postJSON(`api/analyses/${S.aid}/compute_preview`,
-      { tests: ["geometry"], sid_mm: S.sid });
+      { tests: ["geometry"], sid_mm: S.sid },
+      { timeoutMs: analysisTimeoutMs() });
     gr = r.geometry;
     S.dimPreview = gr;
   } catch (e) {
@@ -1980,12 +2291,25 @@ async function stageE(c) {
   c.innerHTML = `<h2>Stage E — Analysis</h2><p class="hint">Computing…</p>`;
   let r;
   try {
-    r = await postJSON(`api/analyses/${S.aid}/compute`, { sid_mm: S.sid });
+    r = await postJSON(`api/analyses/${S.aid}/compute`, { sid_mm: S.sid },
+                       { timeoutMs: analysisTimeoutMs() });
   } catch (e) {
-    c.innerHTML = `<h2>Stage E — Analysis</h2>
-      <p style="color:var(--fail)">${e.message}</p>`;
+    stepFailed(c, e, () => stageE(c));
     return;
   }
+  // Drawing is separated from computing on purpose. The measurement had
+  // already succeeded when the results page threw on a value it did not
+  // expect, and because the failure happened after this point the word
+  // "Computing…" stayed on screen — so the operator was told the analysis was
+  // still running when in fact it had finished minutes earlier.
+  try {
+    renderResults(c, r);
+  } catch (e) {
+    stepFailed(c, e, () => stageE(c));
+  }
+}
+
+function renderResults(c, r) {
   S.results = r.results;
   S.baseline = r.baseline;
   const res = r.results;
@@ -1995,9 +2319,21 @@ async function stageE(c) {
   const card = (key, title, status, headline, html) =>
     cards.push({ key, title, status, headline, html });
 
+  /* What a test could not measure at all. An empty table with no explanation
+     reads as "nothing wrong here"; these are the objects that carry no number
+     and why, so an absent answer looks absent. */
+  const notMeasured = (t) => {
+    const list = (t && t.not_measured) || [];
+    if (!list.length) return "";
+    return `<div class="reasons-why"><b>Not measured:</b><ul>`
+      + list.map(x => `<li>${html_escape(x.id)} — `
+                      + `${html_escape(x.reason || "no reason recorded")}</li>`).join("")
+      + `</ul></div>`;
+  };
+
   /* line pairs */
   const lp = res.linepairs || {};
-  if (lp.rows) {
+  if (lp.rows && lp.rows.length) {
     const rows = lp.rows.map(row => {
       const lin = row.linearity || {};
       return `<tr><td>${row.id}</td><td class="num">${fmt(row.std, 1)}</td>
@@ -2022,7 +2358,7 @@ async function stageE(c) {
 
   /* wedge */
   const w = res.wedge || {};
-  if (w.rows) {
+  if (w.rows && w.rows.length) {
     const rows = w.rows.map(row =>
       `<tr><td>S${row.step}</td><td class="num">${fmt(row.mean, 1)}</td>
        <td class="num">${fmt(row.std, 1)}</td>
@@ -2042,12 +2378,17 @@ async function stageE(c) {
 
   /* low contrast */
   const lc = res.lowcontrast || {};
-  if (lc.rows) {
+  if (lc.rows && lc.rows.length) {
+    // fmt() rather than .toFixed(): a disc that could not be measured used to
+    // arrive here as null, and calling a number method on it threw — which is
+    // what left this page on "Computing…". Such discs are now reported
+    // separately, and this stays defensive so a future null cannot do it again.
     const rows = lc.rows.map(row =>
-      `<tr><td>${row.id}</td><td class="num">${row.cnr.toFixed(3)}</td>
+      `<tr><td>${row.id}</td><td class="num">${fmt(row.cnr, 3)}</td>
        <td class="num">${fmt(row.obj_mean, 1)}</td>
        <td class="num">${fmt(row.bg_mean, 1)}</td></tr>`).join("");
-    const visible = lc.rows.filter(x => Math.abs(x.cnr) >= 0.2).length;
+    const visible = lc.rows.filter(
+      x => typeof x.cnr === "number" && Math.abs(x.cnr) >= 0.2).length;
     const orderWarn = lc.ordering_ok ? "" :
       '<p class="hint" style="color:var(--warn)">|CNR| is not in design order. '
       + 'The usual cause is the block having been found end for end — go back to '
@@ -2055,7 +2396,7 @@ async function stageE(c) {
     card("lowcontrast", "Low contrast (visible discs)", lc.status,
       `${visible} of ${lc.rows.length} discs above CNR 0.2`
       + (lc.ordering_ok ? "" : " · NOT in design order"),
-      `${reasonsBlock(lc.reasons, lc.status)}${orderWarn}
+      `${reasonsBlock(lc.reasons, lc.status)}${orderWarn}${notMeasured(lc)}
        <canvas class="mini-chart" id="chart-lc" width="420" height="200"></canvas>
        <table><tr><th>circle</th><th>CNR</th><th>μ obj</th><th>μ bg</th></tr>
        ${rows}</table>`);
@@ -2063,7 +2404,7 @@ async function stageE(c) {
 
   /* uniformity */
   const u = res.uniformity || {};
-  if (u.rows) {
+  if (u.rows && u.rows.length) {
     const rows = u.rows.map(row =>
       `<tr><td>${row.id}</td><td class="num">${fmt(row.mean, 1)}</td>
        <td class="num">${fmt(row.std, 2)}</td><td class="num">${fmt(row.snr, 1)}</td>
@@ -2071,7 +2412,7 @@ async function stageE(c) {
     card("uniformity", "Uniformity (SNR across the field)", u.status,
       `worst corner ${fmt(u.max_abs_dsnr_pct, 1)} % from the average `
       + `(tolerance ${u.tolerance_pct} %)`,
-      `${reasonsBlock(u.reasons, u.status)}
+      `${reasonsBlock(u.reasons, u.status)}${notMeasured(u)}
        <table><tr><th>square</th><th>μ</th><th>σ</th><th>SNR</th><th>ΔSNR</th>
        <th></th></tr>${rows}</table>
        <p class="hint">tolerance |ΔSNR| ≤ ${u.tolerance_pct}%</p>`);
@@ -2111,13 +2452,27 @@ async function stageE(c) {
   TESTS.forEach(t => {
     if (cards.some(cd => cd.key === t)) return;
     const rr = res[t] || {};
-    const why = rr.error || "no result was produced for this test";
+    // Two different situations end up here and the operator has to be able to
+    // tell them apart: the test broke (`error`), or the test ran perfectly well
+    // and the image held nothing to measure (`reasons` + `not_measured`). The
+    // first is a malfunction to report; the second is an exposure to repeat.
+    const broke = !!rr.error;
+    const why = rr.error
+      || (rr.reasons && rr.reasons.length ? rr.reasons[0] : "")
+      || "no result was produced for this test";
+    const headline = broke ? "not analysed" : "not measured";
+    const advice = broke
+      ? `<p class="hint">This is a fault rather than a property of the scan.
+           Note the message above before repeating the exposure.</p>`
+      : `<p class="hint">Nothing in the image could be measured for this test.
+           Go back to step C and place its measuring areas by hand, or — more
+           usually — correct the exposure and repeat it.</p>`;
     card(t, TEST_TITLES[t] || t, rr.status || "n/a",
-      `not analysed — ${html_escape(why)}`,
-      `<p style="color:var(--fail)">This test could not be analysed on this
+      `${headline} — ${html_escape(why)}`,
+      `<p style="color:var(--fail)">This test was ${headline} on this
          scan: ${html_escape(why)}</p>
-       <p class="hint">Go back to step C and place its measuring areas by hand,
-         or repeat the exposure.</p>`);
+       ${notMeasured(rr)}
+       ${advice}`);
   });
 
   const phantomName = (S.record && S.record.phantom) || "";
@@ -2270,6 +2625,8 @@ function stageF(c) {
       // Finalising no longer touches the baseline: it is its own decision now,
       // and re-finalising must not silently clear a reference.
       await postJSON(`api/analyses/${S.aid}/finalize`, {});
+      // Finished work belongs in History, not in a "continue this" banner.
+      forgetOpenAnalysis();
       status("Finalized.");
     } catch (e) { status(e.message, true); }
   });
@@ -2463,7 +2820,10 @@ async function loadHistory() {
       <td>${(a.created_at || "").slice(0, 16)}</td>
       <td>${a.site ? html_escape(a.site) : "<span class='hint'>—</span>"}</td>
       <td>${a.phantom ? html_escape(a.phantom) : "<span class='hint'>—</span>"}</td>
-      <td>${html_escape(a.source_name || "")}${a.reduced_precision ? " ⚠" : ""}</td>
+      <td>${html_escape(a.source_name || "")}${a.reduced_precision ? " ⚠" : ""}${
+        a.quality_verdict === "poor"
+          ? ` <span class="chip fail" title="This image did not pass the quality check — open it to see which checks failed. It cannot be the reference scan for its phantom.">image</span>`
+          : ""}</td>
       <td style="font-size:11px">${a.signature ? html_escape(a.signature) : ""}</td>
       <td>${a.stage}</td><td>${chip(a.status)}</td>
       <td>${valChip(a.validation_status)}${a.validated_by
@@ -2975,6 +3335,7 @@ if (_trendSection) {
 async function initAuth() {
   try {
     const a = await api("api/auth");
+    if (a.analysis_timeout_s) S.analysisTimeoutS = a.analysis_timeout_s;
     if (a.auth_enabled) {
       if (!a.authenticated) { window.location = "login"; return; }
       const btn = el("button", { id: "logout-btn", class: "tab" },

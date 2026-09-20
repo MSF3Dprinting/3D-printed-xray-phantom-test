@@ -161,6 +161,12 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
     idx = [r["step"] for r in rows]
     means = [r["mean"] for r in rows]
     fit = linear_fit_r2(idx, means)
+    # With every step on the same value there is no variation to explain, so
+    # R² is undefined. It arrived here as NaN, and `nan < tol_r2` is False —
+    # which quietly read as "linearity is fine" on an image holding no wedge at
+    # all, and became a null that the printed report could not format. Undefined
+    # is carried as None and every reader below checks for it.
+    r2 = fit["r2"] if np.isfinite(fit["r2"]) else None
     diffs = np.diff(means)
     monotonic = bool(np.all(diffs > 0) or np.all(diffs < 0))
     any_sat = any(r["saturated"] for r in rows)
@@ -168,7 +174,9 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
     dyn_ratio = float(max(means) / max(min(means), 1e-9))
     if not monotonic or any_sat:
         status = "fail"
-    elif fit["r2"] < tol_r2:
+    elif r2 is None:
+        status = "n/a"
+    elif r2 < tol_r2:
         status = "warn"
     else:
         status = "pass"
@@ -177,7 +185,7 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
         reasons.append(
             f"response decreases monotonically over all {len(rows)} steps, "
             f"dynamic range {dyn_ratio:.1f}x, no step saturated "
-            f"(linear-fit R² {fit['r2']:.3f}).")
+            f"(linear-fit R² {r2:.3f}).")
     if not monotonic:
         breaks = [f"S{rows[i]['step']}->S{rows[i+1]['step']}"
                   for i in range(len(rows) - 1)
@@ -193,8 +201,12 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
             f"saturated step(s): {', '.join(sat)} — the value is pinned at the "
             f"detector limit or the ROI has no variation, so the measurement "
             f"there is meaningless. Reduce the exposure or check the ROI.")
-    if fit["r2"] < tol_r2:
-        reasons.append(f"linear-fit R² {fit['r2']:.3f} below {tol_r2:.2f} "
+    if r2 is None:
+        reasons.append("linear-fit R² could not be computed: every step ROI "
+                       "reads the same value, so there is no response to fit. "
+                       "The wedge is not being measured on this image.")
+    elif r2 < tol_r2:
+        reasons.append(f"linear-fit R² {r2:.3f} below {tol_r2:.2f} "
                        f"(shape descriptor only — the phantom's steps are not "
                        f"equal attenuation increments)")
     # profile along the wedge axis for the result plot
@@ -204,7 +216,7 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
                               avg_half_width=3 * ctx.T.px_per_mm / 2, n_avg=5)
     return {
         "rows": rows, "fit": {"slope": fit["a"], "intercept": fit["b"],
-                              "r2": fit["r2"],
+                              "r2": r2,
                               "residuals_pct_of_span": [
                                   100.0 * r / span if span else 0.0
                                   for r in fit["residuals"]]},

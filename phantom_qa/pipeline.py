@@ -9,6 +9,7 @@ Overlays: render_overlay()         -> annotated PNG for reports/UI snapshots
 from __future__ import annotations
 
 import io
+import time
 
 import numpy as np
 
@@ -24,6 +25,41 @@ TESTS = ("geometry", "linepairs", "lowcontrast", "uniformity", "wedge")
 _MODULES = {"geometry": geo_mod, "linepairs": linepairs,
             "lowcontrast": lowcontrast, "uniformity": uniformity,
             "wedge": wedge}
+
+
+class Deadline:
+    """A time budget the analysis checks between tests.
+
+    "If the analysis is not done within certain time, it should rather provide
+    failed result than get stuck" — so an analysis that runs long stops and
+    says so, instead of holding a request open until something upstream gives
+    up and the operator is left guessing.
+
+    The check is **cooperative**: it happens between the five tests, not inside
+    them. A single numpy call cannot be interrupted part-way without a separate
+    process, which would change how this is deployed. That granularity is
+    enough in practice — across 38 scans no individual test took longer than
+    about four seconds, so the budget is spent between checks, not inside one.
+
+    A deadline of 0 or None never expires, which is what the command line and
+    the tests use.
+    """
+
+    def __init__(self, seconds: float | None = None):
+        self.seconds = float(seconds) if seconds else 0.0
+        self.started = time.monotonic()
+
+    def elapsed(self) -> float:
+        return time.monotonic() - self.started
+
+    def expired(self) -> bool:
+        return bool(self.seconds) and self.elapsed() >= self.seconds
+
+    def note(self, what: str) -> str:
+        return (f"the analysis passed its time limit of {self.seconds:g} s "
+                f"after {self.elapsed():.1f} s, so {what} was not measured. "
+                f"The scan is stored and can be analysed again; if this keeps "
+                f"happening the limit is set in PHANTOMQA_ANALYSIS_TIMEOUT_S.")
 
 
 def to_jsonable(obj):
@@ -86,9 +122,12 @@ def registration_from_dict(d: dict) -> Registration:
     )
 
 
-def propose_all(ctx: Ctx) -> dict:
+def propose_all(ctx: Ctx, deadline: "Deadline | None" = None) -> dict:
     out = {}
     for name in TESTS:
+        if deadline is not None and deadline.expired():
+            out[name] = {"_error": deadline.note(f"the {name} geometry")}
+            continue
         try:
             out[name] = _MODULES[name].propose(ctx)
             out[name]["_error"] = None
@@ -97,9 +136,18 @@ def propose_all(ctx: Ctx) -> dict:
     return to_jsonable(out)
 
 
-def compute_all(ctx: Ctx, geometry_all: dict) -> dict:
+def compute_all(ctx: Ctx, geometry_all: dict,
+                deadline: "Deadline | None" = None) -> dict:
     out = {}
     for name in TESTS:
+        if deadline is not None and deadline.expired():
+            # "error" rather than "fail": the detector did not fail this test,
+            # the software never got to it. Both rank equally in the overall
+            # verdict, so the analysis still comes out as a failure — which is
+            # the point — but nobody reads it as a measurement.
+            out[name] = {"status": "error", "timed_out": True,
+                         "error": deadline.note(f"the {name} test")}
+            continue
         geom = geometry_all.get(name)
         if not geom or geom.get("_error"):
             out[name] = {"status": "n/a",

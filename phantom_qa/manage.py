@@ -76,8 +76,8 @@ def main(argv=None):
     if cmd == "outdated":
         from .phantom_def import load_default
         from .reanalyze import find_outdated
-        from .store import Store
-        rows = find_outdated(Store(ROOT), load_default())
+        from .store import Store, resolve_root
+        rows = find_outdated(Store(resolve_root(ROOT)), load_default())
         if not rows:
             print("Every stored analysis was produced by the current algorithm "
                   "and phantom definition.")
@@ -97,7 +97,7 @@ def main(argv=None):
     if cmd == "reanalyze":
         from .phantom_def import load_default
         from .reanalyze import reanalyze_all, reanalyze_one
-        from .store import Store
+        from .store import Store, resolve_root
         args = argv[1:]
         dry = "--dry-run" in args
         mode = "full" if "--full" in args else "results"
@@ -105,7 +105,7 @@ def main(argv=None):
         only_outdated = "--all" not in args
         ids = [a for a in args if not a.startswith("-")]
 
-        store, pdef = Store(ROOT), load_default()
+        store, pdef = Store(resolve_root(ROOT)), load_default()
         if ids:
             results = [reanalyze_one(store, pdef, a, mode=mode, dry_run=dry,
                                      include_validated=include_validated)
@@ -144,8 +144,8 @@ def main(argv=None):
         return 1 if failed else 0
 
     if cmd == "backup":
-        from .store import Store
-        store = Store(ROOT)
+        from .store import Store, resolve_root
+        store = Store(resolve_root(ROOT))
         dest = argv[1] if len(argv) > 1 else os.path.join(
             ROOT, "data", "backup", "phantom_qa-backup.sqlite3")
         store.backup_to(dest)
@@ -158,14 +158,14 @@ def main(argv=None):
         return 0
 
     if cmd == "checkpoint":
-        from .store import Store
-        Store(ROOT).checkpoint()
+        from .store import Store, resolve_root
+        Store(resolve_root(ROOT)).checkpoint()
         print("Write-ahead log folded into the main database file.")
         return 0
 
     if cmd == "verify":
-        from .store import Store
-        store = Store(ROOT)
+        from .store import Store, resolve_root
+        store = Store(resolve_root(ROOT))
         target = argv[1] if len(argv) > 1 else "--all"
         results = (store.verify_all() if target == "--all"
                    else [store.verify_integrity(target)])

@@ -34,6 +34,22 @@ def _chip(s: str) -> str:
             f'{html.escape(str(s or "n/a"))}</span>')
 
 
+def _all_numbers(values) -> bool:
+    """True when every value can be drawn.
+
+    matplotlib raises on ``None`` and draws nothing useful for NaN, and a chart
+    that raises takes the entire report down with a 500 — which is exactly what
+    an operator met after analysing an over-exposed scan. Charts call this and
+    simply omit themselves instead; the tables beside them still print, with
+    "—" in the cells that hold nothing."""
+    for v in values:
+        if v is None or isinstance(v, bool) or not isinstance(v, (int, float)):
+            return False
+        if isinstance(v, float) and not np.isfinite(v):
+            return False
+    return True
+
+
 def _num(v, d=3):
     if v is None:
         return "—"
@@ -67,11 +83,15 @@ def _chart_wedge(res):
         return None
     steps = [r["step"] for r in w["rows"]]
     means = [r["mean"] for r in w["rows"]]
+    if not _all_numbers(steps) or not _all_numbers(means):
+        return None
     fit = w.get("fit") or {}
     fig, (ax, ax2) = plt.subplots(1, 2, figsize=(9, 3.2),
                                   gridspec_kw={"width_ratios": [3, 2]})
     ax.plot(steps, means, "ks-", ms=6, lw=1, label="measured mean")
-    if fit:
+    # A fit line needs all three numbers. R² is undefined when every step reads
+    # the same value, and drawing "R² = None" used to abort the whole report.
+    if _all_numbers([fit.get("slope"), fit.get("intercept"), fit.get("r2")]):
         xs = np.array([min(steps), max(steps)])
         ax.plot(xs, fit["slope"] * xs + fit["intercept"], "r--",
                 label=f"linear fit  R² = {fit['r2']:.4f}")
@@ -80,7 +100,7 @@ def _chart_wedge(res):
     ax.legend(fontsize=8)
     ax.grid(alpha=0.3)
     resid = (fit or {}).get("residuals_pct_of_span")
-    if resid:
+    if resid and _all_numbers(resid):
         ax2.bar(steps, resid, color="#6b8fc4")
         ax2.axhline(0, color="k", lw=0.6)
         ax2.set_xlabel("step")
@@ -99,7 +119,9 @@ def _chart_lowcontrast(res, baseline_rows=None):
     if not lc.get("rows"):
         return None
     labels = [r["id"] for r in lc["rows"]]
-    cnrs = [r["abs_cnr"] for r in lc["rows"]]
+    cnrs = [r.get("abs_cnr") for r in lc["rows"]]
+    if not _all_numbers(cnrs):
+        return None
     fig, ax = plt.subplots(figsize=(6, 3.0))
     x = np.arange(len(labels))
     ax.bar(x - (0.2 if baseline_rows else 0), cnrs,
@@ -107,7 +129,9 @@ def _chart_lowcontrast(res, baseline_rows=None):
     if baseline_rows:
         bmap = {r["object"]: r["value"] for r in baseline_rows
                 if r["test"] == "lowcontrast" and r["metric"] == "cnr"}
-        bl = [abs(bmap.get(l, np.nan)) for l in labels]
+        # A baseline value can be missing, and abs(None) raises.
+        bl = [abs(bmap[l]) if isinstance(bmap.get(l), (int, float))
+              else np.nan for l in labels]
         ax.bar(x + 0.2, bl, width=0.4, color="#b9c6d8", label="baseline")
         ax.legend(fontsize=8)
     ax.set_xticks(x)
@@ -127,7 +151,9 @@ def _chart_uniformity(res):
     if not u.get("rows"):
         return None
     labels = [r["id"] for r in u["rows"]]
-    d = [r["dsnr_pct"] for r in u["rows"]]
+    d = [r.get("dsnr_pct") for r in u["rows"]]
+    if not _all_numbers(d):
+        return None
     tol = u.get("tolerance_pct", 20)
     fig, ax = plt.subplots(figsize=(6, 2.8))
     ax.bar(labels, d, color=["#cf3f3f" if abs(v) > tol else "#4a7dbd" for v in d])
@@ -265,13 +291,29 @@ def _not_analysed(title: str, res: dict, key: str) -> str:
     Returning "" instead — which is what this replaces — silently dropped the
     test from the report, so a scan where a pattern was never measured read
     exactly like one where it passed. On a document somebody signs, an absent
-    answer has to look absent."""
+    answer has to look absent.
+
+    Two situations reach here and the report distinguishes them, as the wizard
+    does: the test *broke* (an `error`), or it ran and the image held nothing
+    to measure (`reasons`, with the individual objects in `not_measured`). The
+    first is a fault; the second is a verdict on the exposure."""
     t = res.get(key) or {}
-    why = t.get("error") or "no result was produced for this test"
+    reasons = t.get("reasons") or []
+    broke = bool(t.get("error"))
+    why = t.get("error") or (reasons[0] if reasons
+                             else "no result was produced for this test")
+    wording = "could not be analysed" if broke else "could not be measured"
+    missing = ""
+    if t.get("not_measured"):
+        items = "".join(
+            f"<li>{html.escape(str(m.get('id')))} — "
+            f"{html.escape(str(m.get('reason') or 'no reason recorded'))}</li>"
+            for m in t["not_measured"])
+        missing = f"<p><b>Not measured:</b></p><ul>{items}</ul>"
     return _section(
         title, t.get("status") or "n/a",
-        f'<p class="warnbox">This test could not be analysed on this scan: '
-        f'{html.escape(str(why))}</p>')
+        f'<p class="warnbox">This test {wording} on this scan: '
+        f'{html.escape(str(why))}</p>{missing}')
 
 
 def _linepairs_section(res, bmap):

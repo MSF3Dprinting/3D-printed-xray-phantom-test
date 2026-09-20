@@ -20,10 +20,11 @@ from fastapi import (FastAPI, File, Form, HTTPException, Request, Response,
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, conlist, field_validator
 
 from .. import ALGO_VERSION
-from .. import ingest, layout_profile, pipeline
+from .. import ingest, layout_profile, pipeline, quality
 from ..analysis import linepairs
 from ..analysis.common import roi_center_from_px
 from ..comparison_report import build_comparison_report
@@ -35,9 +36,9 @@ from ..report import build_report
 from ..security import (CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, SharedThrottle,
                         csrf_ok, issue_session, new_csrf_token, read_session,
                         verify_password)
-from ..store import (VALIDATION_LABELS, VALIDATION_STATES, Store,
-                     acquisition_flag, csv_export, flatten_results,
-                     wide_csv_export)
+from ..store import (VALIDATION_LABELS, VALIDATION_STATES, StaleGeometry,
+                     Store, acquisition_flag, csv_export, flatten_results,
+                     resolve_root, wide_csv_export)
 
 #: A deletion reason short enough to be meaningless is the same as none at all,
 #: and the audit log is the only record of why data was destroyed.
@@ -59,7 +60,7 @@ if not cfg.deletion_enabled:
 
 app = FastAPI(title="MSF Phantom QA", docs_url=None, redoc_url=None,
               openapi_url=None, root_path=cfg.root_path)
-store = Store(ROOT)
+store = Store(resolve_root(ROOT))
 pdef = load_default()
 
 # Shared across gunicorn workers — an in-process counter would give an attacker
@@ -224,6 +225,27 @@ async def _validation_error(request: Request, exc: RequestValidationError):
     return JSONResponse(status_code=422, content={"detail": detail})
 
 
+@app.exception_handler(StaleGeometry)
+async def _stale_geometry(request: Request, exc: StaleGeometry):
+    """Someone else moved the measuring points while this edit was in hand.
+
+    Handled centrally so a future editing endpoint cannot forget it. 409 —
+    the request was valid, the state it assumed was not — and the current
+    state travels back so the page can resynchronise rather than guess."""
+    log.info("stale geometry edit on %s: client had %s, stored is %s",
+             _app_path(request), exc.expected, exc.actual)
+    return JSONResponse(status_code=409, content={
+        "detail": (
+            "Someone else changed the measuring points on this analysis while "
+            "you were working on it, so this change was not applied — applying "
+            "it would have silently undone theirs. The analysis is being "
+            "reloaded; make your change again on the current points."),
+        "stale_geometry": True,
+        "expected_seq": exc.expected,
+        "current_seq": exc.actual,
+    })
+
+
 def _set_auth_cookies(response, username: str, csrf: str) -> None:
     token = issue_session(cfg.secret_key, username, cfg.session_hours)
     common = dict(secure=cfg.https_only, samesite="strict",
@@ -263,13 +285,16 @@ class LoginBody(BaseModel):
 
 @app.get("/api/auth")
 def auth_state(request: Request):
+    # analysis_timeout_s rides along on a request the page already makes at
+    # boot, so the browser can give up a little after the server would rather
+    # than guessing, and without another round trip on a slow link.
+    common = {"csrf": request.cookies.get(CSRF_COOKIE),
+              "analysis_timeout_s": cfg.analysis_timeout_s}
     if not cfg.auth_enabled:
-        return {"auth_enabled": False, "authenticated": True,
-                "csrf": request.cookies.get(CSRF_COOKIE)}
+        return {"auth_enabled": False, "authenticated": True, **common}
     s = read_session(cfg.secret_key, request.cookies.get(SESSION_COOKIE))
     return {"auth_enabled": True, "authenticated": s is not None,
-            "user": (s or {}).get("u"),
-            "csrf": request.cookies.get(CSRF_COOKIE)}
+            "user": (s or {}).get("u"), **common}
 
 
 @app.post("/api/login")
@@ -460,9 +485,25 @@ def _reg_payload(aid: str, reg: Registration) -> dict:
     })
 
 
+def _deadline() -> pipeline.Deadline:
+    """The time budget for one request's worth of measuring."""
+    return pipeline.Deadline(cfg.analysis_timeout_s)
+
+
 def _do_register(aid: str, corners_hint=None):
     scan = _scan(aid)
     reg = pipeline.run_stage_a(scan, pdef, corners_hint=corners_hint)
+    # Judge the exposure here rather than at upload: the useful signals come
+    # from the registration, and re-registering by hand is exactly when the
+    # verdict should be revisited — manual corners can rescue a scan the
+    # automatic fit had mangled.
+    verdict = quality.assess(scan.pixels, reg)
+    store.update(aid, quality=verdict, quality_verdict=verdict["verdict"])
+    if verdict["verdict"] != "ok":
+        store.audit(aid, "A", "acquisition quality", {
+            "verdict": verdict["verdict"], "failed": verdict["failed"]})
+        log.info("analysis=%s flagged as %s: %s", aid, verdict["verdict"],
+                 ", ".join(verdict["failed"]))
     store.update(aid, reg=pipeline.to_jsonable({
         "transform": reg.transform.to_dict(),
         "corners_px": reg.corners_px,
@@ -493,7 +534,14 @@ async def upload(request: Request, file: UploadFile = File(...),
               filename=file.filename, error="body larger than declared cap")
         raise HTTPException(413, f"Upload exceeds {cfg.max_upload_mb} MB")
     try:
-        scans = ingest.load_any_bytes(data, file.filename or "upload")
+        # Decoding a DICOM is seconds of CPU. This is the one endpoint declared
+        # `async` — because the upload body has to be awaited — so doing that
+        # work inline blocked the worker's whole event loop: every other
+        # operator served by the same worker waited for this scan to decode.
+        # The threadpool is where every other (synchronous) endpoint already
+        # runs, so this only puts the upload back on an equal footing.
+        scans = await run_in_threadpool(
+            ingest.load_any_bytes, data, file.filename or "upload")
     except Exception as e:
         log.warning("upload rejected (%s) name=%r user=%s",
                     e, file.filename, user)
@@ -548,10 +596,16 @@ async def upload(request: Request, file: UploadFile = File(...),
                  aid, scan.source_name, labels["site"], labels["phantom"],
                  scan.sha256[:16])
         try:
-            reg = _do_register(aid)
+            # Registration is the other CPU-heavy half of an upload; same
+            # reasoning as the decode above.
+            reg = await run_in_threadpool(_do_register, aid)
             created.append({"id": aid, "source_name": scan.source_name,
                             "registered": True,
                             "phantom_profile": stored_layout,
+                            # The operator is standing at the machine now; if
+                            # the exposure is unusable this is the moment to
+                            # say so, while repeating it is still easy.
+                            "quality": (store.get(aid) or {}).get("quality"),
                             "registration": _reg_payload(aid, reg)})
         except Exception as e:
             created.append({"id": aid, "source_name": scan.source_name,
@@ -580,13 +634,24 @@ def _check_filters(validation: str, order: str = "acquired"):
 @app.get("/api/analyses")
 def list_analyses(site: str = "", phantom: str = "", signature: str = "",
                   validation: str = "", completed_only: bool = False,
+                  unfinished_only: bool = False, limit: int = 0,
                   order: str = "acquired"):
     _check_filters(validation, order)
+    if completed_only and unfinished_only:
+        raise HTTPException(
+            400, "completed_only and unfinished_only are opposites; "
+                 "asking for both returns nothing.")
+    # The upload page asks for a handful of unfinished records, not the whole
+    # history — a listing is one of the few things an operator on a slow link
+    # waits for repeatedly.
+    limit = max(0, min(int(limit or 0), 200))
     return {"analyses": store.list_all(site=site or None,
                                        phantom=phantom or None,
                                        signature=signature or None,
                                        validation=validation or None,
                                        completed_only=completed_only,
+                                       unfinished_only=unfinished_only,
+                                       limit=limit or None,
                                        order_by=order),
             "order": "uploaded" if order == "uploaded" else "acquired"}
 
@@ -696,6 +761,9 @@ def get_analysis(aid: str):
     payload["geometry"] = rec.get("geometry")
     payload["results"] = rec.get("results")
     payload["audit"] = rec.get("audit")
+    # None on records analysed before the gate existed, which the interface
+    # shows as "not assessed" — never as a pass it was never given.
+    payload["quality"] = rec.get("quality")
     payload["acquired_flag"] = acquisition_flag(rec)
     payload["layout_source"] = rec.get("layout_source") or ""
     payload["history"] = store.geometry_state(aid)
@@ -810,7 +878,7 @@ def propose(aid: str, body: ProposeBody | None = None, request: Request = None):
         raise HTTPException(404, "not found")
     _require_unsigned(rec, "re-detecting the patterns")
     ctx = _ctx(aid, rec)
-    geom = pipeline.propose_all(ctx)
+    geom = pipeline.propose_all(ctx, deadline=_deadline())
     user = _current_user(request) if request is not None else ""
 
     # seq 0 is the untouched automatic proposal, always.
@@ -869,6 +937,11 @@ def _finite_point(v):
 class RoiMove(BaseModel):
     roi_id: str
     center_px: conlist(float, min_length=2, max_length=2)
+    #: State of the measuring points this edit was made from. When given
+    #: and no longer current, the edit is refused instead of silently
+    #: overwriting someone else's correction. Optional: omitting it keeps
+    #: the previous behaviour.
+    expect_seq: int | None = None
 
     @field_validator("center_px")
     @classmethod
@@ -942,7 +1015,7 @@ def move_roi(aid: str, body: RoiMove, request: Request):
     try:
         (old_center, new_center, node, changed), hist = store.mutate_geometry(
             aid, edit, action="roi", user=_current_user(request),
-            detail={"roi": body.roi_id})
+            detail={"roi": body.roi_id}, expect_seq=body.expect_seq)
     except KeyError:
         raise HTTPException(404, "analysis not found")
 
@@ -956,6 +1029,11 @@ def move_roi(aid: str, body: RoiMove, request: Request):
 class RoiRotate(BaseModel):
     roi_id: str
     angle_deg: float
+    #: State of the measuring points this edit was made from. When given
+    #: and no longer current, the edit is refused instead of silently
+    #: overwriting someone else's correction. Optional: omitting it keeps
+    #: the previous behaviour.
+    expect_seq: int | None = None
 
     @field_validator("angle_deg")
     @classmethod
@@ -1023,7 +1101,8 @@ def rotate_roi(aid: str, body: RoiRotate, request: Request):
     try:
         (old_angle, node, changed), hist = store.mutate_geometry(
             aid, edit, action="roi_rotate", user=_current_user(request),
-            detail={"roi": body.roi_id, "to_deg": body.angle_deg})
+            detail={"roi": body.roi_id, "to_deg": body.angle_deg},
+            expect_seq=body.expect_seq)
     except KeyError:
         raise HTTPException(404, "analysis not found")
 
@@ -1046,6 +1125,11 @@ class BlockPlace(BaseModel):
     corners_px: conlist(
         conlist(float, min_length=2, max_length=2),
         min_length=4, max_length=4) | None = None
+    #: State of the measuring points this edit was made from. When given
+    #: and no longer current, the edit is refused instead of silently
+    #: overwriting someone else's correction. Optional: omitting it keeps
+    #: the previous behaviour.
+    expect_seq: int | None = None
 
     @field_validator("center_px", "corners_px")
     @classmethod
@@ -1112,7 +1196,8 @@ def place_lowcontrast_block(aid: str, body: BlockPlace, request: Request):
     try:
         (centre, angle, lcg), hist = store.mutate_geometry(
             aid, edit, action="lowcontrast_block",
-            user=_current_user(request), detail={"angle_deg": body.angle_deg})
+            user=_current_user(request), detail={"angle_deg": body.angle_deg},
+            expect_seq=body.expect_seq)
     except KeyError:
         raise HTTPException(404, "analysis not found")
 
@@ -1169,6 +1254,11 @@ def compute_preview(aid: str, body: PreviewBody):
 class FieldEdgeSet(BaseModel):
     side: str
     point_px: conlist(float, min_length=2, max_length=2)
+    #: State of the measuring points this edit was made from. When given
+    #: and no longer current, the edit is refused instead of silently
+    #: overwriting someone else's correction. Optional: omitting it keeps
+    #: the previous behaviour.
+    expect_seq: int | None = None
 
     @field_validator("point_px")
     @classmethod
@@ -1220,7 +1310,8 @@ def set_field_edge(aid: str, body: FieldEdgeSet, request: Request):
     try:
         _, hist = store.mutate_geometry(
             aid, edit, action="field_edge", user=_current_user(request),
-            detail={"side": body.side, "offset_mm": offset})
+            detail={"side": body.side, "offset_mm": offset},
+            expect_seq=body.expect_seq)
     except KeyError:
         raise HTTPException(404, "analysis not found")
     store.audit(aid, "C", "field edge set manually",
@@ -1381,6 +1472,23 @@ def confirm_stage(aid: str, body: StageConfirm, request: Request):
     if not rec.get("geometry"):
         out["profile_error"] = "there is no confirmed geometry to store"
         return out
+    refused = _reference_use_refused(
+        rec, "set the measuring points for future scans of this phantom")
+    if refused:
+        # The analysis itself goes on; only the shared layout is protected.
+        out["profile_error"] = refused
+        out["profile_blocked_by_quality"] = True
+        store.audit(aid, "C", "phantom layout refused",
+                    {"phantom": store.profile_key(rec.get("phantom") or ""),
+                     "reason": "acquisition quality"})
+        audit("phantom_profile", user=_current_user(request),
+              client=_client_key(request), analysis=aid,
+              phantom=store.profile_key(rec.get("phantom") or ""),
+              outcome="refused", reason="acquisition quality",
+              failed=(rec.get("quality") or {}).get("failed"))
+        log.info("refused to store layout from analysis=%s: quality %s",
+                 aid, (rec.get("quality") or {}).get("failed"))
+        return out
     try:
         reg = _reg(aid, rec).summary()
     except HTTPException:
@@ -1419,11 +1527,18 @@ def compute(aid: str, body: ComputeBody, request: Request):
     # field-alignment %-of-SID verdict disagreed with the SID shown everywhere.
     rec["sid_mm"] = body.sid_mm
     ctx = _ctx(aid, rec)
-    results = pipeline.compute_all(ctx, rec["geometry"])
+    results = pipeline.compute_all(ctx, rec["geometry"], deadline=_deadline())
     status = pipeline.overall_status(results)
+    timed_out = [t for t in pipeline.TESTS
+                 if (results.get(t) or {}).get("timed_out")]
     store.update(aid, results=results, status=status, stage="F")
     store.audit(aid, "E", "computed", {"overall": status,
-                                       "sid_mm": body.sid_mm})
+                                       "sid_mm": body.sid_mm,
+                                       **({"timed_out": timed_out}
+                                          if timed_out else {})})
+    if timed_out:
+        log.warning("analysis=%s exceeded the %s s time limit; %s not measured",
+                    aid, cfg.analysis_timeout_s, ", ".join(timed_out))
     audit("compute", user=_current_user(request), client=_client_key(request),
           analysis=aid, outcome=status, sid_mm=body.sid_mm)
     log.info("computed analysis=%s overall=%s", aid, status)
@@ -1446,7 +1561,30 @@ class FinalizeBody(BaseModel):
     baseline: bool | None = None
 
 
+def _reference_use_refused(rec: dict, what: str) -> str | None:
+    """Why this exposure may not become reference data, or None if it may.
+
+    A poor exposure can still be analysed — the operator may need the numbers,
+    or want to show what went wrong — but it must not become the standard later
+    scans are judged against, nor supply the measuring points the next operator
+    starts from. The field audit log records one phantom's shared layout being
+    rewritten three times in twelve minutes from exposures in which nothing
+    could be measured; everyone who analysed that phantom afterwards inherited
+    marks taken from a white slab.
+    """
+    if not quality.blocks_reference_use(rec.get("quality")):
+        return None
+    q = rec.get("quality") or {}
+    return (f"This exposure did not pass the image-quality check, so it cannot "
+            f"{what}. {q.get('summary', '')} "
+            f"(failed: {', '.join(q.get('failed') or [])})").strip()
+
+
 def _set_baseline(aid: str, rec: dict, value: bool, request: Request) -> dict:
+    if value:
+        refused = _reference_use_refused(rec, "become the reference scan")
+        if refused:
+            raise HTTPException(409, refused)
     if value and rec.get("reduced_precision"):
         raise HTTPException(
             400, "A reduced-precision analysis (a plain image, 8-bit and "

@@ -16,6 +16,10 @@ pytest>=8.0
 # than a missing dependency. Installing both is harmless and covers either.
 httpx>=0.27
 httpx2>=2.12; python_version >= "3.9"
+# Parses app.js during the tests. Nothing else ever compiles the browser code,
+# so a syntax error would otherwise reach an operator as a blank page. Optional:
+# that one test skips when it is absent.
+esprima>=4.0
 
 # --- server deployment only (not needed to run locally via run_app.py)
 # gunicorn>=22.0

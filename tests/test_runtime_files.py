@@ -166,6 +166,43 @@ def test_phantom_definition_is_not_ignored():
                                        "msf_v1.json"))
 
 
+def test_the_test_session_does_not_write_into_the_checkout():
+    """Running the suite must leave the working tree's data/ untouched.
+
+    It did not: the web module builds its Store at import time, so importing it
+    created data/phantom_qa.sqlite3 and data/uploads/ in whatever checkout the
+    tests ran from — and on a server that is the live database. conftest points
+    PHANTOMQA_DATA_ROOT at a temp directory for the whole session; this asserts
+    it is actually in force."""
+    assert os.environ.get("PHANTOMQA_DATA_ROOT"), \
+        "conftest must set PHANTOMQA_DATA_ROOT so imports cannot touch the repo"
+    assert os.path.abspath(os.environ["PHANTOMQA_DATA_ROOT"]) != os.path.abspath(REPO)
+
+    import phantom_qa.webapp.main as main           # the import under suspicion
+    data = os.path.join(REPO, "data")
+    assert os.path.dirname(main.store.db_path) != data, \
+        f"the app store is inside the checkout: {main.store.db_path}"
+    assert not os.path.exists(os.path.join(data, "phantom_qa.sqlite3")), \
+        "importing the app created a database inside the checkout"
+    assert not os.path.exists(os.path.join(data, "uploads")), \
+        "importing the app created data/uploads inside the checkout"
+    assert not os.path.exists(os.path.join(REPO, "logs")), \
+        "importing the app created a logs/ tree inside the checkout"
+    assert os.path.isdir(os.path.join(data, "phantom_definitions")), \
+        "the tracked phantom definition must still be there"
+
+
+def test_resolve_root_defaults_to_the_application_directory(monkeypatch):
+    """Unset means today's behaviour, so no deployment changes."""
+    from phantom_qa.store import DATA_ROOT_ENV, resolve_root
+    monkeypatch.delenv(DATA_ROOT_ENV, raising=False)
+    assert resolve_root("/srv/phantomqa") == "/srv/phantomqa"
+    monkeypatch.setenv(DATA_ROOT_ENV, "/var/lib/phantomqa")
+    assert resolve_root("/srv/phantomqa") == os.path.abspath("/var/lib/phantomqa")
+    monkeypatch.setenv(DATA_ROOT_ENV, "   ")          # blank is not a path
+    assert resolve_root("/srv/phantomqa") == "/srv/phantomqa"
+
+
 @pytest.mark.skipif(not os.path.exists(os.path.join(REPO, ".git")),
                     reason="not a git repository")
 def test_git_does_not_track_runtime_files():

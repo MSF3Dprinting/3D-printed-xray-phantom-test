@@ -89,6 +89,11 @@ class Config:
 
         # --- limits
         self.max_upload_mb = _int("PHANTOMQA_MAX_UPLOAD_MB", 200)
+        # Seconds one analysis may spend measuring before the remaining tests
+        # are abandoned and the result is recorded as a failure. It is a
+        # backstop, not a target: every scan measured so far finishes inside
+        # ten seconds. 0 disables it.
+        self.analysis_timeout_s = _int("PHANTOMQA_ANALYSIS_TIMEOUT_S", 120)
 
         # --- logging
         self.log_dir = os.environ.get("PHANTOMQA_LOG_DIR", "logs")

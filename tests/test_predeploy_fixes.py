@@ -84,7 +84,10 @@ def test_compute_analyses_with_the_sid_it_was_given(client, mod, aid,
     display showed the new one."""
     seen = {}
 
-    def fake_compute_all(ctx, geometry):
+    def fake_compute_all(ctx, geometry, **kwargs):
+        # **kwargs so this stand-in survives options the real signature gains
+        # (it took `deadline` next); this test is about the SID, not the shape
+        # of the call.
         seen["sid"] = (ctx.params or {}).get("sid_mm")
         return results_for()
 

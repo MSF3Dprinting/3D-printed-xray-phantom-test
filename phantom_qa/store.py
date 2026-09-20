@@ -29,6 +29,45 @@ import zlib
 
 log = logging.getLogger("phantomqa.store")
 
+
+class StaleGeometry(Exception):
+    """An edit was computed from measuring points that have since changed.
+
+    There is one shared login, and the audit log shows two people working on
+    the same analysis minutes apart from different addresses. Their edits are
+    serialised — each is a transaction — but serialising them only decides the
+    ORDER in which one silently overwrites the other. The second operator drags
+    a point, the first one's correction disappears, and nothing anywhere says
+    so.
+
+    So an edit may declare which state it was based on. If the stored geometry
+    has moved on, it is refused rather than applied blindly, and the operator
+    is told to reopen the analysis. Omitting the declaration keeps the previous
+    behaviour, which is what the command line and older clients rely on.
+    """
+
+    def __init__(self, expected: int, actual: int):
+        super().__init__(
+            f"these measuring points were edited from state {expected}, but "
+            f"the analysis is now at state {actual}")
+        self.expected = expected
+        self.actual = actual
+
+#: Environment variable naming the directory that holds ``data/``. Unset means
+#: the application directory, which is what every existing deployment uses — so
+#: leaving it alone changes nothing. It exists because the web module builds its
+#: Store at IMPORT time: anything that imports it (a test helper, a stray
+#: ``python -c``) otherwise creates — and migrates — the database of whatever
+#: checkout it is sitting in, which on a server is the live one.
+DATA_ROOT_ENV = "PHANTOMQA_DATA_ROOT"
+
+
+def resolve_root(app_root: str) -> str:
+    """Directory under which ``data/`` lives, honouring DATA_ROOT_ENV."""
+    override = os.environ.get(DATA_ROOT_ENV, "").strip()
+    return os.path.abspath(override) if override else app_root
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS analyses (
   id TEXT PRIMARY KEY,
@@ -111,6 +150,14 @@ _ADDED_COLUMNS = {
         "validated_at": "TEXT DEFAULT ''",
         "geometry_seq": "INTEGER DEFAULT 0",
         "layout_source": "TEXT DEFAULT ''",
+        # Verdict of the acquisition-quality gate, as JSON. Empty on rows that
+        # predate it, which reads as "never assessed" rather than "passed" —
+        # the record is what the gate said, not a promise that it ran.
+        "quality_json": "TEXT DEFAULT ''",
+        # The one word out of that blob, kept separately so History can show a
+        # badge per row without carrying the whole assessment. Operators work
+        # over connections where a listing of fifty rows matters.
+        "quality_verdict": "TEXT DEFAULT ''",
     },
     "phantom_profiles": {
         "phantom_norm": "TEXT DEFAULT ''",
@@ -403,7 +450,8 @@ class Store:
             return self._hist_state(c, aid)
 
     def mutate_geometry(self, aid: str, fn, *, action: str, user: str = "",
-                        detail=None, invalidate_results: bool = True):
+                        detail=None, invalidate_results: bool = True,
+                        expect_seq: int | None = None):
         """Edit the geometry blob and record an undo state, in ONE transaction.
 
         ``fn`` receives the decoded geometry, mutates it in place and may return
@@ -413,12 +461,20 @@ class Store:
 
         ``fn`` must not call any other Store method: that would open a second
         connection which, in WAL mode, reads the pre-transaction snapshot and
-        blocks on the write lock."""
+        blocks on the write lock.
+
+        ``expect_seq`` is the state the caller believes it is editing. Checked
+        INSIDE the transaction, so a concurrent edit cannot slip between the
+        check and the write. Omit it to overwrite whatever is there, which is
+        what re-analysis and the command line want."""
         with self.write_transaction() as c:
-            row = c.execute("SELECT geometry_json FROM analyses WHERE id=?",
-                            (aid,)).fetchone()
+            row = c.execute(
+                "SELECT geometry_json, COALESCE(geometry_seq, 0) AS seq"
+                " FROM analyses WHERE id=?", (aid,)).fetchone()
             if row is None:
                 raise KeyError(aid)
+            if expect_seq is not None and int(row["seq"]) != int(expect_seq):
+                raise StaleGeometry(int(expect_seq), int(row["seq"]))
             geometry = self._loads_geometry(row["geometry_json"], aid)
             out = fn(geometry)
             seq = self._push_state(c, aid, geometry, action=action, user=user,
@@ -738,7 +794,7 @@ class Store:
             return None
         d = dict(row)
         for k in ("meta_json", "reg_json", "geometry_json", "results_json",
-                  "audit_json"):
+                  "audit_json", "quality_json"):
             raw = d.pop(k)
             if not raw:
                 d[k[:-5]] = None
@@ -773,7 +829,7 @@ class Store:
                 "measuring-point layout stays consistent")
         cols, vals = [], []
         for k, v in fields.items():
-            if k in ("meta", "reg", "geometry", "results", "audit"):
+            if k in ("meta", "reg", "geometry", "results", "audit", "quality"):
                 cols.append(f"{k}_json=?")
                 # None must become SQL NULL: json.dumps(None) is the text
                 # 'null', which passes every IS NOT NULL filter, so a
@@ -820,13 +876,14 @@ class Store:
 
     def list_all(self, site: str | None = None, phantom: str | None = None,
                  signature: str | None = None, validation: str | None = None,
-                 completed_only: bool = False,
+                 completed_only: bool = False, unfinished_only: bool = False,
+                 limit: int | None = None,
                  order_by: str = "acquired") -> list[dict]:
         sql = ("SELECT id, created_at, acquired_at, source_name, signature,"
                " stage, status, is_baseline, sha256, reduced_precision, sid_mm,"
                " site, phantom, operator, notes,"
                " validation_status, validated_by, validation_comment,"
-               " validated_at"
+               " validated_at, quality_verdict"
                " FROM analyses WHERE 1=1")
         args: list = []
         for col, val in (("site", site), ("phantom", phantom),
@@ -840,11 +897,21 @@ class Store:
             args.append("" if validation == "pending" else validation)
         if completed_only:
             sql += " AND results_json IS NOT NULL"
+        if unfinished_only:
+            # Started but never measured — the records an operator is offered
+            # to continue, and the ones that pile up after an interrupted
+            # session. Always ordered by upload time: what matters is which
+            # attempt was abandoned most recently, not when it was exposed.
+            sql += " AND results_json IS NULL"
+            order_by = "uploaded"
         # "acquired" still falls back to the upload time for rows with no usable
         # header date, so the ordering never collapses; "uploaded" is the order
         # to use when a detector's clock is suspect.
         sql += (" ORDER BY created_at DESC" if order_by == "uploaded"
                 else " ORDER BY COALESCE(NULLIF(acquired_at,''), created_at) DESC")
+        if limit:
+            sql += " LIMIT ?"
+            args.append(int(limit))
         with self._conn() as c:
             rows = c.execute(sql, args).fetchall()
         out = []

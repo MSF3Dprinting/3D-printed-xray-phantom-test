@@ -329,6 +329,54 @@ especially one that has been signed off. Because the source file is also kept,
 results can be recomputed deliberately with `manage reanalyze` when an
 improvement warrants it.
 
+## An edit declares the state it was made from
+
+Measuring-point edits were already serialised — each runs in its own write
+transaction, so two overlapping edits cannot corrupt the stored geometry. But
+serialising only decides **which one silently overwrites the other**. With a
+single shared login two operators can hold the same analysis open, and the
+audit log shows them doing it. The second one drags a point, the first one's
+correction disappears, and nothing says so.
+
+So an edit may carry `expect_seq`, the state of the measuring points it was
+computed from. It is compared **inside** the same write transaction that
+performs the edit — checking beforehand would leave exactly the race it closes,
+since both edits could pass a check made outside the lock and then both write.
+A mismatch raises, the request answers 409, and the page reloads so the
+operator sees the current points before redoing their change.
+
+It is optional by design. `manage reanalyze` and the command line overwrite
+deliberately, and an older browser must not be locked out of editing. What the
+declaration buys is that a *client which sends it* can no longer destroy work
+it never saw.
+
+This is optimistic concurrency, not locking. Locking would need an owner, and
+there is no per-user identity to own anything.
+
+## A reload restores identity, not activity
+
+The browser remembers which analysis was open — an id and a few words to
+describe it — and nothing else. The reloaded page lands where it always did,
+fetches nothing, and offers a banner. The record itself lives on the server,
+which stays the single source of truth.
+
+The temptation is to restore the operator to exactly where they were. That is
+the one thing this must not do. Drawing step E starts a measurement, so a
+record interrupted there would begin measuring again the instant it was
+restored — and since reloading is the operator's way out of a page that is
+misbehaving, an automatic resume would take that escape away and turn it into a
+loop. So resuming is a button, never automatic, and a record interrupted while
+measuring reopens one step earlier.
+
+The note lives in the browser, not on the server. That is not a privacy
+mechanism: there is a single shared account, and the software genuinely cannot
+tell two operators apart. It simply means two people on two machines keep
+independent memories, while two people on one machine share it — hence the
+banner naming the file, phantom, step and operator, and hiding it destroying
+nothing. For work handed between machines, which the audit log shows happening,
+the server-side list of unfinished analyses is the answer; it is everyone's
+list and says so.
+
 ## Median of the selection as the comparison reference
 
 The comparison report measures every deviation against the **median of the

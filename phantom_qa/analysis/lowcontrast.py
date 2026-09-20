@@ -129,40 +129,96 @@ def propose(ctx: Ctx) -> dict:
 
 
 def compute(ctx: Ctx, geometry: dict) -> dict:
-    rows = []
+    """CNR of each disc against the ring of block around it.
+
+    CNR needs noise to divide by. Where a disc and its background are both
+    perfectly flat — a saturated exposure — there is no contrast-to-noise
+    ratio to report, and the old code stored NaN. Serialised that became
+    ``null``, and eight discs listed with an empty contrast are what stopped
+    the results page on "Computing…" and made the printed report answer 500.
+
+    A disc that cannot be measured is therefore left out of ``rows`` and named
+    in ``not_measured`` instead, so every row that exists carries a number.
+    """
+    rows, not_measured = [], []
     for c in geometry["circles"]:
         so = stats_for_roi(ctx, c["roi"])
         sb = stats_for_roi(ctx, c["bg_roi"])
         denom = float(np.sqrt(so["std"] ** 2 + sb["std"] ** 2))
-        cnr = (so["mean"] - sb["mean"]) / denom if denom > 0 else float("nan")
-        rows.append({
+        entry = {
             "id": c["id"], "level": c["level"],
             "obj_mean": so["mean"], "obj_std": so["std"], "obj_n": so["n"],
             "bg_mean": sb["mean"], "bg_std": sb["std"], "bg_n": sb["n"],
-            "cnr": float(cnr), "abs_cnr": float(abs(cnr)),
-        })
+        }
+        if not np.isfinite(denom) or denom <= 0 \
+                or not np.isfinite(so["mean"]) or not np.isfinite(sb["mean"]):
+            entry["reason"] = ("the disc and the block around it hold a single "
+                               "value between them, so there is no noise to "
+                               "form a contrast-to-noise ratio against.")
+            not_measured.append(entry)
+            continue
+        cnr = (so["mean"] - sb["mean"]) / denom
+        entry["cnr"] = float(cnr)
+        entry["abs_cnr"] = float(abs(cnr))
+        rows.append(entry)
+
     rows.sort(key=lambda r: r["level"])
-    # sanity: |CNR| should broadly increase with the design-order level
+    not_measured.sort(key=lambda r: r["level"])
+    missing = [r["id"] for r in not_measured]
+    total = len(rows) + len(not_measured)
+
+    if not rows:
+        return {
+            "rows": [], "not_measured": not_measured, "ordering_ok": False,
+            "status": "n/a",
+            "reasons": [
+                f"none of the {total} discs could be measured: the block "
+                f"carries no noise, which is what a saturated exposure looks "
+                f"like. Repeat the exposure — no statement about low-contrast "
+                f"detectability can be made from this image.",
+            ],
+            "affected": missing,
+        }
+
+    # Sanity: |CNR| should broadly increase with the design-order level. Judged
+    # only on the discs actually measured, and only when enough of them remain
+    # for the trend to mean anything.
     cnrs = [r["abs_cnr"] for r in rows]
-    increasing = sum(1 for i in range(len(cnrs) - 1) if cnrs[i + 1] >= cnrs[i])
-    ordering_ok = increasing >= max(len(cnrs) - 3, 1)
+    if len(cnrs) >= 4:
+        increasing = sum(1 for i in range(len(cnrs) - 1)
+                         if cnrs[i + 1] >= cnrs[i])
+        ordering_ok = increasing >= max(len(cnrs) - 3, 1)
+    else:
+        ordering_ok = False
+
     weak = [r["id"] for r in rows if abs(r["cnr"]) < 0.2]
-    if ordering_ok:
-        reasons = ["|CNR| increases with the design order of the circles, so "
-                   "the grid is on the right objects."]
+    reasons = []
+    if len(cnrs) < 4:
+        reasons.append(
+            f"only {len(cnrs)} of {total} discs could be measured, too few to "
+            f"judge whether contrast rises with the design order.")
+    elif ordering_ok:
+        reasons.append("|CNR| increases with the design order of the circles, "
+                       "so the grid is on the right objects.")
     else:
         order = ' < '.join(r['id'] for r in rows)
-        reasons = [f"|CNR| does not increase with the circles' design order "
-                   f"({order} should run weakest to strongest). The usual "
-                   f"cause is that the block or the circle grid is not on the "
-                   f"printed objects — reposition the block in step C."]
+        reasons.append(f"|CNR| does not increase with the circles' design order "
+                       f"({order} should run weakest to strongest). The usual "
+                       f"cause is that the block or the circle grid is not on "
+                       f"the printed objects — reposition the block in step C.")
+    if not_measured:
+        reasons.append(
+            f"{', '.join(missing)} could not be measured at all "
+            f"({not_measured[0]['reason']})")
     if weak:
         reasons.append(f"Very low contrast on {', '.join(weak)} "
                        f"(|CNR| < 0.2): either genuinely at the limit of "
                        f"detectability, or the ROI is off the disc.")
-    return {"rows": rows, "ordering_ok": bool(ordering_ok),
-            "status": "pass" if ordering_ok else "warn",
-            "reasons": reasons, "affected": weak}
+
+    status = "warn" if not ordering_ok else ("n/a" if not_measured else "pass")
+    return {"rows": rows, "not_measured": not_measured,
+            "ordering_ok": bool(ordering_ok), "status": status,
+            "reasons": reasons, "affected": weak + missing}
 
 
 def circles_for_block(ctx: Ctx, center_mm, angle_deg: float,

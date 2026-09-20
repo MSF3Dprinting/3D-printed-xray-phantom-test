@@ -111,3 +111,33 @@ def test_step_e_does_not_count_not_analysed_as_passed():
     # and such a section opens itself, like any other non-pass
     assert re.search(r'cd\.status !== "pass"\)\)\.join\(""\);', js), (
         "a test that was not analysed stays collapsed")
+
+
+def test_a_test_that_measured_nothing_reads_differently_from_one_that_broke():
+    """Two absences, two meanings.
+
+    A test that raised is a fault in the software. A test that ran and found
+    nothing measurable is a verdict on the exposure — the operator should
+    repeat it, not report a bug. Collapsing both into one phrase loses the
+    only thing that tells them which to do."""
+    js = _app_js()
+    assert '"not analysed"' in js and '"not measured"' in js, \
+        "step E must distinguish a broken test from an unmeasurable image"
+    assert "rr.error" in js, "the distinction has to key on the error field"
+
+    from phantom_qa.report import _not_analysed
+    broke = _not_analysed("Low contrast",
+                          {"lowcontrast": {"status": "error",
+                                           "error": "ValueError: boom"}},
+                          "lowcontrast")
+    assert "could not be analysed" in broke and "boom" in broke
+
+    nothing = _not_analysed(
+        "Low contrast",
+        {"lowcontrast": {"status": "n/a",
+                         "reasons": ["the block carries no noise"],
+                         "not_measured": [{"id": "L1", "reason": "no noise"}]}},
+        "lowcontrast")
+    assert "could not be measured" in nothing
+    assert "the block carries no noise" in nothing
+    assert "L1" in nothing and "Not measured" in nothing

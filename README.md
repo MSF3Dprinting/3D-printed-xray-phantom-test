@@ -55,6 +55,9 @@ Everything runs on your machine; no internet connection is used.
 ```bash
 python -m pytest tests -q         # test suite
 
+# the same, plus every HQ reference scan (see docs/MAINTENANCE.md)
+PHANTOMQA_HQ_FULL=1 PHANTOMQA_REQUIRE_SAMPLES=1 python -m pytest tests -q
+
 # headless batch analysis, without the verification steps
 python -m phantom_qa.cli "path/to/DICOMFILE" --out qa_output --sid 1000
 ```

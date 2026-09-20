@@ -1,0 +1,6141 @@
+{
+ "_comment": "Golden values for the HQ reference scans. Regenerate with `python tests/hq_manifest.py --update` ONLY when a change in the numbers is intended, and review the diff.",
+ "algo_version": "1.0.0",
+ "environment": {
+  "numpy": "2.5.1",
+  "python": "3.13.14",
+  "scikit-image": "0.26.0",
+  "scipy": "1.18.0"
+ },
+ "pdef_version": "1.0",
+ "scans": {
+  "CS000001": {
+   "group": "carestream",
+   "key": "CS000001",
+   "label": "3 licht blauw",
+   "metrics": {
+    "dev_from_nominal_pct": 0.09596,
+    "linepairs_blocks_detected": 5,
+    "linepairs_pitch_mm": {
+     "G1.1": 0.816251,
+     "G1.2": 0.932181,
+     "G1.4": 0.723912,
+     "G1.6": 0.613131,
+     "G2.0": 0.504753
+    },
+    "linepairs_row_status": {
+     "G1.1": "fail",
+     "G1.2": "fail",
+     "G1.4": "pass",
+     "G1.6": "pass",
+     "G2.0": "pass"
+    },
+    "lowcontrast_angle_deg": -45.468952,
+    "lowcontrast_block_center_mm": [
+     -48.260144,
+     -47.185508
+    ],
+    "lowcontrast_cnr": {
+     "L1": -0.454301,
+     "L2": -0.32506,
+     "L3": -0.579898,
+     "L4": -0.610303,
+     "L5": -0.739344,
+     "L6": -0.725773,
+     "L7": -0.795805,
+     "L8": -1.002606
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": true,
+    "mean_side_mm": 300.287879,
+    "uniformity_dsnr_pct": {
+     "BL": -0.48376,
+     "BR": 0.2057,
+     "C": -5.186476,
+     "TL": 4.722792,
+     "TR": 0.741744
+    },
+    "uniformity_snr_avg": 28.386156,
+    "wedge_dynamic_range_ratio": 74.552554,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.97819
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.002159,
+     "landmarks": 4.0,
+     "placement_margin": 1.519627,
+     "recognition": 7.826555,
+     "saturation": 0.000764
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.130025,
+    "residual_rms_mm": 0.258218,
+    "rotation_deg": -90.316687
+   },
+   "relpath": "DICOM/000001",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     -63.015334,
+     23.395005
+    ],
+    "linepairs/G1.2": [
+     -84.226832,
+     2.162793
+    ],
+    "linepairs/G1.4": [
+     -42.304199,
+     44.261289
+    ],
+    "linepairs/G1.6": [
+     -21.057468,
+     65.719636
+    ],
+    "linepairs/G2.0": [
+     0.065293,
+     86.935241
+    ],
+    "lowcontrast/L1": [
+     -21.233162,
+     -62.68074
+    ],
+    "lowcontrast/L2": [
+     -35.259075,
+     -48.423329
+    ],
+    "lowcontrast/L3": [
+     -49.284988,
+     -34.165919
+    ],
+    "lowcontrast/L4": [
+     -63.310902,
+     -19.908508
+    ],
+    "lowcontrast/L5": [
+     -77.283164,
+     -33.653904
+    ],
+    "lowcontrast/L6": [
+     -63.257251,
+     -47.911314
+    ],
+    "lowcontrast/L7": [
+     -49.231337,
+     -62.168725
+    ],
+    "lowcontrast/L8": [
+     -35.205424,
+     -76.426135
+    ],
+    "uniformity/BL": [
+     -94.890144,
+     -94.236615
+    ],
+    "uniformity/BR": [
+     95.285512,
+     -94.862909
+    ],
+    "uniformity/C": [
+     -0.169409,
+     0.236639
+    ],
+    "uniformity/TL": [
+     -94.574009,
+     94.623254
+    ],
+    "uniformity/TR": [
+     95.072993,
+     94.914748
+    ],
+    "wedge/S1": [
+     50.230493,
+     59.626327
+    ],
+    "wedge/S2": [
+     50.230493,
+     39.714136
+    ],
+    "wedge/S3": [
+     50.230493,
+     19.682517
+    ],
+    "wedge/S4": [
+     50.230493,
+     0.359909
+    ],
+    "wedge/S5": [
+     50.230493,
+     -17.105429
+    ],
+    "wedge/S6": [
+     50.230493,
+     -35.986132
+    ],
+    "wedge/S7": [
+     50.230493,
+     -58.921177
+    ]
+   },
+   "sha256": "bd7216d1e0137a0bd44fd954aafcc884302ee3d922990a2e0ed3374e0dda0c36",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "fail",
+    "lowcontrast": "pass",
+    "overall": "fail",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": true
+  },
+  "CS000002": {
+   "group": "carestream",
+   "key": "CS000002",
+   "label": "2 licht blauw",
+   "metrics": {
+    "dev_from_nominal_pct": -0.035393,
+    "linepairs_blocks_detected": 5,
+    "linepairs_pitch_mm": {
+     "G1.1": 0.51043,
+     "G1.2": null,
+     "G1.4": null,
+     "G1.6": 0.725956,
+     "G2.0": 0.50465
+    },
+    "linepairs_row_status": {
+     "G1.1": "fail",
+     "G1.2": "warn",
+     "G1.4": "warn",
+     "G1.6": "fail",
+     "G2.0": "pass"
+    },
+    "lowcontrast_angle_deg": -45.582456,
+    "lowcontrast_block_center_mm": [
+     -48.291442,
+     -47.170893
+    ],
+    "lowcontrast_cnr": {
+     "L1": -0.503942,
+     "L2": -0.463365,
+     "L3": -0.566566,
+     "L4": -0.724774,
+     "L5": -1.032795,
+     "L6": -0.829742,
+     "L7": -1.121507,
+     "L8": -1.175245
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": true,
+    "mean_side_mm": 299.893821,
+    "uniformity_dsnr_pct": {
+     "BL": -3.260275,
+     "BR": -1.395461,
+     "C": -3.68515,
+     "TL": 5.735614,
+     "TR": 2.605271
+    },
+    "uniformity_snr_avg": 32.26551,
+    "wedge_dynamic_range_ratio": 95.816798,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.985727
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.002157,
+     "landmarks": 4.0,
+     "placement_margin": 1.528691,
+     "recognition": 7.867986,
+     "saturation": 0.000766
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.130035,
+    "residual_rms_mm": 0.264117,
+    "rotation_deg": -90.316858
+   },
+   "relpath": "DICOM/000002",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     9.68158,
+     97.324682
+    ],
+    "linepairs/G1.2": [
+     -75.090427,
+     11.469201
+    ],
+    "linepairs/G1.4": [
+     -100.871316,
+     -7.382496
+    ],
+    "linepairs/G1.6": [
+     -35.003959,
+     52.007257
+    ],
+    "linepairs/G2.0": [
+     0.255533,
+     87.115638
+    ],
+    "lowcontrast/L1": [
+     -20.238198,
+     -63.083954
+    ],
+    "lowcontrast/L2": [
+     -34.235839,
+     -48.798786
+    ],
+    "lowcontrast/L3": [
+     -48.233481,
+     -34.513617
+    ],
+    "lowcontrast/L4": [
+     -62.231122,
+     -20.228449
+    ],
+    "lowcontrast/L5": [
+     -76.230587,
+     -33.946138
+    ],
+    "lowcontrast/L6": [
+     -62.232946,
+     -48.231306
+    ],
+    "lowcontrast/L7": [
+     -48.235304,
+     -62.516474
+    ],
+    "lowcontrast/L8": [
+     -34.237663,
+     -76.801642
+    ],
+    "uniformity/BL": [
+     -94.892531,
+     -94.237244
+    ],
+    "uniformity/BR": [
+     95.275029,
+     -94.864714
+    ],
+    "uniformity/C": [
+     -0.076351,
+     0.297218
+    ],
+    "uniformity/TL": [
+     -94.622075,
+     94.768399
+    ],
+    "uniformity/TR": [
+     95.17111,
+     94.906848
+    ],
+    "wedge/S1": [
+     50.230493,
+     59.620414
+    ],
+    "wedge/S2": [
+     50.230493,
+     39.70399
+    ],
+    "wedge/S3": [
+     50.230493,
+     19.679135
+    ],
+    "wedge/S4": [
+     50.230493,
+     0.411738
+    ],
+    "wedge/S5": [
+     50.230493,
+     -16.037419
+    ],
+    "wedge/S6": [
+     50.230493,
+     -32.664126
+    ],
+    "wedge/S7": [
+     50.230493,
+     -56.624609
+    ]
+   },
+   "sha256": "d9f383727e515a4162eb28128f76e2137c4e10cf119864c602c93f535c5c042d",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "fail",
+    "lowcontrast": "pass",
+    "overall": "fail",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": false
+  },
+  "CS000003": {
+   "group": "carestream",
+   "key": "CS000003",
+   "label": "5 licht blauw",
+   "metrics": {
+    "dev_from_nominal_pct": 0.189334,
+    "linepairs_blocks_detected": 3,
+    "linepairs_pitch_mm": {
+     "G1.1": null,
+     "G1.2": 0.728361,
+     "G1.4": null,
+     "G1.6": null,
+     "G2.0": null
+    },
+    "linepairs_row_status": {
+     "G1.1": "warn",
+     "G1.2": "fail",
+     "G1.4": "warn",
+     "G1.6": "warn",
+     "G2.0": "warn"
+    },
+    "lowcontrast_angle_deg": -45.499319,
+    "lowcontrast_block_center_mm": [
+     -48.259064,
+     -47.174863
+    ],
+    "lowcontrast_cnr": {
+     "L1": -0.674651,
+     "L2": -0.622639,
+     "L3": -0.870588,
+     "L4": -0.977952,
+     "L5": -1.187435,
+     "L6": -1.147712,
+     "L7": -1.380686,
+     "L8": -1.423738
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": true,
+    "mean_side_mm": 300.568002,
+    "uniformity_dsnr_pct": {
+     "BL": -8.14359,
+     "BR": -2.741529,
+     "C": -3.122935,
+     "TL": 8.387539,
+     "TR": 5.620516
+    },
+    "uniformity_snr_avg": 37.018938,
+    "wedge_dynamic_range_ratio": 97.679579,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.979442
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.002149,
+     "landmarks": 4.0,
+     "placement_margin": 1.52995,
+     "recognition": 7.887601,
+     "saturation": 4e-06
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.130039,
+    "residual_rms_mm": 0.264564,
+    "rotation_deg": -90.316958
+   },
+   "relpath": "DICOM/000003",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     0.92,
+     81.67
+    ],
+    "linepairs/G1.2": [
+     -50.420705,
+     36.891344
+    ],
+    "linepairs/G1.4": [
+     -80.993326,
+     72.655683
+    ],
+    "linepairs/G1.6": [
+     7.147634,
+     -24.753356
+    ],
+    "linepairs/G2.0": [
+     -84.64,
+     -1.31
+    ],
+    "lowcontrast/L1": [
+     -20.176597,
+     -62.340121
+    ],
+    "lowcontrast/L2": [
+     -34.194952,
+     -48.075279
+    ],
+    "lowcontrast/L3": [
+     -48.213307,
+     -33.810436
+    ],
+    "lowcontrast/L4": [
+     -62.231661,
+     -19.545594
+    ],
+    "lowcontrast/L5": [
+     -76.211207,
+     -33.283582
+    ],
+    "lowcontrast/L6": [
+     -62.192852,
+     -47.548424
+    ],
+    "lowcontrast/L7": [
+     -48.174497,
+     -61.813267
+    ],
+    "lowcontrast/L8": [
+     -34.156142,
+     -76.078109
+    ],
+    "uniformity/BL": [
+     -94.896862,
+     -94.237713
+    ],
+    "uniformity/BR": [
+     95.285575,
+     -94.903865
+    ],
+    "uniformity/C": [
+     -0.121565,
+     0.288137
+    ],
+    "uniformity/TL": [
+     -94.624192,
+     94.769497
+    ],
+    "uniformity/TR": [
+     95.074986,
+     94.906904
+    ],
+    "wedge/S1": [
+     50.230493,
+     59.613409
+    ],
+    "wedge/S2": [
+     50.230493,
+     39.693382
+    ],
+    "wedge/S3": [
+     50.230493,
+     19.677937
+    ],
+    "wedge/S4": [
+     50.230493,
+     0.382157
+    ],
+    "wedge/S5": [
+     50.230493,
+     -16.59285
+    ],
+    "wedge/S6": [
+     50.230493,
+     -35.634124
+    ],
+    "wedge/S7": [
+     50.230493,
+     -59.069718
+    ]
+   },
+   "sha256": "2764a1bbb305b00c7f4b5daa2d6920aa0178ec94a7ee7b772a982156f73ef12e",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "fail",
+    "lowcontrast": "pass",
+    "overall": "fail",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": false
+  },
+  "CS000004": {
+   "group": "carestream",
+   "key": "CS000004",
+   "label": "15 donker blauw",
+   "metrics": {
+    "dev_from_nominal_pct": 0.449595,
+    "linepairs_blocks_detected": 5,
+    "linepairs_pitch_mm": {
+     "G1.1": 0.813794,
+     "G1.2": 0.930538,
+     "G1.4": 0.72315,
+     "G1.6": 0.612437,
+     "G2.0": 0.504374
+    },
+    "linepairs_row_status": {
+     "G1.1": "fail",
+     "G1.2": "fail",
+     "G1.4": "pass",
+     "G1.6": "pass",
+     "G2.0": "pass"
+    },
+    "lowcontrast_angle_deg": -46.569199,
+    "lowcontrast_block_center_mm": [
+     -47.067876,
+     -46.028009
+    ],
+    "lowcontrast_cnr": {
+     "L1": -0.727106,
+     "L2": -0.638774,
+     "L3": -0.899006,
+     "L4": -1.010554,
+     "L5": -0.275488,
+     "L6": -0.225538,
+     "L7": -0.426829,
+     "L8": -0.735739
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": false,
+    "mean_side_mm": 301.348785,
+    "uniformity_dsnr_pct": {
+     "BL": -1.084025,
+     "BR": -0.065551,
+     "C": -3.936184,
+     "TL": 4.436189,
+     "TR": 0.64957
+    },
+    "uniformity_snr_avg": 27.968207,
+    "wedge_dynamic_range_ratio": 81.092356,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.974928
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.00144,
+     "landmarks": 4.0,
+     "placement_margin": 1.605396,
+     "recognition": 7.605297,
+     "saturation": 0.001013
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.130049,
+    "residual_rms_mm": 0.162788,
+    "rotation_deg": -90.538043
+   },
+   "relpath": "DICOM/000004",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     -63.591717,
+     25.029902
+    ],
+    "linepairs/G1.2": [
+     -84.87542,
+     4.208391
+    ],
+    "linepairs/G1.4": [
+     -41.689044,
+     45.463676
+    ],
+    "linepairs/G1.6": [
+     -20.729377,
+     66.023952
+    ],
+    "linepairs/G2.0": [
+     0.799922,
+     88.03719
+    ],
+    "lowcontrast/L1": [
+     -17.859785,
+     -61.753702
+    ],
+    "lowcontrast/L2": [
+     -31.609345,
+     -47.229598
+    ],
+    "lowcontrast/L3": [
+     -45.358905,
+     -32.705494
+    ],
+    "lowcontrast/L4": [
+     -59.108465,
+     -18.18139
+    ],
+    "lowcontrast/L5": [
+     -73.342087,
+     -31.655958
+    ],
+    "lowcontrast/L6": [
+     -59.592527,
+     -46.180063
+    ],
+    "lowcontrast/L7": [
+     -45.842967,
+     -60.704167
+    ],
+    "lowcontrast/L8": [
+     -32.093407,
+     -75.228271
+    ],
+    "uniformity/BL": [
+     -95.301149,
+     -94.845954
+    ],
+    "uniformity/BR": [
+     95.295004,
+     -95.236455
+    ],
+    "uniformity/C": [
+     -0.2546,
+     0.025618
+    ],
+    "uniformity/TL": [
+     -94.773034,
+     94.596887
+    ],
+    "uniformity/TR": [
+     95.144641,
+     94.802037
+    ],
+    "wedge/S1": [
+     50.302242,
+     59.006064
+    ],
+    "wedge/S2": [
+     50.302242,
+     39.103364
+    ],
+    "wedge/S3": [
+     50.302242,
+     21.241003
+    ],
+    "wedge/S4": [
+     50.302242,
+     2.366188
+    ],
+    "wedge/S5": [
+     50.302242,
+     -17.633077
+    ],
+    "wedge/S6": [
+     50.302242,
+     -34.211714
+    ],
+    "wedge/S7": [
+     50.302242,
+     -56.238643
+    ]
+   },
+   "sha256": "1d4260cfc753096583993c5211a1816e8239fa37a609ab0a790796e605e1a95b",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "fail",
+    "lowcontrast": "warn",
+    "overall": "fail",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": true
+  },
+  "CS000005": {
+   "group": "carestream",
+   "key": "CS000005",
+   "label": "16 donker blauw",
+   "metrics": {
+    "dev_from_nominal_pct": 0.801991,
+    "linepairs_blocks_detected": 5,
+    "linepairs_pitch_mm": {
+     "G1.1": 0.81347,
+     "G1.2": 0.933266,
+     "G1.4": 0.723356,
+     "G1.6": 0.61262,
+     "G2.0": 0.504063
+    },
+    "linepairs_row_status": {
+     "G1.1": "fail",
+     "G1.2": "fail",
+     "G1.4": "pass",
+     "G1.6": "pass",
+     "G2.0": "pass"
+    },
+    "lowcontrast_angle_deg": -46.320159,
+    "lowcontrast_block_center_mm": [
+     -46.369036,
+     -46.900074
+    ],
+    "lowcontrast_cnr": {
+     "L1": -0.411559,
+     "L2": -0.46455,
+     "L3": -0.562746,
+     "L4": -0.627492,
+     "L5": -0.223296,
+     "L6": -0.119055,
+     "L7": -0.18655,
+     "L8": -0.490875
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": true,
+    "mean_side_mm": 302.405972,
+    "uniformity_dsnr_pct": {
+     "BL": 1.804857,
+     "BR": -0.084834,
+     "C": -4.583351,
+     "TL": 2.541823,
+     "TR": 0.321505
+    },
+    "uniformity_snr_avg": 22.901137,
+    "wedge_dynamic_range_ratio": 51.192313,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.959821
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.001443,
+     "landmarks": 4.0,
+     "placement_margin": 1.394477,
+     "recognition": 7.327153,
+     "saturation": 0.001025
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.130031,
+    "residual_rms_mm": 0.161236,
+    "rotation_deg": -90.538633
+   },
+   "relpath": "DICOM/000005",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     -63.716701,
+     25.288749
+    ],
+    "linepairs/G1.2": [
+     -85.270959,
+     4.046688
+    ],
+    "linepairs/G1.4": [
+     -41.865019,
+     45.814636
+    ],
+    "linepairs/G1.6": [
+     -20.323062,
+     66.177627
+    ],
+    "linepairs/G2.0": [
+     0.407418,
+     87.579233
+    ],
+    "lowcontrast/L1": [
+     -17.799787,
+     -62.482372
+    ],
+    "lowcontrast/L2": [
+     -31.612347,
+     -48.018169
+    ],
+    "lowcontrast/L3": [
+     -45.424907,
+     -33.553965
+    ],
+    "lowcontrast/L4": [
+     -59.237467,
+     -19.089761
+    ],
+    "lowcontrast/L5": [
+     -73.412387,
+     -32.62607
+    ],
+    "lowcontrast/L6": [
+     -59.599827,
+     -47.090274
+    ],
+    "lowcontrast/L7": [
+     -45.787267,
+     -61.554477
+    ],
+    "lowcontrast/L8": [
+     -31.974707,
+     -76.018681
+    ],
+    "uniformity/BL": [
+     -95.196327,
+     -94.803847
+    ],
+    "uniformity/BR": [
+     95.278465,
+     -95.135369
+    ],
+    "uniformity/C": [
+     -0.251908,
+     0.070811
+    ],
+    "uniformity/TL": [
+     -94.857437,
+     94.632096
+    ],
+    "uniformity/TR": [
+     95.143785,
+     94.747507
+    ],
+    "wedge/S1": [
+     50.302242,
+     59.003386
+    ],
+    "wedge/S2": [
+     50.302242,
+     39.128946
+    ],
+    "wedge/S3": [
+     50.302242,
+     20.197656
+    ],
+    "wedge/S4": [
+     50.302242,
+     1.49623
+    ],
+    "wedge/S5": [
+     50.302242,
+     -16.534032
+    ],
+    "wedge/S6": [
+     50.302242,
+     -36.044821
+    ],
+    "wedge/S7": [
+     50.302242,
+     -58.951988
+    ]
+   },
+   "sha256": "d4a7ebc215d4670cc7b3ded0fe3b9b4665249d56489ca9483650ebca8717dbaa",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "fail",
+    "lowcontrast": "pass",
+    "overall": "fail",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": false
+  },
+  "CS000006": {
+   "group": "carestream",
+   "key": "CS000006",
+   "label": "14 donker blauw",
+   "metrics": {
+    "dev_from_nominal_pct": 0.753067,
+    "linepairs_blocks_detected": 5,
+    "linepairs_pitch_mm": {
+     "G1.1": 0.506099,
+     "G1.2": 0.814134,
+     "G1.4": null,
+     "G1.6": 0.612591,
+     "G2.0": 0.504379
+    },
+    "linepairs_row_status": {
+     "G1.1": "fail",
+     "G1.2": "pass",
+     "G1.4": "warn",
+     "G1.6": "pass",
+     "G2.0": "pass"
+    },
+    "lowcontrast_angle_deg": -46.187904,
+    "lowcontrast_block_center_mm": [
+     -46.690782,
+     -46.084258
+    ],
+    "lowcontrast_cnr": {
+     "L1": -0.922249,
+     "L2": -0.88562,
+     "L3": -1.169203,
+     "L4": -1.518195,
+     "L5": -0.507207,
+     "L6": -0.319047,
+     "L7": -0.583608,
+     "L8": -0.888473
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": false,
+    "mean_side_mm": 302.2592,
+    "uniformity_dsnr_pct": {
+     "BL": -1.572725,
+     "BR": -1.966179,
+     "C": -3.031163,
+     "TL": 4.100847,
+     "TR": 2.46922
+    },
+    "uniformity_snr_avg": 31.851794,
+    "wedge_dynamic_range_ratio": 84.03079,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.975589
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.001422,
+     "landmarks": 4.0,
+     "placement_margin": 1.686686,
+     "recognition": 7.679916,
+     "saturation": 0.001008
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.130051,
+    "residual_rms_mm": 0.108394,
+    "rotation_deg": -90.538247
+   },
+   "relpath": "DICOM/000006",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     12.361756,
+     95.806116
+    ],
+    "linepairs/G1.2": [
+     -64.868879,
+     23.62128
+    ],
+    "linepairs/G1.4": [
+     -102.237387,
+     -4.522745
+    ],
+    "linepairs/G1.6": [
+     -20.648233,
+     66.807131
+    ],
+    "linepairs/G2.0": [
+     0.369607,
+     87.568906
+    ],
+    "lowcontrast/L1": [
+     -18.431789,
+     -61.239762
+    ],
+    "lowcontrast/L2": [
+     -32.277699,
+     -46.80748
+    ],
+    "lowcontrast/L3": [
+     -46.12361,
+     -32.375198
+    ],
+    "lowcontrast/L4": [
+     -59.969521,
+     -17.942916
+    ],
+    "lowcontrast/L5": [
+     -74.113157,
+     -31.511909
+    ],
+    "lowcontrast/L6": [
+     -60.267246,
+     -45.944191
+    ],
+    "lowcontrast/L7": [
+     -46.421336,
+     -60.376472
+    ],
+    "lowcontrast/L8": [
+     -32.575425,
+     -74.808754
+    ],
+    "uniformity/BL": [
+     -95.208263,
+     -94.84699
+    ],
+    "uniformity/BR": [
+     95.249937,
+     -95.239109
+    ],
+    "uniformity/C": [
+     -0.295573,
+     0.076121
+    ],
+    "uniformity/TL": [
+     -94.775604,
+     94.593488
+    ],
+    "uniformity/TR": [
+     95.135879,
+     94.846529
+    ],
+    "wedge/S1": [
+     50.373991,
+     58.996522
+    ],
+    "wedge/S2": [
+     50.373991,
+     39.096961
+    ],
+    "wedge/S3": [
+     50.373991,
+     21.446828
+    ],
+    "wedge/S4": [
+     50.373991,
+     2.573252
+    ],
+    "wedge/S5": [
+     50.373991,
+     -17.320354
+    ],
+    "wedge/S6": [
+     50.373991,
+     -33.950846
+    ],
+    "wedge/S7": [
+     50.373991,
+     -56.282856
+    ]
+   },
+   "sha256": "0a558091f148e01bfdb354dccc1a9984bbdf5c03156c4c34208e3ebcc7396cd2",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "fail",
+    "lowcontrast": "warn",
+    "overall": "fail",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": false
+  },
+  "CS000007": {
+   "group": "carestream",
+   "key": "CS000007",
+   "label": "20 donker blauw",
+   "metrics": {
+    "dev_from_nominal_pct": 0.621383,
+    "linepairs_blocks_detected": 2,
+    "linepairs_pitch_mm": {
+     "G1.1": null,
+     "G1.2": 0.612725,
+     "G1.4": null,
+     "G1.6": null,
+     "G2.0": null
+    },
+    "linepairs_row_status": {
+     "G1.1": "warn",
+     "G1.2": "fail",
+     "G1.4": "warn",
+     "G1.6": "warn",
+     "G2.0": "warn"
+    },
+    "lowcontrast_angle_deg": -46.197125,
+    "lowcontrast_block_center_mm": [
+     -46.301763,
+     -46.630962
+    ],
+    "lowcontrast_cnr": {
+     "L1": -1.094335,
+     "L2": -1.132981,
+     "L3": -1.358434,
+     "L4": -1.670699,
+     "L5": -0.567115,
+     "L6": -0.399449,
+     "L7": -0.644991,
+     "L8": -1.138408
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": true,
+    "mean_side_mm": 301.864149,
+    "uniformity_dsnr_pct": {
+     "BL": -4.189041,
+     "BR": -2.227667,
+     "C": -3.271222,
+     "TL": 5.361173,
+     "TR": 4.326758
+    },
+    "uniformity_snr_avg": 34.142473,
+    "wedge_dynamic_range_ratio": 78.389186,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.970285
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.001451,
+     "landmarks": 4.0,
+     "placement_margin": 1.725429,
+     "recognition": 7.721424,
+     "saturation": 0.00138
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.130051,
+    "residual_rms_mm": 0.163038,
+    "rotation_deg": -90.539091
+   },
+   "relpath": "DICOM/000007",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     0.92,
+     81.67
+    ],
+    "linepairs/G1.2": [
+     -20.39,
+     61.3
+    ],
+    "linepairs/G1.4": [
+     -80.476221,
+     76.087959
+    ],
+    "linepairs/G1.6": [
+     -11.696626,
+     12.479676
+    ],
+    "linepairs/G2.0": [
+     -84.64,
+     -1.31
+    ],
+    "lowcontrast/L1": [
+     -17.699119,
+     -62.151876
+    ],
+    "lowcontrast/L2": [
+     -31.542707,
+     -47.717366
+    ],
+    "lowcontrast/L3": [
+     -45.386295,
+     -33.282856
+    ],
+    "lowcontrast/L4": [
+     -59.229883,
+     -18.848347
+    ],
+    "lowcontrast/L5": [
+     -73.375703,
+     -32.415063
+    ],
+    "lowcontrast/L6": [
+     -59.532115,
+     -46.849573
+    ],
+    "lowcontrast/L7": [
+     -45.688527,
+     -61.284082
+    ],
+    "lowcontrast/L8": [
+     -31.844939,
+     -75.718592
+    ],
+    "uniformity/BL": [
+     -95.29979,
+     -94.846436
+    ],
+    "uniformity/BR": [
+     95.245539,
+     -95.237698
+    ],
+    "uniformity/C": [
+     -0.253277,
+     0.076511
+    ],
+    "uniformity/TL": [
+     -94.866598,
+     94.638588
+    ],
+    "uniformity/TR": [
+     95.236281,
+     94.84527
+    ],
+    "wedge/S1": [
+     50.373991,
+     59.011318
+    ],
+    "wedge/S2": [
+     50.373991,
+     39.106966
+    ],
+    "wedge/S3": [
+     50.373991,
+     20.776459
+    ],
+    "wedge/S4": [
+     50.373991,
+     1.919065
+    ],
+    "wedge/S5": [
+     50.373991,
+     -16.470781
+    ],
+    "wedge/S6": [
+     50.373991,
+     -33.228377
+    ],
+    "wedge/S7": [
+     50.373991,
+     -56.392431
+    ]
+   },
+   "sha256": "3bf7c76473323100271551e21eb9b5aac89a72ff7f7d28a3d1b5fa192307ab74",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "fail",
+    "lowcontrast": "pass",
+    "overall": "fail",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": false
+  },
+  "CS000008": {
+   "group": "carestream",
+   "key": "CS000008",
+   "label": "17 donker blauw",
+   "metrics": {
+    "dev_from_nominal_pct": 0.751255,
+    "linepairs_blocks_detected": 4,
+    "linepairs_pitch_mm": {
+     "G1.1": 0.726836,
+     "G1.2": null,
+     "G1.4": null,
+     "G1.6": null,
+     "G2.0": null
+    },
+    "linepairs_row_status": {
+     "G1.1": "fail",
+     "G1.2": "warn",
+     "G1.4": "warn",
+     "G1.6": "warn",
+     "G2.0": "warn"
+    },
+    "lowcontrast_angle_deg": -46.34027,
+    "lowcontrast_block_center_mm": [
+     -46.727475,
+     -46.251792
+    ],
+    "lowcontrast_cnr": {
+     "L1": -1.317196,
+     "L2": -1.310791,
+     "L3": -1.589386,
+     "L4": -1.859185,
+     "L5": -0.818678,
+     "L6": -0.482985,
+     "L7": -0.875423,
+     "L8": -1.30965
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": false,
+    "mean_side_mm": 302.253766,
+    "uniformity_dsnr_pct": {
+     "BL": -5.378468,
+     "BR": -4.329893,
+     "C": -4.023611,
+     "TL": 7.630982,
+     "TR": 6.10099
+    },
+    "uniformity_snr_avg": 36.429934,
+    "wedge_dynamic_range_ratio": 105.169988,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.973682
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.001437,
+     "landmarks": 4.0,
+     "placement_margin": 1.777808,
+     "recognition": 7.800666,
+     "saturation": 2e-06
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.130062,
+    "residual_rms_mm": 0.164701,
+    "rotation_deg": -90.538749
+   },
+   "relpath": "DICOM/000008",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     -50.694508,
+     37.936618
+    ],
+    "linepairs/G1.2": [
+     11.522091,
+     -24.950997
+    ],
+    "linepairs/G1.4": [
+     -80.863465,
+     75.512355
+    ],
+    "linepairs/G1.6": [
+     -12.264223,
+     12.935323
+    ],
+    "linepairs/G2.0": [
+     -84.64,
+     -1.31
+    ],
+    "lowcontrast/L1": [
+     -17.818511,
+     -62.205844
+    ],
+    "lowcontrast/L2": [
+     -31.625993,
+     -47.736793
+    ],
+    "lowcontrast/L3": [
+     -45.433475,
+     -33.267741
+    ],
+    "lowcontrast/L4": [
+     -59.240957,
+     -18.79869
+    ],
+    "lowcontrast/L5": [
+     -73.420627,
+     -32.330023
+    ],
+    "lowcontrast/L6": [
+     -59.613145,
+     -46.799074
+    ],
+    "lowcontrast/L7": [
+     -45.805663,
+     -61.268125
+    ],
+    "lowcontrast/L8": [
+     -31.998181,
+     -75.737176
+    ],
+    "uniformity/BL": [
+     -95.348733,
+     -94.839831
+    ],
+    "uniformity/BR": [
+     95.284605,
+     -95.239379
+    ],
+    "uniformity/C": [
+     -0.295361,
+     0.073637
+    ],
+    "uniformity/TL": [
+     -94.874553,
+     94.639324
+    ],
+    "uniformity/TR": [
+     95.136839,
+     94.899415
+    ],
+    "wedge/S1": [
+     50.373991,
+     59.006854
+    ],
+    "wedge/S2": [
+     50.373991,
+     39.106585
+    ],
+    "wedge/S3": [
+     50.373991,
+     20.82846
+    ],
+    "wedge/S4": [
+     50.373991,
+     1.815156
+    ],
+    "wedge/S5": [
+     50.373991,
+     -17.070702
+    ],
+    "wedge/S6": [
+     50.373991,
+     -33.729209
+    ],
+    "wedge/S7": [
+     50.373991,
+     -56.460294
+    ]
+   },
+   "sha256": "ada5d95fb1129fdb6ef4853a50d4ee85cf87c7848506adf9116af190903ffedf",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "fail",
+    "lowcontrast": "warn",
+    "overall": "fail",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": false
+  },
+  "CS000009": {
+   "group": "carestream",
+   "key": "CS000009",
+   "label": "18 donker blauw",
+   "metrics": {
+    "dev_from_nominal_pct": 0.778296,
+    "linepairs_blocks_detected": 4,
+    "linepairs_pitch_mm": {
+     "G1.1": null,
+     "G1.2": null,
+     "G1.4": null,
+     "G1.6": null,
+     "G2.0": null
+    },
+    "linepairs_row_status": {
+     "G1.1": "warn",
+     "G1.2": "warn",
+     "G1.4": "warn",
+     "G1.6": "warn",
+     "G2.0": "warn"
+    },
+    "lowcontrast_angle_deg": -46.559726,
+    "lowcontrast_block_center_mm": [
+     -46.78762,
+     -46.237283
+    ],
+    "lowcontrast_cnr": {
+     "L1": -1.499525,
+     "L2": -1.665469,
+     "L3": -2.135097,
+     "L4": -2.303139,
+     "L5": -0.891447,
+     "L6": -0.63524,
+     "L7": -0.972071,
+     "L8": -1.561663
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": true,
+    "mean_side_mm": 302.334887,
+    "uniformity_dsnr_pct": {
+     "BL": -8.193552,
+     "BR": -5.681521,
+     "C": -2.615368,
+     "TL": 10.051236,
+     "TR": 6.439206
+    },
+    "uniformity_snr_avg": 39.191468,
+    "wedge_dynamic_range_ratio": 68.670575,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.967525
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.001427,
+     "landmarks": 4.0,
+     "placement_margin": 1.825086,
+     "recognition": 7.865908,
+     "saturation": 1e-06
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.130068,
+    "residual_rms_mm": 0.180215,
+    "rotation_deg": -90.539937
+   },
+   "relpath": "DICOM/000009",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     -81.674172,
+     -22.725258
+    ],
+    "linepairs/G1.2": [
+     -51.383853,
+     37.289799
+    ],
+    "linepairs/G1.4": [
+     -74.707963,
+     -15.375643
+    ],
+    "linepairs/G1.6": [
+     -80.77836,
+     74.164282
+    ],
+    "linepairs/G2.0": [
+     -84.64,
+     -1.31
+    ],
+    "lowcontrast/L1": [
+     -18.303021,
+     -62.645744
+    ],
+    "lowcontrast/L2": [
+     -32.054982,
+     -48.123914
+    ],
+    "lowcontrast/L3": [
+     -45.806943,
+     -33.602083
+    ],
+    "lowcontrast/L4": [
+     -59.558904,
+     -19.080253
+    ],
+    "lowcontrast/L5": [
+     -73.790298,
+     -32.557174
+    ],
+    "lowcontrast/L6": [
+     -60.038337,
+     -47.079005
+    ],
+    "lowcontrast/L7": [
+     -46.286376,
+     -61.600836
+    ],
+    "lowcontrast/L8": [
+     -32.534415,
+     -76.122666
+    ],
+    "uniformity/BL": [
+     -95.350877,
+     -94.840601
+    ],
+    "uniformity/BR": [
+     95.331765,
+     -95.240789
+    ],
+    "uniformity/C": [
+     -0.255074,
+     0.076221
+    ],
+    "uniformity/TL": [
+     -94.916645,
+     94.640557
+    ],
+    "uniformity/TR": [
+     95.244889,
+     94.846778
+    ],
+    "wedge/S1": [
+     50.373991,
+     59.008648
+    ],
+    "wedge/S2": [
+     50.373991,
+     39.106543
+    ],
+    "wedge/S3": [
+     50.373991,
+     20.821855
+    ],
+    "wedge/S4": [
+     50.373991,
+     2.154174
+    ],
+    "wedge/S5": [
+     50.373991,
+     -17.358555
+    ],
+    "wedge/S6": [
+     50.373991,
+     -35.955945
+    ],
+    "wedge/S7": [
+     50.373991,
+     -58.065173
+    ]
+   },
+   "sha256": "dc93bb11333433d877678ce76c98f5308b92d8cda744df828f4a03e21a3f91d2",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "warn",
+    "lowcontrast": "pass",
+    "overall": "warn",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": false
+  },
+  "CS000010": {
+   "group": "carestream",
+   "key": "CS000010",
+   "label": "19 donker blauw",
+   "metrics": {
+    "dev_from_nominal_pct": 0.71198,
+    "linepairs_blocks_detected": 5,
+    "linepairs_pitch_mm": {
+     "G1.1": null,
+     "G1.2": null,
+     "G1.4": null,
+     "G1.6": null,
+     "G2.0": null
+    },
+    "linepairs_row_status": {
+     "G1.1": "warn",
+     "G1.2": "warn",
+     "G1.4": "warn",
+     "G1.6": "warn",
+     "G2.0": "warn"
+    },
+    "lowcontrast_angle_deg": -46.299246,
+    "lowcontrast_block_center_mm": [
+     -46.682962,
+     -46.27471
+    ],
+    "lowcontrast_cnr": {
+     "L1": -1.944213,
+     "L2": -1.907572,
+     "L3": -2.378251,
+     "L4": -2.794858,
+     "L5": -0.98561,
+     "L6": -0.644087,
+     "L7": -1.264176,
+     "L8": -1.901248
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": false,
+    "mean_side_mm": 302.135941,
+    "uniformity_dsnr_pct": {
+     "BL": -9.469613,
+     "BR": -8.115717,
+     "C": -2.084623,
+     "TL": 12.212446,
+     "TR": 7.457507
+    },
+    "uniformity_snr_avg": 40.630874,
+    "wedge_dynamic_range_ratio": 15.174074,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.962816
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.001506,
+     "landmarks": 4.0,
+     "placement_margin": 1.689241,
+     "recognition": 7.759319,
+     "saturation": 0.001005
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.130113,
+    "residual_rms_mm": 0.159888,
+    "rotation_deg": -90.542757
+   },
+   "relpath": "DICOM/000010",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     -51.667158,
+     37.089013
+    ],
+    "linepairs/G1.2": [
+     -59.778277,
+     -6.379774
+    ],
+    "linepairs/G1.4": [
+     -80.113561,
+     76.444999
+    ],
+    "linepairs/G1.6": [
+     -9.497611,
+     9.199686
+    ],
+    "linepairs/G2.0": [
+     -84.64,
+     -1.31
+    ],
+    "lowcontrast/L1": [
+     -18.108028,
+     -61.846579
+    ],
+    "lowcontrast/L2": [
+     -31.925866,
+     -47.387418
+    ],
+    "lowcontrast/L3": [
+     -45.743705,
+     -32.928257
+    ],
+    "lowcontrast/L4": [
+     -59.561543,
+     -18.469096
+    ],
+    "lowcontrast/L5": [
+     -73.731521,
+     -32.010578
+    ],
+    "lowcontrast/L6": [
+     -59.913682,
+     -46.469739
+    ],
+    "lowcontrast/L7": [
+     -46.095844,
+     -60.9289
+    ],
+    "lowcontrast/L8": [
+     -32.278005,
+     -75.388061
+    ],
+    "uniformity/BL": [
+     -95.356245,
+     -94.902674
+    ],
+    "uniformity/BR": [
+     95.344799,
+     -95.245742
+    ],
+    "uniformity/C": [
+     -0.257443,
+     0.075341
+    ],
+    "uniformity/TL": [
+     -94.928154,
+     94.69911
+    ],
+    "uniformity/TR": [
+     95.305151,
+     94.906539
+    ],
+    "wedge/S1": [
+     50.373991,
+     59.026498
+    ],
+    "wedge/S2": [
+     50.373991,
+     39.11826
+    ],
+    "wedge/S3": [
+     50.373991,
+     21.367691
+    ],
+    "wedge/S4": [
+     50.373991,
+     2.459491
+    ],
+    "wedge/S5": [
+     50.373991,
+     -17.52333
+    ],
+    "wedge/S6": [
+     50.373991,
+     -33.974637
+    ],
+    "wedge/S7": [
+     50.373991,
+     -56.204626
+    ]
+   },
+   "sha256": "db9f0b7447ca1e245b9207110e9b22a7df1c05beb4303924a573d9ca93fed5ce",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "warn",
+    "lowcontrast": "warn",
+    "overall": "warn",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": false
+  },
+  "CS000011": {
+   "group": "carestream",
+   "key": "CS000011",
+   "label": "13 licht blauw",
+   "metrics": {
+    "dev_from_nominal_pct": -0.069492,
+    "linepairs_blocks_detected": 5,
+    "linepairs_pitch_mm": {
+     "G1.1": 0.815562,
+     "G1.2": 0.932759,
+     "G1.4": 0.723823,
+     "G1.6": 0.613233,
+     "G2.0": 0.504548
+    },
+    "linepairs_row_status": {
+     "G1.1": "fail",
+     "G1.2": "fail",
+     "G1.4": "pass",
+     "G1.6": "pass",
+     "G2.0": "pass"
+    },
+    "lowcontrast_angle_deg": -45.540684,
+    "lowcontrast_block_center_mm": [
+     -48.295998,
+     -47.188568
+    ],
+    "lowcontrast_cnr": {
+     "L1": -0.425482,
+     "L2": -0.369733,
+     "L3": -0.532041,
+     "L4": -0.553194,
+     "L5": -0.779913,
+     "L6": -0.649147,
+     "L7": -0.750732,
+     "L8": -0.963596
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": true,
+    "mean_side_mm": 299.791524,
+    "uniformity_dsnr_pct": {
+     "BL": -0.235698,
+     "BR": -0.772156,
+     "C": -3.419703,
+     "TL": 3.790869,
+     "TR": 0.636688
+    },
+    "uniformity_snr_avg": 27.630117,
+    "wedge_dynamic_range_ratio": 164.673471,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.980553
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.002177,
+     "landmarks": 4.0,
+     "placement_margin": 1.49988,
+     "recognition": 7.850644,
+     "saturation": 0.000815
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.130058,
+    "residual_rms_mm": 0.233642,
+    "rotation_deg": -90.317609
+   },
+   "relpath": "DICOM/000011",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     -62.769575,
+     23.254578
+    ],
+    "linepairs/G1.2": [
+     -84.332903,
+     2.457563
+    ],
+    "linepairs/G1.4": [
+     -42.515849,
+     44.050837
+    ],
+    "linepairs/G1.6": [
+     -21.118085,
+     65.101548
+    ],
+    "linepairs/G2.0": [
+     -0.598893,
+     86.668897
+    ],
+    "lowcontrast/L1": [
+     -20.224487,
+     -62.374096
+    ],
+    "lowcontrast/L2": [
+     -34.232539,
+     -48.099137
+    ],
+    "lowcontrast/L3": [
+     -48.240592,
+     -33.824177
+    ],
+    "lowcontrast/L4": [
+     -62.248644,
+     -19.549218
+    ],
+    "lowcontrast/L5": [
+     -76.238105,
+     -33.27711
+    ],
+    "lowcontrast/L6": [
+     -62.230052,
+     -47.552069
+    ],
+    "lowcontrast/L7": [
+     -48.221999,
+     -61.827028
+    ],
+    "lowcontrast/L8": [
+     -34.213947,
+     -76.101987
+    ],
+    "uniformity/BL": [
+     -94.851599,
+     -94.246658
+    ],
+    "uniformity/BR": [
+     95.273544,
+     -94.868086
+    ],
+    "uniformity/C": [
+     -0.071819,
+     0.235423
+    ],
+    "uniformity/TL": [
+     -94.624088,
+     94.724243
+    ],
+    "uniformity/TR": [
+     95.12432,
+     94.919207
+    ],
+    "wedge/S1": [
+     50.302242,
+     59.598815
+    ],
+    "wedge/S2": [
+     50.302242,
+     39.705472
+    ],
+    "wedge/S3": [
+     50.302242,
+     19.685892
+    ],
+    "wedge/S4": [
+     50.302242,
+     0.452462
+    ],
+    "wedge/S5": [
+     50.302242,
+     -15.896337
+    ],
+    "wedge/S6": [
+     50.302242,
+     -34.946669
+    ],
+    "wedge/S7": [
+     50.302242,
+     -59.029891
+    ]
+   },
+   "sha256": "eb89c7fea651698a7adba3bc171af969d177337d99c49839aef785ddfa19159a",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "fail",
+    "lowcontrast": "pass",
+    "overall": "fail",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": false
+  },
+  "CS000012": {
+   "group": "carestream",
+   "key": "CS000012",
+   "label": "23 donker blauw",
+   "metrics": {
+    "dev_from_nominal_pct": 0.634944,
+    "linepairs_blocks_detected": 5,
+    "linepairs_pitch_mm": {
+     "G1.1": null,
+     "G1.2": null,
+     "G1.4": 0.72356,
+     "G1.6": 0.61259,
+     "G2.0": 0.504511
+    },
+    "linepairs_row_status": {
+     "G1.1": "warn",
+     "G1.2": "warn",
+     "G1.4": "pass",
+     "G1.6": "pass",
+     "G2.0": "pass"
+    },
+    "lowcontrast_angle_deg": -46.70413,
+    "lowcontrast_block_center_mm": [
+     -47.036557,
+     -45.742896
+    ],
+    "lowcontrast_cnr": {
+     "L1": -0.836199,
+     "L2": -0.881323,
+     "L3": -1.093636,
+     "L4": -1.25293,
+     "L5": -0.486694,
+     "L6": -0.266313,
+     "L7": -0.541412,
+     "L8": -0.829671
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": true,
+    "mean_side_mm": 301.904831,
+    "uniformity_dsnr_pct": {
+     "BL": -0.912747,
+     "BR": -1.754245,
+     "C": -4.258594,
+     "TL": 4.943982,
+     "TR": 1.981604
+    },
+    "uniformity_snr_avg": 30.198192,
+    "wedge_dynamic_range_ratio": 129.549984,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.973371
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.001445,
+     "landmarks": 4.0,
+     "placement_margin": 1.669866,
+     "recognition": 7.707729,
+     "saturation": 0.001044
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.130073,
+    "residual_rms_mm": 0.131344,
+    "rotation_deg": -90.537585
+   },
+   "relpath": "DICOM/000012",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     11.521867,
+     96.614658
+    ],
+    "linepairs/G1.2": [
+     -75.129451,
+     13.745235
+    ],
+    "linepairs/G1.4": [
+     -42.348849,
+     45.846958
+    ],
+    "linepairs/G1.6": [
+     -20.608064,
+     66.423552
+    ],
+    "linepairs/G2.0": [
+     0.71928,
+     87.924741
+    ],
+    "lowcontrast/L1": [
+     -18.25052,
+     -62.587007
+    ],
+    "lowcontrast/L2": [
+     -31.965838,
+     -48.030563
+    ],
+    "lowcontrast/L3": [
+     -45.681156,
+     -33.474119
+    ],
+    "lowcontrast/L4": [
+     -59.396474,
+     -18.917675
+    ],
+    "lowcontrast/L5": [
+     -73.661789,
+     -32.358686
+    ],
+    "lowcontrast/L6": [
+     -59.946471,
+     -46.91513
+    ],
+    "lowcontrast/L7": [
+     -46.231153,
+     -61.471574
+    ],
+    "lowcontrast/L8": [
+     -32.515835,
+     -76.028018
+    ],
+    "uniformity/BL": [
+     -95.348615,
+     -94.901064
+    ],
+    "uniformity/BR": [
+     95.296139,
+     -95.240079
+    ],
+    "uniformity/C": [
+     -0.212894,
+     0.074684
+    ],
+    "uniformity/TL": [
+     -94.83332,
+     94.641763
+    ],
+    "uniformity/TR": [
+     95.236054,
+     94.902167
+    ],
+    "wedge/S1": [
+     50.302242,
+     59.009951
+    ],
+    "wedge/S2": [
+     50.302242,
+     39.110177
+    ],
+    "wedge/S3": [
+     50.302242,
+     21.807592
+    ],
+    "wedge/S4": [
+     50.302242,
+     3.124434
+    ],
+    "wedge/S5": [
+     50.302242,
+     -16.863184
+    ],
+    "wedge/S6": [
+     50.302242,
+     -36.457411
+    ],
+    "wedge/S7": [
+     50.302242,
+     -59.076521
+    ]
+   },
+   "sha256": "0308e03590e4d09d3d2b58b5a64943a182b3977dddf7f0753e9f5f5faac08d8b",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "warn",
+    "lowcontrast": "pass",
+    "overall": "warn",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": false
+  },
+  "CS000013": {
+   "group": "carestream",
+   "key": "CS000013",
+   "label": "21 donker blauw",
+   "metrics": {
+    "dev_from_nominal_pct": 0.761126,
+    "linepairs_blocks_detected": 5,
+    "linepairs_pitch_mm": {
+     "G1.1": null,
+     "G1.2": null,
+     "G1.4": 0.594847,
+     "G1.6": null,
+     "G2.0": null
+    },
+    "linepairs_row_status": {
+     "G1.1": "warn",
+     "G1.2": "warn",
+     "G1.4": "fail",
+     "G1.6": "warn",
+     "G2.0": "warn"
+    },
+    "lowcontrast_angle_deg": -46.296399,
+    "lowcontrast_block_center_mm": [
+     -46.143157,
+     -46.533255
+    ],
+    "lowcontrast_cnr": {
+     "L1": -1.216966,
+     "L2": -1.13679,
+     "L3": -1.478566,
+     "L4": -1.867947,
+     "L5": -0.603273,
+     "L6": -0.464949,
+     "L7": -0.765926,
+     "L8": -1.191084
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": false,
+    "mean_side_mm": 302.283378,
+    "uniformity_dsnr_pct": {
+     "BL": -5.450426,
+     "BR": -2.548957,
+     "C": -3.118404,
+     "TL": 6.255098,
+     "TR": 4.862689
+    },
+    "uniformity_snr_avg": 35.384992,
+    "wedge_dynamic_range_ratio": 63.109278,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.963711
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.00144,
+     "landmarks": 4.0,
+     "placement_margin": 1.728347,
+     "recognition": 7.707837,
+     "saturation": 2.9e-05
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.130043,
+    "residual_rms_mm": 0.137037,
+    "rotation_deg": -90.538648
+   },
+   "relpath": "DICOM/000013",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     11.552486,
+     -24.944925
+    ],
+    "linepairs/G1.2": [
+     -51.056121,
+     37.604236
+    ],
+    "linepairs/G1.4": [
+     -11.851825,
+     13.478429
+    ],
+    "linepairs/G1.6": [
+     22.340164,
+     -23.098181
+    ],
+    "linepairs/G2.0": [
+     -84.64,
+     -1.31
+    ],
+    "lowcontrast/L1": [
+     -17.912912,
+     -61.742243
+    ],
+    "lowcontrast/L2": [
+     -31.731469,
+     -47.283768
+    ],
+    "lowcontrast/L3": [
+     -45.550026,
+     -32.825294
+    ],
+    "lowcontrast/L4": [
+     -59.368583,
+     -18.366819
+    ],
+    "lowcontrast/L5": [
+     -73.537888,
+     -31.909005
+    ],
+    "lowcontrast/L6": [
+     -59.719331,
+     -46.367479
+    ],
+    "lowcontrast/L7": [
+     -45.900774,
+     -60.825954
+    ],
+    "lowcontrast/L8": [
+     -32.082217,
+     -75.284428
+    ],
+    "uniformity/BL": [
+     -95.299627,
+     -94.835058
+    ],
+    "uniformity/BR": [
+     95.281742,
+     -95.235891
+    ],
+    "uniformity/C": [
+     -0.25372,
+     0.034763
+    ],
+    "uniformity/TL": [
+     -94.826399,
+     94.596834
+    ],
+    "uniformity/TR": [
+     95.140904,
+     94.844074
+    ],
+    "wedge/S1": [
+     50.373991,
+     59.014401
+    ],
+    "wedge/S2": [
+     50.373991,
+     39.107776
+    ],
+    "wedge/S3": [
+     50.373991,
+     21.633969
+    ],
+    "wedge/S4": [
+     50.373991,
+     2.617012
+    ],
+    "wedge/S5": [
+     50.373991,
+     -18.076213
+    ],
+    "wedge/S6": [
+     50.373991,
+     -37.254453
+    ],
+    "wedge/S7": [
+     50.373991,
+     -58.962633
+    ]
+   },
+   "sha256": "d06be1a3ebe69c96cc95cd3b3a791ba253d2b6315f8fe08a3d94725ca33d58b0",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "fail",
+    "lowcontrast": "warn",
+    "overall": "fail",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": false
+  },
+  "CS000014": {
+   "group": "carestream",
+   "key": "CS000014",
+   "label": "22 donker blauw",
+   "metrics": {
+    "dev_from_nominal_pct": 0.782266,
+    "linepairs_blocks_detected": 5,
+    "linepairs_pitch_mm": {
+     "G1.1": null,
+     "G1.2": null,
+     "G1.4": null,
+     "G1.6": 0.455089,
+     "G2.0": null
+    },
+    "linepairs_row_status": {
+     "G1.1": "warn",
+     "G1.2": "warn",
+     "G1.4": "warn",
+     "G1.6": "fail",
+     "G2.0": "warn"
+    },
+    "lowcontrast_angle_deg": -46.052575,
+    "lowcontrast_block_center_mm": [
+     -45.617208,
+     -47.240448
+    ],
+    "lowcontrast_cnr": {
+     "L1": -1.352664,
+     "L2": -1.314474,
+     "L3": -1.732689,
+     "L4": -2.103546,
+     "L5": -0.741771,
+     "L6": -0.433296,
+     "L7": -0.838798,
+     "L8": -1.323471
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": false,
+    "mean_side_mm": 302.346797,
+    "uniformity_dsnr_pct": {
+     "BL": -5.935683,
+     "BR": -5.76736,
+     "C": -1.997046,
+     "TL": 8.509999,
+     "TR": 5.190092
+    },
+    "uniformity_snr_avg": 36.711349,
+    "wedge_dynamic_range_ratio": 47.013833,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.9515
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.001427,
+     "landmarks": 4.0,
+     "placement_margin": 1.733157,
+     "recognition": 7.666769,
+     "saturation": 4e-06
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.13003,
+    "residual_rms_mm": 0.105574,
+    "rotation_deg": -90.538956
+   },
+   "relpath": "DICOM/000014",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     13.160952,
+     -24.951506
+    ],
+    "linepairs/G1.2": [
+     -51.615518,
+     37.135994
+    ],
+    "linepairs/G1.4": [
+     -80.953002,
+     73.737561
+    ],
+    "linepairs/G1.6": [
+     -12.739474,
+     11.651252
+    ],
+    "linepairs/G2.0": [
+     -84.64,
+     -1.31
+    ],
+    "lowcontrast/L1": [
+     -18.363494,
+     -61.249198
+    ],
+    "lowcontrast/L2": [
+     -32.243454,
+     -46.84966
+    ],
+    "lowcontrast/L3": [
+     -46.123414,
+     -32.450121
+    ],
+    "lowcontrast/L4": [
+     -60.003374,
+     -18.050583
+    ],
+    "lowcontrast/L5": [
+     -74.114922,
+     -31.652944
+    ],
+    "lowcontrast/L6": [
+     -60.234962,
+     -46.052482
+    ],
+    "lowcontrast/L7": [
+     -46.355002,
+     -60.452021
+    ],
+    "lowcontrast/L8": [
+     -32.475042,
+     -74.851559
+    ],
+    "uniformity/BL": [
+     -95.345744,
+     -94.833625
+    ],
+    "uniformity/BR": [
+     95.27867,
+     -95.079375
+    ],
+    "uniformity/C": [
+     -0.253661,
+     -0.02283
+    ],
+    "uniformity/TL": [
+     -94.823893,
+     94.594255
+    ],
+    "uniformity/TR": [
+     95.183227,
+     94.840664
+    ],
+    "wedge/S1": [
+     50.373991,
+     59.009323
+    ],
+    "wedge/S2": [
+     50.373991,
+     39.094646
+    ],
+    "wedge/S3": [
+     50.373991,
+     20.228142
+    ],
+    "wedge/S4": [
+     50.373991,
+     1.195996
+    ],
+    "wedge/S5": [
+     50.373991,
+     -17.678045
+    ],
+    "wedge/S6": [
+     50.373991,
+     -34.086481
+    ],
+    "wedge/S7": [
+     50.373991,
+     -56.205152
+    ]
+   },
+   "sha256": "d27347b7b8291b3acf60ce49f1d5cfa51cede3100fbced10a44acf5dec411134",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "fail",
+    "lowcontrast": "warn",
+    "overall": "fail",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": false
+  },
+  "CS000015": {
+   "group": "carestream",
+   "key": "CS000015",
+   "label": "12 licht blauw",
+   "metrics": {
+    "dev_from_nominal_pct": 0.121577,
+    "linepairs_blocks_detected": 5,
+    "linepairs_pitch_mm": {
+     "G1.1": 0.815866,
+     "G1.2": 0.932474,
+     "G1.4": 0.723592,
+     "G1.6": 0.613085,
+     "G2.0": 0.50465
+    },
+    "linepairs_row_status": {
+     "G1.1": "fail",
+     "G1.2": "fail",
+     "G1.4": "pass",
+     "G1.6": "pass",
+     "G2.0": "pass"
+    },
+    "lowcontrast_angle_deg": -45.551573,
+    "lowcontrast_block_center_mm": [
+     -48.309378,
+     -47.16845
+    ],
+    "lowcontrast_cnr": {
+     "L1": -0.539535,
+     "L2": -0.419251,
+     "L3": -0.603422,
+     "L4": -0.731677,
+     "L5": -0.922224,
+     "L6": -0.801593,
+     "L7": -0.924255,
+     "L8": -1.116509
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": true,
+    "mean_side_mm": 300.364731,
+    "uniformity_dsnr_pct": {
+     "BL": -1.239168,
+     "BR": -0.509853,
+     "C": -4.405623,
+     "TL": 4.399481,
+     "TR": 1.755163
+    },
+    "uniformity_snr_avg": 30.506319,
+    "wedge_dynamic_range_ratio": 129.117243,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.987527
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.002162,
+     "landmarks": 4.0,
+     "placement_margin": 1.514415,
+     "recognition": 7.86689,
+     "saturation": 0.000817
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.130048,
+    "residual_rms_mm": 0.239528,
+    "rotation_deg": -90.316577
+   },
+   "relpath": "DICOM/000015",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     -62.932227,
+     23.4082
+    ],
+    "linepairs/G1.2": [
+     -84.084554,
+     1.768355
+    ],
+    "linepairs/G1.4": [
+     -42.144666,
+     44.152237
+    ],
+    "linepairs/G1.6": [
+     -20.700727,
+     66.08107
+    ],
+    "linepairs/G2.0": [
+     -0.002709,
+     87.095596
+    ],
+    "lowcontrast/L1": [
+     -19.89062,
+     -62.716253
+    ],
+    "lowcontrast/L2": [
+     -33.895959,
+     -48.438632
+    ],
+    "lowcontrast/L3": [
+     -47.901299,
+     -34.161011
+    ],
+    "lowcontrast/L4": [
+     -61.906638,
+     -19.883389
+    ],
+    "lowcontrast/L5": [
+     -75.898707,
+     -33.608622
+    ],
+    "lowcontrast/L6": [
+     -61.893367,
+     -47.886243
+    ],
+    "lowcontrast/L7": [
+     -47.888028,
+     -62.163864
+    ],
+    "lowcontrast/L8": [
+     -33.882688,
+     -76.441486
+    ],
+    "uniformity/BL": [
+     -94.894694,
+     -94.239091
+    ],
+    "uniformity/BR": [
+     95.27071,
+     -94.905921
+    ],
+    "uniformity/C": [
+     -0.070586,
+     0.287485
+    ],
+    "uniformity/TL": [
+     -94.616546,
+     94.726388
+    ],
+    "uniformity/TR": [
+     95.170465,
+     94.917741
+    ],
+    "wedge/S1": [
+     50.302242,
+     59.605716
+    ],
+    "wedge/S2": [
+     50.302242,
+     39.699041
+    ],
+    "wedge/S3": [
+     50.302242,
+     19.669387
+    ],
+    "wedge/S4": [
+     50.302242,
+     0.442863
+    ],
+    "wedge/S5": [
+     50.302242,
+     -17.700077
+    ],
+    "wedge/S6": [
+     50.302242,
+     -34.161369
+    ],
+    "wedge/S7": [
+     50.302242,
+     -56.428062
+    ]
+   },
+   "sha256": "d11fd0170b00e4730313cc25ee879a938d00195b260bcd0f3cdd3d21a4a248c4",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "fail",
+    "lowcontrast": "pass",
+    "overall": "fail",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": false
+  },
+  "CS000016": {
+   "group": "carestream",
+   "key": "CS000016",
+   "label": "26 donker blauw",
+   "metrics": {
+    "dev_from_nominal_pct": 0.900869,
+    "linepairs_blocks_detected": 5,
+    "linepairs_pitch_mm": {
+     "G1.1": null,
+     "G1.2": null,
+     "G1.4": null,
+     "G1.6": null,
+     "G2.0": null
+    },
+    "linepairs_row_status": {
+     "G1.1": "warn",
+     "G1.2": "warn",
+     "G1.4": "warn",
+     "G1.6": "warn",
+     "G2.0": "warn"
+    },
+    "lowcontrast_angle_deg": -45.88663,
+    "lowcontrast_block_center_mm": [
+     -45.707588,
+     -46.964559
+    ],
+    "lowcontrast_cnr": {
+     "L1": -1.275124,
+     "L2": -1.202991,
+     "L3": -1.604786,
+     "L4": -1.990612,
+     "L5": -0.723654,
+     "L6": -0.424228,
+     "L7": -0.786713,
+     "L8": -1.289933
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": false,
+    "mean_side_mm": 302.702608,
+    "uniformity_dsnr_pct": {
+     "BL": -6.101424,
+     "BR": -3.111237,
+     "C": -2.701444,
+     "TL": 6.876863,
+     "TR": 5.037241
+    },
+    "uniformity_snr_avg": 36.16075,
+    "wedge_dynamic_range_ratio": 52.474402,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.95497
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.001439,
+     "landmarks": 4.0,
+     "placement_margin": 1.744804,
+     "recognition": 7.695419,
+     "saturation": 4e-06
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.130036,
+    "residual_rms_mm": 0.106003,
+    "rotation_deg": -90.539314
+   },
+   "relpath": "DICOM/000016",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     -0.779549,
+     -24.928825
+    ],
+    "linepairs/G1.2": [
+     -51.094028,
+     37.467114
+    ],
+    "linepairs/G1.4": [
+     -12.461775,
+     11.7864
+    ],
+    "linepairs/G1.6": [
+     12.263407,
+     -24.942821
+    ],
+    "linepairs/G2.0": [
+     -84.64,
+     -1.31
+    ],
+    "lowcontrast/L1": [
+     -17.717335,
+     -61.612281
+    ],
+    "lowcontrast/L2": [
+     -31.638942,
+     -47.253003
+    ],
+    "lowcontrast/L3": [
+     -45.560549,
+     -32.893725
+    ],
+    "lowcontrast/L4": [
+     -59.482156,
+     -18.534447
+    ],
+    "lowcontrast/L5": [
+     -73.554248,
+     -32.177622
+    ],
+    "lowcontrast/L6": [
+     -59.632641,
+     -46.5369
+    ],
+    "lowcontrast/L7": [
+     -45.711034,
+     -60.896178
+    ],
+    "lowcontrast/L8": [
+     -31.789427,
+     -75.255456
+    ],
+    "uniformity/BL": [
+     -95.29522,
+     -94.794687
+    ],
+    "uniformity/BR": [
+     95.291949,
+     -95.235797
+    ],
+    "uniformity/C": [
+     -0.296008,
+     0.074963
+    ],
+    "uniformity/TL": [
+     -94.824022,
+     94.59657
+    ],
+    "uniformity/TR": [
+     95.140834,
+     94.843144
+    ],
+    "wedge/S1": [
+     50.373991,
+     59.01363
+    ],
+    "wedge/S2": [
+     50.373991,
+     39.097301
+    ],
+    "wedge/S3": [
+     50.373991,
+     20.370612
+    ],
+    "wedge/S4": [
+     50.373991,
+     1.575904
+    ],
+    "wedge/S5": [
+     50.373991,
+     -15.830911
+    ],
+    "wedge/S6": [
+     50.373991,
+     -34.307908
+    ],
+    "wedge/S7": [
+     50.373991,
+     -58.041531
+    ]
+   },
+   "sha256": "323e6e825cdacdea6b1412aba9efd0ca838815a30a2263e4848160e2b0cda08e",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "warn",
+    "lowcontrast": "warn",
+    "overall": "warn",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": false
+  },
+  "CS000017": {
+   "group": "carestream",
+   "key": "CS000017",
+   "label": "28 donker blauw",
+   "metrics": {
+    "dev_from_nominal_pct": 0.690074,
+    "linepairs_blocks_detected": 2,
+    "linepairs_pitch_mm": {
+     "G1.1": null,
+     "G1.2": 0.613094,
+     "G1.4": null,
+     "G1.6": null,
+     "G2.0": null
+    },
+    "linepairs_row_status": {
+     "G1.1": "warn",
+     "G1.2": "fail",
+     "G1.4": "warn",
+     "G1.6": "warn",
+     "G2.0": "warn"
+    },
+    "lowcontrast_angle_deg": -45.779326,
+    "lowcontrast_block_center_mm": [
+     -46.111749,
+     -49.276795
+    ],
+    "lowcontrast_cnr": {
+     "L1": -0.852573,
+     "L2": -0.890122,
+     "L3": -1.101155,
+     "L4": -1.587431,
+     "L5": -0.500993,
+     "L6": -0.607215,
+     "L7": -0.637324,
+     "L8": -0.80167
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": true,
+    "mean_side_mm": 302.070222,
+    "uniformity_dsnr_pct": {
+     "BL": 2.748714,
+     "BR": 5.195462,
+     "C": -3.839481,
+     "TL": -1.029682,
+     "TR": -3.075013
+    },
+    "uniformity_snr_avg": 33.23715,
+    "wedge_dynamic_range_ratio": 86.56906,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.967315
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.001449,
+     "landmarks": 4.0,
+     "placement_margin": 1.725963,
+     "recognition": 7.738494,
+     "saturation": 0.001066
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.130053,
+    "residual_rms_mm": 0.151519,
+    "rotation_deg": 89.507734
+   },
+   "relpath": "DICOM/000017",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     0.92,
+     81.67
+    ],
+    "linepairs/G1.2": [
+     -20.39,
+     61.3
+    ],
+    "linepairs/G1.4": [
+     -103.060056,
+     -3.570265
+    ],
+    "linepairs/G1.6": [
+     -51.427602,
+     37.551569
+    ],
+    "linepairs/G2.0": [
+     -84.64,
+     -1.31
+    ],
+    "lowcontrast/L1": [
+     -18.772301,
+     -61.741328
+    ],
+    "lowcontrast/L2": [
+     -32.720776,
+     -47.408148
+    ],
+    "lowcontrast/L3": [
+     -46.669251,
+     -33.074968
+    ],
+    "lowcontrast/L4": [
+     -60.617725,
+     -18.741788
+    ],
+    "lowcontrast/L5": [
+     -74.664242,
+     -32.411293
+    ],
+    "lowcontrast/L6": [
+     -60.715767,
+     -46.744473
+    ],
+    "lowcontrast/L7": [
+     -46.767292,
+     -61.077653
+    ],
+    "lowcontrast/L8": [
+     -32.818817,
+     -75.410834
+    ],
+    "uniformity/BL": [
+     -95.295342,
+     -94.785065
+    ],
+    "uniformity/BR": [
+     95.206312,
+     -95.137254
+    ],
+    "uniformity/C": [
+     -0.365118,
+     -0.028815
+    ],
+    "uniformity/TL": [
+     -94.994094,
+     94.639297
+    ],
+    "uniformity/TR": [
+     95.181061,
+     94.910208
+    ],
+    "wedge/S1": [
+     50.302242,
+     59.032839
+    ],
+    "wedge/S2": [
+     50.302242,
+     39.102674
+    ],
+    "wedge/S3": [
+     50.302242,
+     19.740335
+    ],
+    "wedge/S4": [
+     50.302242,
+     1.192021
+    ],
+    "wedge/S5": [
+     50.302242,
+     -17.952052
+    ],
+    "wedge/S6": [
+     50.302242,
+     -34.715052
+    ],
+    "wedge/S7": [
+     50.302242,
+     -56.136728
+    ]
+   },
+   "sha256": "0503404f042b078c26da72cc50efffa3a616a44ebf995dc556681f71df10f1a9",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "fail",
+    "lowcontrast": "pass",
+    "overall": "fail",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": false
+  },
+  "CS000018": {
+   "group": "carestream",
+   "key": "CS000018",
+   "label": "27 donker blauw",
+   "metrics": {
+    "dev_from_nominal_pct": 0.800583,
+    "linepairs_blocks_detected": 3,
+    "linepairs_pitch_mm": {
+     "G1.1": 0.507757,
+     "G1.2": 0.613057,
+     "G1.4": null,
+     "G1.6": 0.811452,
+     "G2.0": 0.50452
+    },
+    "linepairs_row_status": {
+     "G1.1": "fail",
+     "G1.2": "fail",
+     "G1.4": "warn",
+     "G1.6": "fail",
+     "G2.0": "pass"
+    },
+    "lowcontrast_angle_deg": -42.641554,
+    "lowcontrast_block_center_mm": [
+     -48.370659,
+     -47.329803
+    ],
+    "lowcontrast_cnr": {
+     "L1": -0.743021,
+     "L2": -1.017587,
+     "L3": -1.290999,
+     "L4": -1.444299,
+     "L5": -0.363876,
+     "L6": -0.256663,
+     "L7": -0.666827,
+     "L8": -0.924792
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": true,
+    "mean_side_mm": 302.40175,
+    "uniformity_dsnr_pct": {
+     "BL": 4.81284,
+     "BR": -4.023304,
+     "C": -3.884453,
+     "TL": 3.431804,
+     "TR": -0.336887
+    },
+    "uniformity_snr_avg": 34.36708,
+    "wedge_dynamic_range_ratio": 89.754216,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.96504
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.001409,
+     "landmarks": 4.0,
+     "placement_margin": 1.649449,
+     "recognition": 7.668214,
+     "saturation": 0.001017
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.130052,
+    "residual_rms_mm": 0.108553,
+    "rotation_deg": -0.661979
+   },
+   "relpath": "DICOM/000018",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     0.92,
+     81.67
+    ],
+    "linepairs/G1.2": [
+     -20.39,
+     61.3
+    ],
+    "linepairs/G1.4": [
+     -102.176995,
+     -4.477879
+    ],
+    "linepairs/G1.6": [
+     -56.885662,
+     31.432956
+    ],
+    "linepairs/G2.0": [
+     2.142848,
+     88.502829
+    ],
+    "lowcontrast/L1": [
+     -17.505699,
+     -59.575791
+    ],
+    "lowcontrast/L2": [
+     -32.217819,
+     -46.027598
+    ],
+    "lowcontrast/L3": [
+     -46.929938,
+     -32.479405
+    ],
+    "lowcontrast/L4": [
+     -61.642058,
+     -18.931212
+    ],
+    "lowcontrast/L5": [
+     -74.919287,
+     -33.349089
+    ],
+    "lowcontrast/L6": [
+     -60.207168,
+     -46.897282
+    ],
+    "lowcontrast/L7": [
+     -45.495048,
+     -60.445475
+    ],
+    "lowcontrast/L8": [
+     -30.782928,
+     -73.993668
+    ],
+    "uniformity/BL": [
+     -95.25052,
+     -94.729939
+    ],
+    "uniformity/BR": [
+     95.253214,
+     -95.09812
+    ],
+    "uniformity/C": [
+     -0.264889,
+     0.132537
+    ],
+    "uniformity/TL": [
+     -94.866035,
+     94.598086
+    ],
+    "uniformity/TR": [
+     95.17991,
+     94.863217
+    ],
+    "wedge/S1": [
+     50.302242,
+     59.076927
+    ],
+    "wedge/S2": [
+     50.302242,
+     39.161612
+    ],
+    "wedge/S3": [
+     50.302242,
+     18.609382
+    ],
+    "wedge/S4": [
+     50.302242,
+     -0.086403
+    ],
+    "wedge/S5": [
+     50.302242,
+     -18.301493
+    ],
+    "wedge/S6": [
+     50.302242,
+     -35.072733
+    ],
+    "wedge/S7": [
+     50.302242,
+     -56.218523
+    ]
+   },
+   "sha256": "876e36d722733e9dd7fb4d2f1573ff57232f0f7fd2c9d8bc00f3aca76719be68",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "fail",
+    "lowcontrast": "pass",
+    "overall": "fail",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": true
+  },
+  "CS000019": {
+   "group": "carestream",
+   "key": "CS000019",
+   "label": "25 donker blauw",
+   "metrics": {
+    "dev_from_nominal_pct": 0.550637,
+    "linepairs_blocks_detected": 5,
+    "linepairs_pitch_mm": {
+     "G1.1": 0.814294,
+     "G1.2": 0.930269,
+     "G1.4": 0.723868,
+     "G1.6": 0.61287,
+     "G2.0": 0.504515
+    },
+    "linepairs_row_status": {
+     "G1.1": "fail",
+     "G1.2": "fail",
+     "G1.4": "pass",
+     "G1.6": "pass",
+     "G2.0": "pass"
+    },
+    "lowcontrast_angle_deg": -46.65295,
+    "lowcontrast_block_center_mm": [
+     -47.359913,
+     -45.492304
+    ],
+    "lowcontrast_cnr": {
+     "L1": -0.619129,
+     "L2": -0.619168,
+     "L3": -0.816493,
+     "L4": -0.997542,
+     "L5": -0.330656,
+     "L6": -0.195729,
+     "L7": -0.402064,
+     "L8": -0.697739
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": true,
+    "mean_side_mm": 301.651911,
+    "uniformity_dsnr_pct": {
+     "BL": 0.295479,
+     "BR": -0.928422,
+     "C": -3.797241,
+     "TL": 3.787992,
+     "TR": 0.642192
+    },
+    "uniformity_snr_avg": 27.029638,
+    "wedge_dynamic_range_ratio": 180.194002,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.968534
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.001423,
+     "landmarks": 4.0,
+     "placement_margin": 1.632938,
+     "recognition": 7.671743,
+     "saturation": 0.001051
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.130084,
+    "residual_rms_mm": 0.214044,
+    "rotation_deg": -90.537179
+   },
+   "relpath": "DICOM/000019",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     -63.607852,
+     25.577045
+    ],
+    "linepairs/G1.2": [
+     -84.941793,
+     4.180941
+    ],
+    "linepairs/G1.4": [
+     -42.067776,
+     46.129447
+    ],
+    "linepairs/G1.6": [
+     -20.633775,
+     66.492576
+    ],
+    "linepairs/G2.0": [
+     -0.134689,
+     88.115555
+    ],
+    "lowcontrast/L1": [
+     -18.558841,
+     -62.310694
+    ],
+    "lowcontrast/L2": [
+     -32.287156,
+     -47.766508
+    ],
+    "lowcontrast/L3": [
+     -46.015471,
+     -33.222321
+    ],
+    "lowcontrast/L4": [
+     -59.743786,
+     -18.678134
+    ],
+    "lowcontrast/L5": [
+     -73.997089,
+     -32.131883
+    ],
+    "lowcontrast/L6": [
+     -60.268774,
+     -46.67607
+    ],
+    "lowcontrast/L7": [
+     -46.540459,
+     -61.220257
+    ],
+    "lowcontrast/L8": [
+     -32.812144,
+     -75.764443
+    ],
+    "uniformity/BL": [
+     -95.258542,
+     -94.900764
+    ],
+    "uniformity/BR": [
+     95.251454,
+     -95.238786
+    ],
+    "uniformity/C": [
+     -0.242797,
+     -0.023439
+    ],
+    "uniformity/TL": [
+     -94.83302,
+     94.600991
+    ],
+    "uniformity/TR": [
+     95.200242,
+     94.905677
+    ],
+    "wedge/S1": [
+     50.302242,
+     59.013603
+    ],
+    "wedge/S2": [
+     50.302242,
+     39.119878
+    ],
+    "wedge/S3": [
+     50.302242,
+     25.946256
+    ],
+    "wedge/S4": [
+     50.302242,
+     7.005055
+    ],
+    "wedge/S5": [
+     50.302242,
+     -16.722265
+    ],
+    "wedge/S6": [
+     50.302242,
+     -33.218142
+    ],
+    "wedge/S7": [
+     50.302242,
+     -56.243789
+    ]
+   },
+   "sha256": "f63e0d9eb315b3f986121f098d3d5934ca55678b024096b24e8bb93b35fa21ed",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "fail",
+    "lowcontrast": "pass",
+    "overall": "fail",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": false
+  },
+  "CS000021": {
+   "group": "carestream",
+   "key": "CS000021",
+   "label": "29 donker blauw",
+   "metrics": {
+    "dev_from_nominal_pct": 0.49275,
+    "linepairs_blocks_detected": 3,
+    "linepairs_pitch_mm": {
+     "G1.1": null,
+     "G1.2": 0.612835,
+     "G1.4": null,
+     "G1.6": 0.812556,
+     "G2.0": 0.50447
+    },
+    "linepairs_row_status": {
+     "G1.1": "warn",
+     "G1.2": "fail",
+     "G1.4": "warn",
+     "G1.6": "fail",
+     "G2.0": "pass"
+    },
+    "lowcontrast_angle_deg": -43.564432,
+    "lowcontrast_block_center_mm": [
+     -43.79912,
+     -49.321941
+    ],
+    "lowcontrast_cnr": {
+     "L1": -0.535392,
+     "L2": -0.127911,
+     "L3": -0.114977,
+     "L4": -0.049461,
+     "L5": -0.161857,
+     "L6": -0.040048,
+     "L7": -0.079656,
+     "L8": -0.407817
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": false,
+    "mean_side_mm": 301.47825,
+    "uniformity_dsnr_pct": {
+     "BL": -0.40371,
+     "BR": 2.240482,
+     "C": -4.006696,
+     "TL": -0.760823,
+     "TR": 2.930746
+    },
+    "uniformity_snr_avg": 33.459655,
+    "wedge_dynamic_range_ratio": 84.362079,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.969517
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.001358,
+     "landmarks": 4.0,
+     "placement_margin": 1.689419,
+     "recognition": 7.706628,
+     "saturation": 0.001061
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.13005,
+    "residual_rms_mm": 0.208043,
+    "rotation_deg": 179.462202
+   },
+   "relpath": "DICOM/000021",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     0.92,
+     81.67
+    ],
+    "linepairs/G1.2": [
+     -20.39,
+     61.3
+    ],
+    "linepairs/G1.4": [
+     -102.304729,
+     -4.624903
+    ],
+    "linepairs/G1.6": [
+     -56.930044,
+     31.163789
+    ],
+    "linepairs/G2.0": [
+     1.719099,
+     87.637635
+    ],
+    "lowcontrast/L1": [
+     -13.099974,
+     -63.477238
+    ],
+    "lowcontrast/L2": [
+     -27.59197,
+     -49.693841
+    ],
+    "lowcontrast/L3": [
+     -42.083967,
+     -35.910444
+    ],
+    "lowcontrast/L4": [
+     -56.575963,
+     -22.127046
+    ],
+    "lowcontrast/L5": [
+     -70.083692,
+     -36.329203
+    ],
+    "lowcontrast/L6": [
+     -55.591696,
+     -50.1126
+    ],
+    "lowcontrast/L7": [
+     -41.0997,
+     -63.895998
+    ],
+    "lowcontrast/L8": [
+     -26.607703,
+     -77.679395
+    ],
+    "uniformity/BL": [
+     -95.348413,
+     -94.838528
+    ],
+    "uniformity/BR": [
+     95.228339,
+     -95.232092
+    ],
+    "uniformity/C": [
+     -0.266087,
+     -0.135202
+    ],
+    "uniformity/TL": [
+     -94.938145,
+     94.640585
+    ],
+    "uniformity/TR": [
+     95.180483,
+     94.837062
+    ],
+    "wedge/S1": [
+     50.302242,
+     58.977179
+    ],
+    "wedge/S2": [
+     50.302242,
+     39.079622
+    ],
+    "wedge/S3": [
+     50.302242,
+     19.65424
+    ],
+    "wedge/S4": [
+     50.302242,
+     0.923881
+    ],
+    "wedge/S5": [
+     50.302242,
+     -17.756996
+    ],
+    "wedge/S6": [
+     50.302242,
+     -34.708864
+    ],
+    "wedge/S7": [
+     50.302242,
+     -56.496312
+    ]
+   },
+   "sha256": "ebb47acc77b6e6d663081d2f49053df0a74d1a34300b56efd2bf3400e94351f8",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "fail",
+    "lowcontrast": "warn",
+    "overall": "fail",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": false
+  },
+  "CS000027": {
+   "group": "carestream",
+   "key": "CS000027",
+   "label": "11 licht blauw",
+   "metrics": {
+    "dev_from_nominal_pct": 0.134894,
+    "linepairs_blocks_detected": 2,
+    "linepairs_pitch_mm": {
+     "G1.1": null,
+     "G1.2": 0.639106,
+     "G1.4": 0.727118,
+     "G1.6": 0.81546,
+     "G2.0": null
+    },
+    "linepairs_row_status": {
+     "G1.1": "warn",
+     "G1.2": "fail",
+     "G1.4": "pass",
+     "G1.6": "fail",
+     "G2.0": "warn"
+    },
+    "lowcontrast_angle_deg": -45.478531,
+    "lowcontrast_block_center_mm": [
+     -48.201005,
+     -47.17761
+    ],
+    "lowcontrast_cnr": {
+     "L1": -0.692329,
+     "L2": -0.616415,
+     "L3": -0.906071,
+     "L4": -1.031679,
+     "L5": -1.332651,
+     "L6": -1.200054,
+     "L7": -1.44301,
+     "L8": -1.529023
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": true,
+    "mean_side_mm": 300.404681,
+    "uniformity_dsnr_pct": {
+     "BL": -8.546424,
+     "BR": -3.011663,
+     "C": -0.615047,
+     "TL": 6.695062,
+     "TR": 5.478072
+    },
+    "uniformity_snr_avg": 37.42344,
+    "wedge_dynamic_range_ratio": 44.592952,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.957445
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.002127,
+     "landmarks": 4.0,
+     "placement_margin": 1.557988,
+     "recognition": 7.831036,
+     "saturation": 5e-06
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.130007,
+    "residual_rms_mm": 0.216473,
+    "rotation_deg": -90.316521
+   },
+   "relpath": "DICOM/000027",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     0.92,
+     81.67
+    ],
+    "linepairs/G1.2": [
+     -44.936831,
+     -18.553939
+    ],
+    "linepairs/G1.4": [
+     -50.845892,
+     36.438649
+    ],
+    "linepairs/G1.6": [
+     -63.34,
+     19.56
+    ],
+    "linepairs/G2.0": [
+     -84.64,
+     -1.31
+    ],
+    "lowcontrast/L1": [
+     -19.756544,
+     -61.98209
+    ],
+    "lowcontrast/L2": [
+     -33.780074,
+     -47.722335
+    ],
+    "lowcontrast/L3": [
+     -47.803603,
+     -33.462579
+    ],
+    "lowcontrast/L4": [
+     -61.827133,
+     -19.202824
+    ],
+    "lowcontrast/L5": [
+     -75.801693,
+     -32.945883
+    ],
+    "lowcontrast/L6": [
+     -61.778163,
+     -47.205638
+    ],
+    "lowcontrast/L7": [
+     -47.754634,
+     -61.465394
+    ],
+    "lowcontrast/L8": [
+     -33.731104,
+     -75.725149
+    ],
+    "uniformity/BL": [
+     -94.890731,
+     -94.237429
+    ],
+    "uniformity/BR": [
+     95.240071,
+     -94.85714
+    ],
+    "uniformity/C": [
+     -0.135429,
+     0.289589
+    ],
+    "uniformity/TL": [
+     -94.61887,
+     94.767977
+    ],
+    "uniformity/TR": [
+     95.019122,
+     94.912851
+    ],
+    "wedge/S1": [
+     50.230493,
+     59.630177
+    ],
+    "wedge/S2": [
+     50.230493,
+     39.697991
+    ],
+    "wedge/S3": [
+     50.230493,
+     19.673509
+    ],
+    "wedge/S4": [
+     50.230493,
+     0.313376
+    ],
+    "wedge/S5": [
+     50.230493,
+     -16.046722
+    ],
+    "wedge/S6": [
+     50.230493,
+     -32.374706
+    ],
+    "wedge/S7": [
+     50.230493,
+     -56.385154
+    ]
+   },
+   "sha256": "36ad20cae76c3e330e39dd0e862c6477c129905c6c1eb27390b73106cf357759",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "fail",
+    "lowcontrast": "pass",
+    "overall": "fail",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": false
+  },
+  "CS000032": {
+   "group": "carestream",
+   "key": "CS000032",
+   "label": "10 licht blauw",
+   "metrics": {
+    "dev_from_nominal_pct": 0.22087,
+    "linepairs_blocks_detected": 5,
+    "linepairs_pitch_mm": {
+     "G1.1": 0.867181,
+     "G1.2": 0.727785,
+     "G1.4": null,
+     "G1.6": null,
+     "G2.0": null
+    },
+    "linepairs_row_status": {
+     "G1.1": "pass",
+     "G1.2": "fail",
+     "G1.4": "warn",
+     "G1.6": "warn",
+     "G2.0": "warn"
+    },
+    "lowcontrast_angle_deg": -45.495276,
+    "lowcontrast_block_center_mm": [
+     -48.206427,
+     -47.174499
+    ],
+    "lowcontrast_cnr": {
+     "L1": -0.679622,
+     "L2": -0.570048,
+     "L3": -0.876766,
+     "L4": -0.99466,
+     "L5": -1.226955,
+     "L6": -1.155393,
+     "L7": -1.437681,
+     "L8": -1.470611
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": true,
+    "mean_side_mm": 300.662609,
+    "uniformity_dsnr_pct": {
+     "BL": -8.017664,
+     "BR": -2.94163,
+     "C": -2.638748,
+     "TL": 7.782046,
+     "TR": 5.815996
+    },
+    "uniformity_snr_avg": 36.531295,
+    "wedge_dynamic_range_ratio": 51.605673,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.964039
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.002144,
+     "landmarks": 4.0,
+     "placement_margin": 1.558987,
+     "recognition": 7.8424,
+     "saturation": 9e-06
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.130013,
+    "residual_rms_mm": 0.232022,
+    "rotation_deg": -90.3169
+   },
+   "relpath": "DICOM/000032",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     -13.073178,
+     14.08042
+    ],
+    "linepairs/G1.2": [
+     -50.952896,
+     36.339362
+    ],
+    "linepairs/G1.4": [
+     -10.494658,
+     -24.678197
+    ],
+    "linepairs/G1.6": [
+     7.0464,
+     -24.749886
+    ],
+    "linepairs/G2.0": [
+     -84.64,
+     -1.31
+    ],
+    "lowcontrast/L1": [
+     -19.766293,
+     -61.987291
+    ],
+    "lowcontrast/L2": [
+     -33.785655,
+     -47.723438
+    ],
+    "lowcontrast/L3": [
+     -47.805016,
+     -33.459585
+    ],
+    "lowcontrast/L4": [
+     -61.824377,
+     -19.195731
+    ],
+    "lowcontrast/L5": [
+     -75.802954,
+     -32.934706
+    ],
+    "lowcontrast/L6": [
+     -61.783592,
+     -47.198559
+    ],
+    "lowcontrast/L7": [
+     -47.764231,
+     -61.462412
+    ],
+    "lowcontrast/L8": [
+     -33.74487,
+     -75.726265
+    ],
+    "uniformity/BL": [
+     -94.892498,
+     -94.234976
+    ],
+    "uniformity/BR": [
+     95.240745,
+     -94.799242
+    ],
+    "uniformity/C": [
+     -0.122596,
+     0.288274
+    ],
+    "uniformity/TL": [
+     -94.619757,
+     94.768712
+    ],
+    "uniformity/TR": [
+     95.019654,
+     94.914249
+    ],
+    "wedge/S1": [
+     50.230493,
+     59.621462
+    ],
+    "wedge/S2": [
+     50.230493,
+     39.692994
+    ],
+    "wedge/S3": [
+     50.230493,
+     19.670372
+    ],
+    "wedge/S4": [
+     50.230493,
+     0.313017
+    ],
+    "wedge/S5": [
+     50.230493,
+     -16.038715
+    ],
+    "wedge/S6": [
+     50.230493,
+     -32.350367
+    ],
+    "wedge/S7": [
+     50.230493,
+     -56.373236
+    ]
+   },
+   "sha256": "d2612221fbe42c58fb679fc80df548efa23955a38fa3c795dd087db063794fa5",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "fail",
+    "lowcontrast": "pass",
+    "overall": "fail",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": false
+  },
+  "CS000034": {
+   "group": "carestream",
+   "key": "CS000034",
+   "label": "9 licht blauw",
+   "metrics": {
+    "dev_from_nominal_pct": 0.267055,
+    "linepairs_blocks_detected": 2,
+    "linepairs_pitch_mm": {
+     "G1.1": null,
+     "G1.2": 0.612825,
+     "G1.4": null,
+     "G1.6": 0.727983,
+     "G2.0": null
+    },
+    "linepairs_row_status": {
+     "G1.1": "warn",
+     "G1.2": "fail",
+     "G1.4": "warn",
+     "G1.6": "fail",
+     "G2.0": "warn"
+    },
+    "lowcontrast_angle_deg": -45.486918,
+    "lowcontrast_block_center_mm": [
+     -48.238747,
+     -47.17564
+    ],
+    "lowcontrast_cnr": {
+     "L1": -0.627727,
+     "L2": -0.606326,
+     "L3": -0.872677,
+     "L4": -0.98233,
+     "L5": -1.129815,
+     "L6": -1.083693,
+     "L7": -1.226139,
+     "L8": -1.341819
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": true,
+    "mean_side_mm": 300.801165,
+    "uniformity_dsnr_pct": {
+     "BL": -6.790967,
+     "BR": -2.413149,
+     "C": -3.298023,
+     "TL": 6.851764,
+     "TR": 5.650375
+    },
+    "uniformity_snr_avg": 35.811412,
+    "wedge_dynamic_range_ratio": 60.042774,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.96993
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.00215,
+     "landmarks": 4.0,
+     "placement_margin": 1.554618,
+     "recognition": 7.855737,
+     "saturation": 4e-06
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.13002,
+    "residual_rms_mm": 0.237624,
+    "rotation_deg": -90.316639
+   },
+   "relpath": "DICOM/000034",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     0.92,
+     81.67
+    ],
+    "linepairs/G1.2": [
+     -20.39,
+     61.3
+    ],
+    "linepairs/G1.4": [
+     -100.125531,
+     -7.875327
+    ],
+    "linepairs/G1.6": [
+     -50.312587,
+     36.80483
+    ],
+    "linepairs/G2.0": [
+     -84.64,
+     -1.31
+    ],
+    "lowcontrast/L1": [
+     -20.509543,
+     -62.685355
+    ],
+    "lowcontrast/L2": [
+     -34.530985,
+     -48.423547
+    ],
+    "lowcontrast/L3": [
+     -48.552427,
+     -34.16174
+    ],
+    "lowcontrast/L4": [
+     -62.573869,
+     -19.899932
+    ],
+    "lowcontrast/L5": [
+     -76.550441,
+     -33.640945
+    ],
+    "lowcontrast/L6": [
+     -62.528999,
+     -47.902753
+    ],
+    "lowcontrast/L7": [
+     -48.507557,
+     -62.164561
+    ],
+    "lowcontrast/L8": [
+     -34.486115,
+     -76.426369
+    ],
+    "uniformity/BL": [
+     -94.893799,
+     -94.241041
+    ],
+    "uniformity/BR": [
+     95.241945,
+     -94.74372
+    ],
+    "uniformity/C": [
+     -0.071743,
+     0.288147
+    ],
+    "uniformity/TL": [
+     -94.620981,
+     94.767661
+    ],
+    "uniformity/TR": [
+     95.117824,
+     94.913857
+    ],
+    "wedge/S1": [
+     50.230493,
+     59.619561
+    ],
+    "wedge/S2": [
+     50.230493,
+     39.696845
+    ],
+    "wedge/S3": [
+     50.230493,
+     19.676008
+    ],
+    "wedge/S4": [
+     50.230493,
+     0.342363
+    ],
+    "wedge/S5": [
+     50.230493,
+     -16.061912
+    ],
+    "wedge/S6": [
+     50.230493,
+     -34.935033
+    ],
+    "wedge/S7": [
+     50.230493,
+     -58.915846
+    ]
+   },
+   "sha256": "6f7f2fdabb27615ed35db230834511aafccb69e1b85f3fe7c67661c24ed6fcad",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "fail",
+    "lowcontrast": "pass",
+    "overall": "fail",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": false
+  },
+  "CS000035": {
+   "group": "carestream",
+   "key": "CS000035",
+   "label": "8 licht blauw",
+   "metrics": {
+    "dev_from_nominal_pct": 0.221456,
+    "linepairs_blocks_detected": 2,
+    "linepairs_pitch_mm": {
+     "G1.1": 0.511823,
+     "G1.2": 0.612696,
+     "G1.4": null,
+     "G1.6": 0.727465,
+     "G2.0": null
+    },
+    "linepairs_row_status": {
+     "G1.1": "fail",
+     "G1.2": "fail",
+     "G1.4": "warn",
+     "G1.6": "fail",
+     "G2.0": "warn"
+    },
+    "lowcontrast_angle_deg": -45.491893,
+    "lowcontrast_block_center_mm": [
+     -48.246952,
+     -47.171275
+    ],
+    "lowcontrast_cnr": {
+     "L1": -0.614073,
+     "L2": -0.536407,
+     "L3": -0.783656,
+     "L4": -0.885374,
+     "L5": -1.12589,
+     "L6": -0.932334,
+     "L7": -1.226004,
+     "L8": -1.360939
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": true,
+    "mean_side_mm": 300.664368,
+    "uniformity_dsnr_pct": {
+     "BL": -5.873969,
+     "BR": -2.7544,
+     "C": -2.805802,
+     "TL": 6.497622,
+     "TR": 4.936549
+    },
+    "uniformity_snr_avg": 34.551715,
+    "wedge_dynamic_range_ratio": 75.928859,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.978888
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.002138,
+     "landmarks": 4.0,
+     "placement_margin": 1.536801,
+     "recognition": 7.868292,
+     "saturation": 0.001245
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.130027,
+    "residual_rms_mm": 0.232494,
+    "rotation_deg": -90.316738
+   },
+   "relpath": "DICOM/000035",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     0.92,
+     81.67
+    ],
+    "linepairs/G1.2": [
+     -20.39,
+     61.3
+    ],
+    "linepairs/G1.4": [
+     -100.470112,
+     -7.560279
+    ],
+    "linepairs/G1.6": [
+     -50.355133,
+     36.893428
+    ],
+    "linepairs/G2.0": [
+     -84.64,
+     -1.31
+    ],
+    "lowcontrast/L1": [
+     -19.455439,
+     -62.338963
+    ],
+    "lowcontrast/L2": [
+     -33.475642,
+     -48.075938
+    ],
+    "lowcontrast/L3": [
+     -47.495846,
+     -33.812912
+    ],
+    "lowcontrast/L4": [
+     -61.516049,
+     -19.549887
+    ],
+    "lowcontrast/L5": [
+     -75.493814,
+     -33.289687
+    ],
+    "lowcontrast/L6": [
+     -61.473611,
+     -47.552712
+    ],
+    "lowcontrast/L7": [
+     -47.453407,
+     -61.815737
+    ],
+    "lowcontrast/L8": [
+     -33.433203,
+     -76.078763
+    ],
+    "uniformity/BL": [
+     -94.892295,
+     -94.240413
+    ],
+    "uniformity/BR": [
+     95.284379,
+     -94.799688
+    ],
+    "uniformity/C": [
+     -0.126025,
+     0.288672
+    ],
+    "uniformity/TL": [
+     -94.616406,
+     94.769177
+    ],
+    "uniformity/TR": [
+     95.169298,
+     94.915673
+    ],
+    "wedge/S1": [
+     50.230493,
+     59.615478
+    ],
+    "wedge/S2": [
+     50.230493,
+     39.693894
+    ],
+    "wedge/S3": [
+     50.230493,
+     19.680158
+    ],
+    "wedge/S4": [
+     50.230493,
+     0.360119
+    ],
+    "wedge/S5": [
+     50.230493,
+     -18.077055
+    ],
+    "wedge/S6": [
+     50.230493,
+     -34.421701
+    ],
+    "wedge/S7": [
+     50.230493,
+     -56.381228
+    ]
+   },
+   "sha256": "90122fb703309be38ed7c031712dab463c884648825c4b190ff09697cdf6d584",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "fail",
+    "lowcontrast": "pass",
+    "overall": "fail",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": false
+  },
+  "CS000036": {
+   "group": "carestream",
+   "key": "CS000036",
+   "label": "7 licht blauw",
+   "metrics": {
+    "dev_from_nominal_pct": 0.214408,
+    "linepairs_blocks_detected": 4,
+    "linepairs_pitch_mm": {
+     "G1.1": null,
+     "G1.2": null,
+     "G1.4": null,
+     "G1.6": null,
+     "G2.0": null
+    },
+    "linepairs_row_status": {
+     "G1.1": "warn",
+     "G1.2": "warn",
+     "G1.4": "warn",
+     "G1.6": "warn",
+     "G2.0": "warn"
+    },
+    "lowcontrast_angle_deg": -45.501852,
+    "lowcontrast_block_center_mm": [
+     -48.287066,
+     -47.190998
+    ],
+    "lowcontrast_cnr": {
+     "L1": -0.798132,
+     "L2": -0.792973,
+     "L3": -1.149132,
+     "L4": -1.224194,
+     "L5": -1.484402,
+     "L6": -1.542193,
+     "L7": -1.834255,
+     "L8": -1.697863
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": true,
+    "mean_side_mm": 300.643224,
+    "uniformity_dsnr_pct": {
+     "BL": -12.698371,
+     "BR": -6.611059,
+     "C": -1.345495,
+     "TL": 10.790829,
+     "TR": 9.864095
+    },
+    "uniformity_snr_avg": 40.800148,
+    "wedge_dynamic_range_ratio": 14.526126,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.974767
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.002091,
+     "landmarks": 4.0,
+     "placement_margin": 1.317757,
+     "recognition": 7.771536,
+     "saturation": 0.000732
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.130095,
+    "residual_rms_mm": 0.304724,
+    "rotation_deg": -90.316846
+   },
+   "relpath": "DICOM/000036",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     -52.468288,
+     -11.223729
+    ],
+    "linepairs/G1.2": [
+     -51.533554,
+     35.819085
+    ],
+    "linepairs/G1.4": [
+     -80.608757,
+     73.488792
+    ],
+    "linepairs/G1.6": [
+     -11.277615,
+     9.474968
+    ],
+    "linepairs/G2.0": [
+     -84.64,
+     -1.31
+    ],
+    "lowcontrast/L1": [
+     -19.848633,
+     -62.007055
+    ],
+    "lowcontrast/L2": [
+     -33.866357,
+     -47.741593
+    ],
+    "lowcontrast/L3": [
+     -47.884082,
+     -33.476131
+    ],
+    "lowcontrast/L4": [
+     -61.901806,
+     -19.210668
+    ],
+    "lowcontrast/L5": [
+     -75.881959,
+     -32.948038
+    ],
+    "lowcontrast/L6": [
+     -61.864235,
+     -47.2135
+    ],
+    "lowcontrast/L7": [
+     -47.84651,
+     -61.478962
+    ],
+    "lowcontrast/L8": [
+     -33.828786,
+     -75.744425
+    ],
+    "uniformity/BL": [
+     -94.912527,
+     -94.297189
+    ],
+    "uniformity/BR": [
+     95.333016,
+     -94.911871
+    ],
+    "uniformity/C": [
+     -0.123705,
+     0.28911
+    ],
+    "uniformity/TL": [
+     -94.685575,
+     94.785581
+    ],
+    "uniformity/TR": [
+     95.178319,
+     94.988209
+    ],
+    "wedge/S1": [
+     50.302242,
+     59.645593
+    ],
+    "wedge/S2": [
+     50.302242,
+     39.718705
+    ],
+    "wedge/S3": [
+     50.302242,
+     19.692951
+    ],
+    "wedge/S4": [
+     50.302242,
+     0.425567
+    ],
+    "wedge/S5": [
+     50.302242,
+     -15.964115
+    ],
+    "wedge/S6": [
+     50.302242,
+     -32.439723
+    ],
+    "wedge/S7": [
+     50.302242,
+     -56.524817
+    ]
+   },
+   "sha256": "35dd91394cb22a14dc793d7cf807bb60d5f79fd893c66d002eee6f02c91f2773",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "warn",
+    "lowcontrast": "pass",
+    "overall": "warn",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": true
+  },
+  "CS000037": {
+   "group": "carestream",
+   "key": "CS000037",
+   "label": "4 licht blauw",
+   "metrics": {
+    "dev_from_nominal_pct": 0.005558,
+    "linepairs_blocks_detected": 5,
+    "linepairs_pitch_mm": {
+     "G1.1": 0.814123,
+     "G1.2": 0.932048,
+     "G1.4": 0.722798,
+     "G1.6": 0.612731,
+     "G2.0": 0.504908
+    },
+    "linepairs_row_status": {
+     "G1.1": "fail",
+     "G1.2": "fail",
+     "G1.4": "pass",
+     "G1.6": "pass",
+     "G2.0": "pass"
+    },
+    "lowcontrast_angle_deg": -45.48032,
+    "lowcontrast_block_center_mm": [
+     -48.24859,
+     -47.198368
+    ],
+    "lowcontrast_cnr": {
+     "L1": -0.241659,
+     "L2": -0.3109,
+     "L3": -0.344064,
+     "L4": -0.404367,
+     "L5": -0.555651,
+     "L6": -0.441383,
+     "L7": -0.478923,
+     "L8": -0.687657
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": true,
+    "mean_side_mm": 300.016675,
+    "uniformity_dsnr_pct": {
+     "BL": 0.689073,
+     "BR": 0.048281,
+     "C": -3.711563,
+     "TL": 2.968739,
+     "TR": 0.005469
+    },
+    "uniformity_snr_avg": 23.0905,
+    "wedge_dynamic_range_ratio": 48.057046,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.968978
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.002183,
+     "landmarks": 4.0,
+     "placement_margin": 1.487393,
+     "recognition": 7.711385,
+     "saturation": 0.000765
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.130006,
+    "residual_rms_mm": 0.202396,
+    "rotation_deg": -90.316916
+   },
+   "relpath": "DICOM/000037",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     -62.444643,
+     24.014866
+    ],
+    "linepairs/G1.2": [
+     -84.208435,
+     1.941211
+    ],
+    "linepairs/G1.4": [
+     -42.186319,
+     44.486821
+    ],
+    "linepairs/G1.6": [
+     -20.376444,
+     65.119483
+    ],
+    "linepairs/G2.0": [
+     0.095266,
+     87.927257
+    ],
+    "lowcontrast/L1": [
+     -20.161095,
+     -62.354313
+    ],
+    "lowcontrast/L2": [
+     -34.18418,
+     -48.09412
+    ],
+    "lowcontrast/L3": [
+     -48.207264,
+     -33.833926
+    ],
+    "lowcontrast/L4": [
+     -62.230348,
+     -19.573733
+    ],
+    "lowcontrast/L5": [
+     -76.205337,
+     -33.316356
+    ],
+    "lowcontrast/L6": [
+     -62.182253,
+     -47.576549
+    ],
+    "lowcontrast/L7": [
+     -48.159169,
+     -61.836742
+    ],
+    "lowcontrast/L8": [
+     -34.136085,
+     -76.096935
+    ],
+    "uniformity/BL": [
+     -94.865772,
+     -94.231028
+    ],
+    "uniformity/BR": [
+     95.239038,
+     -94.895733
+    ],
+    "uniformity/C": [
+     -0.122196,
+     0.272788
+    ],
+    "uniformity/TL": [
+     -94.573303,
+     94.66482
+    ],
+    "uniformity/TR": [
+     95.072096,
+     94.911348
+    ],
+    "wedge/S1": [
+     50.230493,
+     59.619375
+    ],
+    "wedge/S2": [
+     50.230493,
+     39.70336
+    ],
+    "wedge/S3": [
+     50.230493,
+     19.68021
+    ],
+    "wedge/S4": [
+     50.230493,
+     0.368385
+    ],
+    "wedge/S5": [
+     50.230493,
+     -17.974904
+    ],
+    "wedge/S6": [
+     50.230493,
+     -36.414646
+    ],
+    "wedge/S7": [
+     50.230493,
+     -58.456685
+    ]
+   },
+   "sha256": "3014fec8e2455f33039a15f7e63b4736f07efdf45281002c88ee4512a4f5a3b2",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "fail",
+    "lowcontrast": "pass",
+    "overall": "fail",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": false
+  },
+  "CS000038": {
+   "group": "carestream",
+   "key": "CS000038",
+   "label": "6 licht blauw",
+   "metrics": {
+    "dev_from_nominal_pct": 0.072097,
+    "linepairs_blocks_detected": 2,
+    "linepairs_pitch_mm": {
+     "G1.1": null,
+     "G1.2": 0.780197,
+     "G1.4": 0.728245,
+     "G1.6": 0.815527,
+     "G2.0": null
+    },
+    "linepairs_row_status": {
+     "G1.1": "warn",
+     "G1.2": "pass",
+     "G1.4": "pass",
+     "G1.6": "fail",
+     "G2.0": "warn"
+    },
+    "lowcontrast_angle_deg": -45.519363,
+    "lowcontrast_block_center_mm": [
+     -48.260083,
+     -47.170063
+    ],
+    "lowcontrast_cnr": {
+     "L1": -0.761516,
+     "L2": -0.741415,
+     "L3": -1.076081,
+     "L4": -1.169972,
+     "L5": -1.375357,
+     "L6": -1.341502,
+     "L7": -1.597463,
+     "L8": -1.576537
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": false,
+    "mean_side_mm": 300.216292,
+    "uniformity_dsnr_pct": {
+     "BL": -10.7515,
+     "BR": -4.946838,
+     "C": -2.167702,
+     "TL": 10.482333,
+     "TR": 7.383706
+    },
+    "uniformity_snr_avg": 39.663106,
+    "wedge_dynamic_range_ratio": 66.71181,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.982126
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.002161,
+     "landmarks": 4.0,
+     "placement_margin": 1.495224,
+     "recognition": 7.884117,
+     "saturation": 9e-06
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.130048,
+    "residual_rms_mm": 0.269508,
+    "rotation_deg": -90.316427
+   },
+   "relpath": "DICOM/000038",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     0.92,
+     81.67
+    ],
+    "linepairs/G1.2": [
+     -44.89084,
+     -18.626818
+    ],
+    "linepairs/G1.4": [
+     -50.844344,
+     36.384671
+    ],
+    "linepairs/G1.6": [
+     -63.34,
+     19.56
+    ],
+    "linepairs/G2.0": [
+     -84.64,
+     -1.31
+    ],
+    "lowcontrast/L1": [
+     -20.182923,
+     -62.345144
+    ],
+    "lowcontrast/L2": [
+     -34.196287,
+     -48.075399
+    ],
+    "lowcontrast/L3": [
+     -48.20965,
+     -33.805653
+    ],
+    "lowcontrast/L4": [
+     -62.223014,
+     -19.535907
+    ],
+    "lowcontrast/L5": [
+     -76.207364,
+     -33.269004
+    ],
+    "lowcontrast/L6": [
+     -62.194001,
+     -47.538749
+    ],
+    "lowcontrast/L7": [
+     -48.180637,
+     -61.808495
+    ],
+    "lowcontrast/L8": [
+     -34.167274,
+     -76.078241
+    ],
+    "uniformity/BL": [
+     -94.897489,
+     -94.242717
+    ],
+    "uniformity/BR": [
+     95.287108,
+     -94.863504
+    ],
+    "uniformity/C": [
+     -0.126413,
+     0.288923
+    ],
+    "uniformity/TL": [
+     -94.625965,
+     94.771483
+    ],
+    "uniformity/TR": [
+     95.170151,
+     94.968159
+    ],
+    "wedge/S1": [
+     50.230493,
+     59.627852
+    ],
+    "wedge/S2": [
+     50.230493,
+     39.706458
+    ],
+    "wedge/S3": [
+     50.230493,
+     19.687591
+    ],
+    "wedge/S4": [
+     50.230493,
+     0.41738
+    ],
+    "wedge/S5": [
+     50.230493,
+     -16.016445
+    ],
+    "wedge/S6": [
+     50.230493,
+     -32.428527
+    ],
+    "wedge/S7": [
+     50.230493,
+     -56.413905
+    ]
+   },
+   "sha256": "c19321ee54cd55e22b29416b9830c294583b9ca9838dcfc78abc37ce599cb0fe",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "fail",
+    "lowcontrast": "warn",
+    "overall": "fail",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": false
+  },
+  "PH0727_03": {
+   "group": "philips",
+   "key": "PH0727_03",
+   "label": "HmmEi",
+   "metrics": {
+    "dev_from_nominal_pct": -0.217421,
+    "linepairs_blocks_detected": 5,
+    "linepairs_pitch_mm": {
+     "G1.1": 0.926244,
+     "G1.2": 0.813378,
+     "G1.4": 0.723781,
+     "G1.6": 0.612726,
+     "G2.0": 0.503478
+    },
+    "linepairs_row_status": {
+     "G1.1": "pass",
+     "G1.2": "pass",
+     "G1.4": "pass",
+     "G1.6": "pass",
+     "G2.0": "pass"
+    },
+    "lowcontrast_angle_deg": -45.07292,
+    "lowcontrast_block_center_mm": [
+     -47.291229,
+     -46.64233
+    ],
+    "lowcontrast_cnr": {
+     "L1": -0.204037,
+     "L2": -0.209991,
+     "L3": -0.34129,
+     "L4": -0.432492,
+     "L5": -0.408625,
+     "L6": -0.596829,
+     "L7": -0.797335,
+     "L8": -0.829867
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": true,
+    "mean_side_mm": 299.347737,
+    "uniformity_dsnr_pct": {
+     "BL": -1.367422,
+     "BR": -0.949055,
+     "C": 2.643379,
+     "TL": 0.033184,
+     "TR": -0.360086
+    },
+    "uniformity_snr_avg": 47.400636,
+    "wedge_dynamic_range_ratio": 11.181595,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.953834
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.001249,
+     "landmarks": 4.0,
+     "placement_margin": 1.062581,
+     "recognition": 7.661167,
+     "saturation": 0.0
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.141909,
+    "residual_rms_mm": 0.55246,
+    "rotation_deg": -179.877061
+   },
+   "relpath": "20260727 MSF/MSF/Export_2026-07-27_10-00-05_1/10000000/10000001/10000002/10000003",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     2.372747,
+     85.391646
+    ],
+    "linepairs/G1.2": [
+     -19.168268,
+     63.974768
+    ],
+    "linepairs/G1.4": [
+     -39.41123,
+     42.884755
+    ],
+    "linepairs/G1.6": [
+     -60.718047,
+     21.78631
+    ],
+    "linepairs/G2.0": [
+     -82.009943,
+     0.073668
+    ],
+    "lowcontrast/L1": [
+     -19.802886,
+     -60.890172
+    ],
+    "lowcontrast/L2": [
+     -33.927012,
+     -46.73005
+    ],
+    "lowcontrast/L3": [
+     -48.051137,
+     -32.569927
+    ],
+    "lowcontrast/L4": [
+     -62.175263,
+     -18.409804
+    ],
+    "lowcontrast/L5": [
+     -76.052183,
+     -32.251447
+    ],
+    "lowcontrast/L6": [
+     -61.928058,
+     -46.41157
+    ],
+    "lowcontrast/L7": [
+     -47.803932,
+     -60.571693
+    ],
+    "lowcontrast/L8": [
+     -33.679806,
+     -74.731815
+    ],
+    "uniformity/BL": [
+     -94.720818,
+     -94.669844
+    ],
+    "uniformity/BR": [
+     94.296751,
+     -94.805893
+    ],
+    "uniformity/C": [
+     0.057617,
+     -0.142178
+    ],
+    "uniformity/TL": [
+     -94.787873,
+     94.846412
+    ],
+    "uniformity/TR": [
+     94.603674,
+     94.85528
+    ],
+    "wedge/S1": [
+     49.513004,
+     60.373564
+    ],
+    "wedge/S2": [
+     49.513004,
+     41.465396
+    ],
+    "wedge/S3": [
+     49.513004,
+     22.503027
+    ],
+    "wedge/S4": [
+     49.513004,
+     3.566669
+    ],
+    "wedge/S5": [
+     49.513004,
+     -15.315086
+    ],
+    "wedge/S6": [
+     49.513004,
+     -34.28544
+    ],
+    "wedge/S7": [
+     49.513004,
+     -57.188586
+    ]
+   },
+   "sha256": "8765724f487691e0b4b6d494355caa5f571d4cbd3f1ee7ada53eff81471352ac",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "pass",
+    "lowcontrast": "pass",
+    "overall": "n/a",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": false
+  },
+  "PH0727_05": {
+   "group": "philips",
+   "key": "PH0727_05",
+   "label": "A8Tgg",
+   "metrics": {
+    "dev_from_nominal_pct": -0.040641,
+    "linepairs_blocks_detected": 5,
+    "linepairs_pitch_mm": {
+     "G1.1": 0.92749,
+     "G1.2": 0.813971,
+     "G1.4": 0.724743,
+     "G1.6": 0.612242,
+     "G2.0": 0.5039
+    },
+    "linepairs_row_status": {
+     "G1.1": "pass",
+     "G1.2": "pass",
+     "G1.4": "pass",
+     "G1.6": "pass",
+     "G2.0": "pass"
+    },
+    "lowcontrast_angle_deg": -45.052284,
+    "lowcontrast_block_center_mm": [
+     -44.580632,
+     -49.554554
+    ],
+    "lowcontrast_cnr": {
+     "L1": -0.186242,
+     "L2": -0.257045,
+     "L3": -0.453718,
+     "L4": -0.471306,
+     "L5": -0.471758,
+     "L6": -0.561248,
+     "L7": -0.8162,
+     "L8": -0.829037
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": true,
+    "mean_side_mm": 299.878078,
+    "uniformity_dsnr_pct": {
+     "BL": -3.736009,
+     "BR": -0.592357,
+     "C": 3.1385,
+     "TL": 0.166103,
+     "TR": 1.023762
+    },
+    "uniformity_snr_avg": 73.464768,
+    "wedge_dynamic_range_ratio": 4.129569,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.918879
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.002508,
+     "landmarks": 4.0,
+     "placement_margin": 1.011187,
+     "recognition": 7.381184,
+     "saturation": 0.0
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.141902,
+    "residual_rms_mm": 0.125669,
+    "rotation_deg": 179.061742
+   },
+   "relpath": "20260727 MSF/MSF/Export_2026-07-27_10-00-05_1/10000000/10000001/10000004/10000005",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     -1.070579,
+     77.752422
+    ],
+    "linepairs/G1.2": [
+     -22.123011,
+     58.380392
+    ],
+    "linepairs/G1.4": [
+     -44.112662,
+     37.767041
+    ],
+    "linepairs/G1.6": [
+     -65.956454,
+     17.465896
+    ],
+    "linepairs/G2.0": [
+     -88.164062,
+     -3.618029
+    ],
+    "lowcontrast/L1": [
+     -16.380053,
+     -63.79314
+    ],
+    "lowcontrast/L2": [
+     -30.509278,
+     -49.638105
+    ],
+    "lowcontrast/L3": [
+     -44.638502,
+     -35.48307
+    ],
+    "lowcontrast/L4": [
+     -58.767727,
+     -21.328035
+    ],
+    "lowcontrast/L5": [
+     -72.639661,
+     -35.174676
+    ],
+    "lowcontrast/L6": [
+     -58.510437,
+     -49.32971
+    ],
+    "lowcontrast/L7": [
+     -44.381212,
+     -63.484745
+    ],
+    "lowcontrast/L8": [
+     -30.251988,
+     -77.63978
+    ],
+    "uniformity/BL": [
+     -94.454986,
+     -94.593084
+    ],
+    "uniformity/BR": [
+     94.406252,
+     -95.192921
+    ],
+    "uniformity/C": [
+     0.662426,
+     -0.751614
+    ],
+    "uniformity/TL": [
+     -95.068649,
+     94.457079
+    ],
+    "uniformity/TR": [
+     94.751125,
+     94.272852
+    ],
+    "wedge/S1": [
+     50.230493,
+     59.400967
+    ],
+    "wedge/S2": [
+     50.230493,
+     40.527365
+    ],
+    "wedge/S3": [
+     50.230493,
+     21.524005
+    ],
+    "wedge/S4": [
+     50.230493,
+     2.519865
+    ],
+    "wedge/S5": [
+     50.230493,
+     -16.403259
+    ],
+    "wedge/S6": [
+     50.230493,
+     -35.42454
+    ],
+    "wedge/S7": [
+     50.230493,
+     -57.527918
+    ]
+   },
+   "sha256": "ecb89167f145bd9ab298ba24fd0d687facc732964403768afe2c097b70fba3e7",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "pass",
+    "lowcontrast": "pass",
+    "overall": "n/a",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": false
+  },
+  "PH0730_03": {
+   "group": "philips",
+   "key": "PH0730_03",
+   "label": "HmmEi image 1",
+   "metrics": {
+    "dev_from_nominal_pct": 0.138833,
+    "linepairs_blocks_detected": 5,
+    "linepairs_pitch_mm": {
+     "G1.1": 0.926212,
+     "G1.2": 0.813223,
+     "G1.4": 0.723658,
+     "G1.6": 0.612392,
+     "G2.0": 0.504178
+    },
+    "linepairs_row_status": {
+     "G1.1": "pass",
+     "G1.2": "pass",
+     "G1.4": "pass",
+     "G1.6": "pass",
+     "G2.0": "pass"
+    },
+    "lowcontrast_angle_deg": -45.067211,
+    "lowcontrast_block_center_mm": [
+     -47.374424,
+     -47.603471
+    ],
+    "lowcontrast_cnr": {
+     "L1": -0.206473,
+     "L2": -0.231774,
+     "L3": -0.35149,
+     "L4": -0.473086,
+     "L5": -0.501041,
+     "L6": -0.532759,
+     "L7": -0.753524,
+     "L8": -0.797438
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": true,
+    "mean_side_mm": 300.416499,
+    "uniformity_dsnr_pct": {
+     "BL": -1.451027,
+     "BR": 0.874406,
+     "C": 2.531277,
+     "TL": -0.777314,
+     "TR": -1.177341
+    },
+    "uniformity_snr_avg": 75.91412,
+    "wedge_dynamic_range_ratio": 4.060829,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.921315
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.000945,
+     "landmarks": 4.0,
+     "placement_margin": 0.890925,
+     "recognition": 7.499404,
+     "saturation": 0.0
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.14218,
+    "residual_rms_mm": 0.514778,
+    "rotation_deg": -0.246491
+   },
+   "relpath": "20260730 MSF 2/MSF 2/Export_2026-07-30_14-23-58_1/10000000/10000001/10000002/10000003",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     2.468838,
+     85.421116
+    ],
+    "linepairs/G1.2": [
+     -18.557737,
+     64.030405
+    ],
+    "linepairs/G1.4": [
+     -39.611051,
+     42.842869
+    ],
+    "linepairs/G1.6": [
+     -60.893913,
+     21.566585
+    ],
+    "linepairs/G2.0": [
+     -81.134668,
+     0.633568
+    ],
+    "lowcontrast/L1": [
+     -19.531523,
+     -62.202542
+    ],
+    "lowcontrast/L2": [
+     -33.657059,
+     -48.043826
+    ],
+    "lowcontrast/L3": [
+     -47.782596,
+     -33.885111
+    ],
+    "lowcontrast/L4": [
+     -61.908132,
+     -19.726396
+    ],
+    "lowcontrast/L5": [
+     -75.783673,
+     -33.569421
+    ],
+    "lowcontrast/L6": [
+     -61.658137,
+     -47.728137
+    ],
+    "lowcontrast/L7": [
+     -47.5326,
+     -61.886852
+    ],
+    "lowcontrast/L8": [
+     -33.407064,
+     -76.045567
+    ],
+    "uniformity/BL": [
+     -94.731316,
+     -94.934001
+    ],
+    "uniformity/BR": [
+     94.297295,
+     -94.990103
+    ],
+    "uniformity/C": [
+     0.095589,
+     -0.345146
+    ],
+    "uniformity/TL": [
+     -94.793156,
+     94.699631
+    ],
+    "uniformity/TR": [
+     94.567605,
+     94.580882
+    ],
+    "wedge/S1": [
+     49.297758,
+     60.188116
+    ],
+    "wedge/S2": [
+     49.297758,
+     41.299153
+    ],
+    "wedge/S3": [
+     49.297758,
+     22.389618
+    ],
+    "wedge/S4": [
+     49.297758,
+     3.592434
+    ],
+    "wedge/S5": [
+     49.297758,
+     -15.773826
+    ],
+    "wedge/S6": [
+     49.297758,
+     -35.020155
+    ],
+    "wedge/S7": [
+     49.297758,
+     -57.392353
+    ]
+   },
+   "sha256": "09a846d530ee78f3cc9484875c89e22ea9335bef3a470243a3e2b1e69b82be7c",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "pass",
+    "lowcontrast": "pass",
+    "overall": "n/a",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": true
+  },
+  "PH0730_05": {
+   "group": "philips",
+   "key": "PH0730_05",
+   "label": "A8Tgg image 1",
+   "metrics": {
+    "dev_from_nominal_pct": 0.080099,
+    "linepairs_blocks_detected": 5,
+    "linepairs_pitch_mm": {
+     "G1.1": 0.924956,
+     "G1.2": 0.813345,
+     "G1.4": 0.725408,
+     "G1.6": 0.612451,
+     "G2.0": 0.504287
+    },
+    "linepairs_row_status": {
+     "G1.1": "pass",
+     "G1.2": "pass",
+     "G1.4": "pass",
+     "G1.6": "pass",
+     "G2.0": "pass"
+    },
+    "lowcontrast_angle_deg": -45.116037,
+    "lowcontrast_block_center_mm": [
+     -44.143187,
+     -50.129425
+    ],
+    "lowcontrast_cnr": {
+     "L1": -0.128734,
+     "L2": -0.249,
+     "L3": -0.410162,
+     "L4": -0.428697,
+     "L5": -0.454322,
+     "L6": -0.557639,
+     "L7": -0.684898,
+     "L8": -0.80987
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": true,
+    "mean_side_mm": 300.240296,
+    "uniformity_dsnr_pct": {
+     "BL": -0.382237,
+     "BR": -2.080071,
+     "C": 2.538942,
+     "TL": -1.716267,
+     "TR": 1.639634
+    },
+    "uniformity_snr_avg": 75.273346,
+    "wedge_dynamic_range_ratio": 3.989847,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.922761
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.002084,
+     "landmarks": 4.0,
+     "placement_margin": 1.054762,
+     "recognition": 7.497482,
+     "saturation": 0.0
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.142192,
+    "residual_rms_mm": 0.231891,
+    "rotation_deg": 90.09694
+   },
+   "relpath": "20260730 MSF 2/MSF 2/Export_2026-07-30_14-23-58_1/10000000/10000001/10000004/10000005",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     -1.252344,
+     77.599413
+    ],
+    "linepairs/G1.2": [
+     -22.089261,
+     58.431326
+    ],
+    "linepairs/G1.4": [
+     -44.570064,
+     37.772798
+    ],
+    "linepairs/G1.6": [
+     -65.682815,
+     17.179555
+    ],
+    "linepairs/G2.0": [
+     -88.20575,
+     -3.343578
+    ],
+    "lowcontrast/L1": [
+     -16.312737,
+     -64.752218
+    ],
+    "lowcontrast/L2": [
+     -30.426203,
+     -50.58147
+    ],
+    "lowcontrast/L3": [
+     -44.539668,
+     -36.410723
+    ],
+    "lowcontrast/L4": [
+     -58.653134,
+     -22.239975
+    ],
+    "lowcontrast/L5": [
+     -72.540466,
+     -36.071171
+    ],
+    "lowcontrast/L6": [
+     -58.427001,
+     -50.241919
+    ],
+    "lowcontrast/L7": [
+     -44.313535,
+     -64.412667
+    ],
+    "lowcontrast/L8": [
+     -30.20007,
+     -78.583414
+    ],
+    "uniformity/BL": [
+     -94.296704,
+     -94.72409
+    ],
+    "uniformity/BR": [
+     94.571912,
+     -95.088432
+    ],
+    "uniformity/C": [
+     0.744969,
+     -0.720348
+    ],
+    "uniformity/TL": [
+     -94.949866,
+     94.418672
+    ],
+    "uniformity/TR": [
+     94.822827,
+     94.134175
+    ],
+    "wedge/S1": [
+     50.373991,
+     59.400019
+    ],
+    "wedge/S2": [
+     50.373991,
+     40.529317
+    ],
+    "wedge/S3": [
+     50.373991,
+     21.547193
+    ],
+    "wedge/S4": [
+     50.373991,
+     2.709151
+    ],
+    "wedge/S5": [
+     50.373991,
+     -16.472244
+    ],
+    "wedge/S6": [
+     50.373991,
+     -35.704727
+    ],
+    "wedge/S7": [
+     50.373991,
+     -57.525376
+    ]
+   },
+   "sha256": "cba031877c78ad5c415ad1127235ef605f13af9bf4fdd7b669cdfc2df06026da",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "pass",
+    "lowcontrast": "pass",
+    "overall": "n/a",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": true
+  },
+  "PH0730_07": {
+   "group": "philips",
+   "key": "PH0730_07",
+   "label": "HmmEi image 2",
+   "metrics": {
+    "dev_from_nominal_pct": 0.069084,
+    "linepairs_blocks_detected": 5,
+    "linepairs_pitch_mm": {
+     "G1.1": 0.926061,
+     "G1.2": 0.813487,
+     "G1.4": 0.723621,
+     "G1.6": 0.612101,
+     "G2.0": 0.504033
+    },
+    "linepairs_row_status": {
+     "G1.1": "pass",
+     "G1.2": "pass",
+     "G1.4": "pass",
+     "G1.6": "pass",
+     "G2.0": "pass"
+    },
+    "lowcontrast_angle_deg": -45.016648,
+    "lowcontrast_block_center_mm": [
+     -47.407935,
+     -47.599034
+    ],
+    "lowcontrast_cnr": {
+     "L1": -0.197986,
+     "L2": -0.263147,
+     "L3": -0.352719,
+     "L4": -0.479272,
+     "L5": -0.480305,
+     "L6": -0.624196,
+     "L7": -0.678652,
+     "L8": -0.73877
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": true,
+    "mean_side_mm": 300.207253,
+    "uniformity_dsnr_pct": {
+     "BL": -1.220736,
+     "BR": 1.145669,
+     "C": 2.643472,
+     "TL": -0.86681,
+     "TR": -1.701596
+    },
+    "uniformity_snr_avg": 76.25066,
+    "wedge_dynamic_range_ratio": 4.065978,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.921085
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.00094,
+     "landmarks": 4.0,
+     "placement_margin": 0.889897,
+     "recognition": 7.498147,
+     "saturation": 0.0
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.142181,
+    "residual_rms_mm": 0.488797,
+    "rotation_deg": -0.246244
+   },
+   "relpath": "20260730 MSF 2/MSF 2/Export_2026-07-30_14-23-58_1/10000000/10000001/10000006/10000007",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     2.47547,
+     85.10021
+    ],
+    "linepairs/G1.2": [
+     -18.675823,
+     64.174027
+    ],
+    "linepairs/G1.4": [
+     -39.140332,
+     42.681231
+    ],
+    "linepairs/G1.6": [
+     -60.489425,
+     21.692971
+    ],
+    "linepairs/G2.0": [
+     -81.804711,
+     0.41429
+    ],
+    "lowcontrast/L1": [
+     -19.905818,
+     -62.526979
+    ],
+    "lowcontrast/L2": [
+     -34.043843,
+     -48.380734
+    ],
+    "lowcontrast/L3": [
+     -48.181869,
+     -34.23449
+    ],
+    "lowcontrast/L4": [
+     -62.319895,
+     -20.088246
+    ],
+    "lowcontrast/L5": [
+     -76.183214,
+     -33.943511
+    ],
+    "lowcontrast/L6": [
+     -62.045189,
+     -48.089755
+    ],
+    "lowcontrast/L7": [
+     -47.907163,
+     -62.236
+    ],
+    "lowcontrast/L8": [
+     -33.769137,
+     -76.382244
+    ],
+    "uniformity/BL": [
+     -94.763366,
+     -94.905348
+    ],
+    "uniformity/BR": [
+     94.238053,
+     -94.937733
+    ],
+    "uniformity/C": [
+     0.083757,
+     -0.311128
+    ],
+    "uniformity/TL": [
+     -94.835538,
+     94.668249
+    ],
+    "uniformity/TR": [
+     94.570162,
+     94.600829
+    ],
+    "wedge/S1": [
+     49.297758,
+     60.199259
+    ],
+    "wedge/S2": [
+     49.297758,
+     41.305256
+    ],
+    "wedge/S3": [
+     49.297758,
+     22.388612
+    ],
+    "wedge/S4": [
+     49.297758,
+     3.593993
+    ],
+    "wedge/S5": [
+     49.297758,
+     -15.767325
+    ],
+    "wedge/S6": [
+     49.297758,
+     -35.009414
+    ],
+    "wedge/S7": [
+     49.297758,
+     -57.388749
+    ]
+   },
+   "sha256": "803ff3dbe473af32fb2fe7cb21aa45ed327eafe6d3b63f16d8eb9b0f8a99dd94",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "pass",
+    "lowcontrast": "pass",
+    "overall": "n/a",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": false
+  },
+  "PH0730_09": {
+   "group": "philips",
+   "key": "PH0730_09",
+   "label": "A8Tgg image 2",
+   "metrics": {
+    "dev_from_nominal_pct": 0.146513,
+    "linepairs_blocks_detected": 5,
+    "linepairs_pitch_mm": {
+     "G1.1": 0.926039,
+     "G1.2": 0.813863,
+     "G1.4": 0.725216,
+     "G1.6": 0.612474,
+     "G2.0": 0.504111
+    },
+    "linepairs_row_status": {
+     "G1.1": "pass",
+     "G1.2": "pass",
+     "G1.4": "pass",
+     "G1.6": "pass",
+     "G2.0": "pass"
+    },
+    "lowcontrast_angle_deg": -45.201723,
+    "lowcontrast_block_center_mm": [
+     -44.227616,
+     -50.083317
+    ],
+    "lowcontrast_cnr": {
+     "L1": -0.169108,
+     "L2": -0.240196,
+     "L3": -0.297924,
+     "L4": -0.481575,
+     "L5": -0.556051,
+     "L6": -0.58684,
+     "L7": -0.714687,
+     "L8": -0.733211
+    },
+    "lowcontrast_detected": true,
+    "lowcontrast_ordering_ok": true,
+    "mean_side_mm": 300.439538,
+    "uniformity_dsnr_pct": {
+     "BL": -1.568403,
+     "BR": -2.4607,
+     "C": 3.079473,
+     "TL": -0.896754,
+     "TR": 1.846383
+    },
+    "uniformity_snr_avg": 74.977755,
+    "wedge_dynamic_range_ratio": 4.027715,
+    "wedge_monotonic": true,
+    "wedge_r2": 0.920297
+   },
+   "nonfinite": [],
+   "quality": {
+    "failed": [],
+    "values": {
+     "clipping": 1.002104,
+     "landmarks": 4.0,
+     "placement_margin": 1.052176,
+     "recognition": 7.505813,
+     "saturation": 0.0
+    },
+    "verdict": "ok"
+   },
+   "registration": {
+    "landmarks_found": 4,
+    "mirrored": false,
+    "mm_per_px": 0.142192,
+    "residual_rms_mm": 0.144206,
+    "rotation_deg": 90.15941
+   },
+   "relpath": "20260730 MSF 2/MSF 2/Export_2026-07-30_14-23-58_1/10000000/10000001/10000008/10000009",
+   "roi_centers_mm": {
+    "linepairs/G1.1": [
+     -1.152642,
+     77.584986
+    ],
+    "linepairs/G1.2": [
+     -22.165646,
+     58.340936
+    ],
+    "linepairs/G1.4": [
+     -44.053452,
+     38.000993
+    ],
+    "linepairs/G1.6": [
+     -65.625321,
+     17.738789
+    ],
+    "linepairs/G2.0": [
+     -87.83588,
+     -2.908128
+    ],
+    "lowcontrast/L1": [
+     -15.711964,
+     -64.750204
+    ],
+    "lowcontrast/L2": [
+     -29.804221,
+     -50.558365
+    ],
+    "lowcontrast/L3": [
+     -43.896479,
+     -36.366527
+    ],
+    "lowcontrast/L4": [
+     -57.988736,
+     -22.174688
+    ],
+    "lowcontrast/L5": [
+     -71.896738,
+     -35.985101
+    ],
+    "lowcontrast/L6": [
+     -57.80448,
+     -50.176939
+    ],
+    "lowcontrast/L7": [
+     -43.712223,
+     -64.368778
+    ],
+    "lowcontrast/L8": [
+     -29.619965,
+     -78.560616
+    ],
+    "uniformity/BL": [
+     -94.328816,
+     -94.718523
+    ],
+    "uniformity/BR": [
+     94.485884,
+     -95.129952
+    ],
+    "uniformity/C": [
+     0.809289,
+     -0.837058
+    ],
+    "uniformity/TL": [
+     -94.920146,
+     94.462564
+    ],
+    "uniformity/TR": [
+     94.817118,
+     94.142619
+    ],
+    "wedge/S1": [
+     50.373991,
+     59.364956
+    ],
+    "wedge/S2": [
+     50.373991,
+     40.495482
+    ],
+    "wedge/S3": [
+     50.373991,
+     21.52326
+    ],
+    "wedge/S4": [
+     50.373991,
+     2.672265
+    ],
+    "wedge/S5": [
+     50.373991,
+     -16.47477
+    ],
+    "wedge/S6": [
+     50.373991,
+     -35.693902
+    ],
+    "wedge/S7": [
+     50.373991,
+     -57.553334
+    ]
+   },
+   "sha256": "95ca282b558805630fdb83c6e1542fe1759f975475180c5f2aaddd18ddfee0bf",
+   "status": {
+    "geometry_dimension": "pass",
+    "geometry_field": "n/a",
+    "linepairs": "pass",
+    "lowcontrast": "pass",
+    "overall": "n/a",
+    "uniformity": "pass",
+    "wedge": "pass"
+   },
+   "subset": false
+  }
+ },
+ "tolerances": {
+  "angle_deg": 0.5,
+  "cnr": 0.05,
+  "dev_pct": 0.1,
+  "dsnr_pct": 1.0,
+  "mean_side_mm": 0.1,
+  "mm_per_px_rel": 0.001,
+  "pitch_mm": 0.005,
+  "quality": {
+   "clipping": 0.002,
+   "default": 0.05,
+   "landmarks": 0.0,
+   "placement_margin": 0.1,
+   "recognition": 0.1,
+   "saturation": 0.005
+  },
+  "r2": 0.01,
+  "ratio_rel": 0.02,
+  "residual_rms_mm": 0.05,
+  "roi_center_mm": 0.5,
+  "rotation_deg": 0.05,
+  "snr": 0.5
+ }
+}

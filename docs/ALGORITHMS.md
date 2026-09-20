@@ -301,6 +301,103 @@ passing test explains why it passed, so a pass that rests on a mis-placed ROI
 is still visible. Reasons are generated from the same numbers as the status;
 they are not a separate judgement and cannot disagree with it.
 
+### Acquisition quality — `quality.py`
+
+Every test below assumes the image holds a phantom that was exposed sensibly.
+When it does not, the measurements do not fail loudly; they come out meaningless
+and quietly. The gate asks that question once, from signals that need no
+knowledge of what the phantom contains, and records its verdict on the analysis.
+
+| Check | Signal | Limit | Reference scans | Broken field exposures |
+|---|---|---|---|---|
+| `saturation` | share of pixels on the image's own maximum | ≤ 0.05 | 0.0000–0.0014 | 0.70 (over-ranged) |
+| `clipping` | ratio of the fitted transform's singular values | ≤ 1.010 | 1.001–1.004 | 1.051 (edge off detector) |
+| `landmarks` | central ruler lines located, of four | ≥ 3 | 4 | 0 (over-ranged) |
+| `recognition` | score of the accepted placement | ≥ 5.5 | 7.33–7.89 | 3.79–3.84 |
+| `placement_margin` | lead over the runner-up placement | ≥ 0.40 | 0.89–1.83 | 0.12–0.22 |
+
+Saturation is measured against the image's **own** maximum rather than the
+detector's full scale, because vendor processing rescales and what matters is
+that a large part of the image has been flattened onto one value.
+
+The checks overlap deliberately: saturation and lost ruler lines both catch an
+over-ranged exposure, stretched registration and a thin placement margin both
+catch a clipped one. Every broken exposure in the field set trips at least two,
+so no single signal has to be perfect.
+
+Limits come from the 33 HQ reference scans and are verified against all of them;
+the field exposures only ever confirm that the gate fires. Each scan's measured
+values are recorded in `tests/hq_benchmark.json`, so tightening a limit produces
+a diff naming every reference scan it would newly reject, and
+`tests/test_quality_gate.py` additionally asserts that each limit keeps a margin
+rather than merely clearing the worst reference scan.
+
+The verdict is computed during registration rather than at upload, because the
+useful signals come from the fit — and because re-registering by hand is exactly
+when it should be reconsidered: manual corners can rescue a scan the automatic
+fit had mangled.
+
+A refused exposure is still analysed. It is barred only from becoming a baseline
+or a stored layout — see `blocks_reference_use()`.
+
+### The time budget
+
+`compute_all()` and `propose_all()` take an optional `Deadline`. Between the
+five tests — not inside them — they check whether the budget is spent; once it
+is, the remaining tests are recorded as `status: "error"` with `timed_out: true`
+and a reason naming what was not measured. The analysis therefore ends in a
+stored failure rather than an open request.
+
+The limit is `PHANTOMQA_ANALYSIS_TIMEOUT_S` (default 120 s, `0` disables it).
+The browser learns it from `/api/auth` and waits 60 s longer, so a bounded
+analysis reports its own failure instead of being cut off by the page. The
+timeout applies only to the measuring calls: a 7.5 MB upload over a field link
+legitimately takes minutes, and a blanket timeout would be a worse failure than
+the one it guards against.
+
+Two honest limitations:
+
+- **The check is cooperative.** A single numpy call cannot be interrupted
+  part-way without a separate process, which would change how this is deployed.
+  Across 38 scans no individual test took longer than about four seconds, so
+  the budget is spent between checks rather than inside one — but a pathological
+  image could overshoot the limit by however long one test takes.
+- **It is not what fixed "stuck at Computing…".** That screen came from the
+  results page throwing while drawing, after the server had already finished in
+  a tenth of a second. This is a backstop for a different, so-far-unobserved
+  failure: an analysis that genuinely runs long.
+
+### What could not be measured
+
+Some quantities do not exist for some images. SNR needs a standard deviation to
+divide by, CNR needs noise around the disc, and the wedge's R² needs a response
+that varies. On a saturated exposure none of those is available — not as zero,
+but as nothing at all.
+
+Every test therefore reports on two lists:
+
+| Field | Meaning |
+|---|---|
+| `rows` | objects that **were** measured. Every numeric field holds a real number |
+| `not_measured` | objects that could not be, each with its `id` and a `reason` |
+
+The rule is absolute: a row never carries an empty value. A caller that finds a
+row can format every number in it without checking, and one that wants to know
+what is missing looks in `not_measured`.
+
+This was not always so. An unmeasurable value used to be carried as `NaN`,
+which is corrosive in three separate ways: every comparison against it is
+silently false, so `nan < tolerance` reads as "within tolerance"; aggregates
+built on it (`max(0.0, nan)`) quietly produce a good-looking number; and it
+serialises to `null`, which then breaks whichever consumer formats it. All
+three happened at once — uniformity reported **pass** on an image with no
+signal while all five of its own rows said fail, and the printed report
+answered 500.
+
+A test that could measure nothing reports status `n/a` with a reason, and
+`overall_status` ranks `n/a` above `pass`, so such a scan can never come out as
+passed.
+
 ---
 
 ## Validation

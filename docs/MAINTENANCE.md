@@ -210,6 +210,63 @@ No.
 For trending, compare like with like: a series recomputed on one version is
 comparable throughout, whereas one spanning an algorithm change is not.
 
+### Knowing what an update did to the numbers
+
+The unit tests measure synthetic images, so they can all pass while a change
+quietly moves every measurement a field baseline is expressed in. The reference
+benchmark closes that gap: it runs the whole automatic pipeline over the HQ
+reference scans — both detectors, both physical prints, every orientation and
+the full dose series — and compares registration, ROI placement and each
+measured value against golden numbers committed in `tests/hq_benchmark.json`.
+
+```bash
+python -m pytest tests/test_hq_benchmark.py -q     # 6 representative scans, ~45 s
+PHANTOMQA_HQ_FULL=1 python -m pytest tests/test_hq_benchmark.py -q   # all 33, ~90 s
+```
+
+The six-scan selection also runs as part of the ordinary suite. Everything is
+skipped when the reference scans are not on the machine; point
+`PHANTOMQA_HQ_DIR` at them if they live outside `HQ testing/`.
+
+A failure names the scan and every value that moved, for example
+`roi_centers_mm[lowcontrast/L3]: moved (+1.40, -0.20) mm`. That is not
+automatically a defect — an improvement to detection is supposed to move ROIs.
+It is a decision point: read what moved, and if the change is intended,
+
+```bash
+python tests/hq_manifest.py --update     # then review the diff before committing
+```
+
+The diff is the record of what the change did to real measurements, and it
+belongs in the commit alongside the code.
+
+Two things the benchmark deliberately pins beyond the numbers: that no reference
+scan produces NaN or infinity anywhere in its results (that is what makes a
+report fail to render), and that the commercial Leeds PIX-13 images in
+`HQ testing/DICOM/` — a different test object entirely — never enter the
+reference set, a phantom definition or a baseline.
+
+### Exposures that cannot be measured
+
+`tests/test_unusable_exposures.py` is the opposite end: saturated images, a
+phantom hanging off the detector edge, a frame with no phantom in it. It runs on
+synthetic images everywhere, and additionally on the real field exposures in
+`Field testing/` when they are present (`PHANTOMQA_FIELD_DIR` if they live
+elsewhere).
+
+Those field exposures are **negative fixtures only**. Detection thresholds are
+set from the HQ reference scans and merely *checked* here — the good exposures
+must stay inside the gate and the broken ones outside it. Nothing about the
+phantom definition, a stored layout, a baseline or a threshold may be derived
+from them, and guard tests in the same file enforce it: application code may not
+name the field drop, no other test may reach for it, and no field exposure's
+SHA-256 may appear among the reference benchmark's golden values.
+
+A few tests there are marked `xfail(strict=True)`. Each names a defect found in
+the field review that is scheduled for repair; because the mark is strict, the
+suite fails as soon as one starts passing, which is the signal to delete the
+mark along with the fix.
+
 ---
 
 ## A phantom that differs from the definition

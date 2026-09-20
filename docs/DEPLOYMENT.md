@@ -146,6 +146,14 @@ Points to observe when applications share a server:
 default would kill a worker mid-analysis), worker recycling to bound memory
 growth, and loopback binding.
 
+These 900-second limits — gunicorn's and the proxy's — are the outer envelope,
+sized for a slow upload rather than for measuring. The analysis bounds itself
+much sooner with `PHANTOMQA_ANALYSIS_TIMEOUT_S` (default 120 s) and records a
+failure the operator can open. Keep the envelope well above it: the point is
+that the application reports its own timeout, instead of gunicorn killing a
+worker or the proxy returning a gateway error, neither of which leaves the
+operator anything to read.
+
 ```ini
 # /etc/systemd/system/phantomqa.service
 [Unit]

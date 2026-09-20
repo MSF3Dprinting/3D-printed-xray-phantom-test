@@ -290,6 +290,98 @@ printed objects and points back to step C, and a non-monotonic wedge says a
 step ROI may be sitting on a boundary. Read the reason before repeating the
 exposure.
 
+#### If two people open the same analysis
+
+Everyone shares one login, so two operators can have the same analysis open at
+once — and the software cannot tell them apart.
+
+Their work no longer overwrites silently. If a measuring point is moved while
+you have that analysis open, your next change is **refused rather than
+applied**, the page reloads to show the current points, and a message stays on
+screen explaining that your change did not take effect. Make it again on the
+points you can now see.
+
+This only protects measuring-point edits. Two people working on genuinely
+different analyses never interfere.
+
+#### If the window is closed or reloaded
+
+The scan is on the server from the moment the upload finishes, so nothing is
+lost and **the file never needs uploading again**.
+
+When you come back, the upload page offers *"You have an unfinished analysis on
+this computer"* with the file, phantom, operator and the step you had reached.
+Press **Continue this analysis** to pick it up. Nothing is fetched or
+recomputed until you press it, so a reload is always a safe way out of a page
+that is misbehaving.
+
+Below it, **Unfinished analyses** lists work that was started and never
+measured — by anyone using this installation, since everyone shares one
+account. That is deliberate: a scan uploaded on one machine can be continued on
+another, which is how the analysis and the exposure often end up in different
+rooms.
+
+Two details worth knowing:
+
+- The banner is remembered **by the browser**, not by the server. Two operators
+  on two machines each see only their own. On a *shared* machine you may see a
+  colleague's — which is why it names the file and the operator. **Not mine /
+  hide** only removes the note from this browser; the analysis is untouched and
+  still in History.
+- An analysis interrupted while measuring reopens at **step D**, one press
+  before the measurement, rather than starting it again by itself.
+
+#### When the image itself is the problem
+
+Before anything is measured, the software asks a simpler question: **can this
+exposure be measured at all?** It checks how much of the image sits on a single
+value, whether the fitted phantom outline had to stretch (which means part of it
+is off the detector), how many of the four central ruler lines were found, and
+how confidently the phantom was located.
+
+If an exposure fails, step A opens with a red panel naming each check that
+failed and what it measured, and the History row is badged **image**. The
+analysis still runs — the numbers may be useful for showing what went wrong —
+but two things are withheld:
+
+- it **cannot become the reference scan** for its phantom;
+- it **cannot set the measuring points** that future scans of that phantom
+  start from.
+
+That second one is not hypothetical. During the first field test a phantom's
+stored measuring points were overwritten three times inside twelve minutes from
+exposures in which nothing could be measured, so every operator who analysed
+that phantom afterwards began from marks taken off a blank image.
+
+The limits are set from the reference scans and sit far from anything a normal
+exposure produces, so a good scan is not expected to trip them. If one does,
+that is worth reporting: read the panel, which says exactly what was measured
+and what the limit was.
+
+Note on wording: the panel says what it observes ("most of this image sits on a
+single value") rather than guessing whether the exposure was too high or too
+low. The two look alike once the image has been rescaled, and the detector's own
+exposure index is the reliable guide.
+
+#### "Not measured" is not the same as "passed"
+
+A measurement needs something to measure. On an exposure that came out far too
+bright, the phantom is one flat white slab: a uniformity square with no
+variation in it has no signal-to-noise ratio, and a low-contrast disc with no
+noise around it has no contrast-to-noise ratio. These are not values of zero,
+they are absent values.
+
+Such a test reports **not measured**, names each square or disc it could not
+measure and says why, and never reports a pass. Earlier versions carried the
+missing number along instead, which had two visible consequences: uniformity
+could report **passed** on an image holding no signal at all, and opening the
+printed report for such a scan answered *Internal Server Error*. Both are
+fixed; a test that measured nothing now says so on the page and in the report.
+
+If you see this, the exposure is the thing to correct — check the technique and
+repeat it. Nothing about detector performance can be concluded from an image
+where the measurement never happened.
+
 ### F — Save and export
 
 The analysis is stored with its full audit trail. From here you can:

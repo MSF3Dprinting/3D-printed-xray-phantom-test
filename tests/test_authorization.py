@@ -41,6 +41,11 @@ def _build_app(tmp_path, monkeypatch, **env):
         "PHANTOMQA_LOG_CONSOLE": "false",
         "PHANTOMQA_LOG_DIR": str(tmp_path / "logs"),
         "PHANTOMQA_ROOT_PATH": "",
+        # importlib.reload below re-runs the module body, which recomputes ROOT
+        # from __file__ and undoes any monkeypatch of it. The data root has to
+        # come from the environment for the reloaded module's own Store to land
+        # in the temp dir instead of the checkout.
+        "PHANTOMQA_DATA_ROOT": str(tmp_path),
     }
     # clear inherited values FIRST, then apply, so a caller can set them
     for k in ("PHANTOMQA_PASSWORD", "PHANTOMQA_ALLOWED_HOSTS",
