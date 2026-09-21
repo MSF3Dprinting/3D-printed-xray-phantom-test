@@ -21,6 +21,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
+from starlette.middleware import gzip as _gzip
+from starlette.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, conlist, field_validator
 
 from .. import ALGO_VERSION
@@ -60,6 +62,26 @@ if not cfg.deletion_enabled:
 
 app = FastAPI(title="MSF Phantom QA", docs_url=None, redoc_url=None,
               openapi_url=None, root_path=cfg.root_path)
+
+# Nothing was compressed before — not the JSON, not the HTML, not the 127 kB of
+# browser code. Over a field link that is the difference between a usable page
+# and a slow one: measured on a real record, the analysis payload falls from
+# 197 kB to 90, a proposal from 92 to 41, the printed report from 1.7 MB to
+# 1.3, and app.js from 127 kB to 37.
+#
+# In the application rather than in the proxy on purpose: the proxy
+# configuration is deployment, which this work does not change, and a site that
+# already compresses simply sees content-encoding set and leaves it alone.
+# A rendered scan is a PNG and a DICOM is already packed: compressing them
+# again spends CPU on every request to gain a fraction of a percent. Starlette
+# decides that from a module-level tuple and offers no constructor argument for
+# it, so the tuple is extended here. A test asserts images come back
+# uncompressed, so if a future version changes the mechanism it fails loudly
+# instead of quietly going back to wasting the time.
+_gzip.DEFAULT_EXCLUDED_CONTENT_TYPES = tuple(
+    set(_gzip.DEFAULT_EXCLUDED_CONTENT_TYPES)
+    | {"image/", "application/zip", "application/dicom", "application/gzip"})
+app.add_middleware(GZipMiddleware, minimum_size=900, compresslevel=6)
 store = Store(resolve_root(ROOT))
 pdef = load_default()
 
@@ -203,7 +225,18 @@ async def security_middleware(request: Request, call_next):
         response.headers["Strict-Transport-Security"] = \
             "max-age=31536000; includeSubDomains"
     if path.startswith("/api/"):
-        response.headers["Cache-Control"] = "no-store"
+        # Records, listings and verdicts change, so they are never cached.
+        # A rendered scan image is the exception: the uploaded pixels are
+        # immutable and the URL already carries everything that varies the
+        # picture (id, window, scale), so the same URL can only ever mean the
+        # same bytes. Re-fetching ~1 MB on every open and every window change
+        # was the single heaviest habit on a field link — about fifteen
+        # seconds each time at 512 kbit/s. Private: it is patient-adjacent
+        # imagery and must not sit in a shared proxy.
+        if path.endswith("/image.png") and response.status_code == 200:
+            response.headers["Cache-Control"] = "private, max-age=86400"
+        else:
+            response.headers["Cache-Control"] = "no-store"
     return response
 
 

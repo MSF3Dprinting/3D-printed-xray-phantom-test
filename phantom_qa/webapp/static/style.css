@@ -331,3 +331,14 @@ button.danger:disabled { opacity: 0.45; cursor: default; }
 }
 #dup-card h3 { margin: 0 0 8px; font-size: 15px; }
 #dup-card .modal-actions { flex-wrap: wrap; }
+
+/* ---- manual corner picking ----
+   A strip under the image while corners are being placed. Deliberately not a
+   dialog: the operator is judging the picture, so nothing may cover it. */
+#corner-controls {
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  background: rgba(217, 160, 33, 0.10);
+}
+#corner-controls p.hint { margin: 4px 0 8px; }
+#corner-controls button { margin-right: 6px; }

@@ -14,6 +14,12 @@ const S = {
   visible: { geometry: true, linepairs: true, lowcontrast: true,
              uniformity: true, wedge: true },
   labels: true, selectedRoi: null, mode: "normal", manualCorners: [],
+  /* corner picking: which point the keyboard acts on, which is being
+     dragged, and where a left press began (so a drag is not a click) */
+  selectedCorner: null, dragCorner: null, pickPress: null,
+  /* window/level: the picture currently on screen, the window it was
+     rendered with, and a re-mapped copy shown while the slider moves */
+  wlPreview: null, wlCanvas: null, renderedWL: null,
   fieldEdgeSide: null, dragRoi: null, dimPreview: null, lcCorners: [],
   pendingFile: null,
   /* measuring-point undo state, mirrored from the server after every edit */
@@ -87,9 +93,11 @@ function rememberedAnalysis() {
 function clearAnalysisState() {
   S.aid = null; S.record = null; S.reg = null; S.geometry = null;
   S.results = null; S.baseline = null; S.imgEl = null;
+  S.wlPreview = null; S.renderedWL = null;
   S.selectedRoi = null; S.mode = "normal"; S.manualCorners = [];
   S.fieldEdgeSide = null; S.dragRoi = null; S.dimPreview = null;
-  S.lcCorners = []; S.pendingFile = null;
+  S.lcCorners = []; S.pendingFile = null; S.pickPress = null;
+  S.selectedCorner = null; S.dragCorner = null;
   S.history = { seq: 0, undo_depth: 0, redo_depth: 0 };
   S.layoutSource = ""; S.phantomProfile = null;
   S.lcAngleCommitted = 0; S.rotTargetId = null; S.previewPending = false;
@@ -284,14 +292,33 @@ function zoomFit() {
 
 function loadImage(params = "") {
   if (!S.aid) return;
+  // What window these bytes will represent, so a later preview knows what it
+  // is re-mapping FROM. Without it the preview would compound its own guesses.
+  const asked = wlFromParams(params);
   const img = new Image();
   img.onload = () => {
     const first = !S.imgEl;
     S.imgEl = img;
+    S.renderedWL = asked;
+    S.wlPreview = null;              // the exact render supersedes the preview
     S.imgScale = img.width / S.nativeCols;
     if (first) zoomFit(); else draw();
   };
   img.src = `api/analyses/${S.aid}/image.png${params}`;
+}
+
+/* The absolute window a request asks for, or the server's own default.
+
+   With no wc/ww the server stretches the 1st-99th percentile, which is what
+   display_range reports — so the preview has a defined starting point either
+   way. */
+function wlFromParams(params) {
+  const wc = /[?&]wc=([-\d.]+)/.exec(params);
+  const ww = /[?&]ww=([-\d.]+)/.exec(params);
+  if (wc && ww) return { wc: parseFloat(wc[1]), ww: parseFloat(ww[1]) };
+  const r = (S.reg && S.reg.display_range) || null;
+  if (!r) return null;
+  return { wc: (r.hi + r.lo) / 2, ww: Math.max(r.hi - r.lo, 1e-6) };
 }
 
 /* Window/level is expressed RELATIVE to the image's own value range, because
@@ -316,14 +343,60 @@ function updateWLReadout() {
     : "";
 }
 
+/* Window/level, previewed in the browser and confirmed by the server.
+
+   Every pause on the slider used to fetch a freshly rendered image: about a
+   megabyte, roughly fifteen seconds at 512 kbit/s. Hunting for the window that
+   makes the low-contrast discs visible therefore meant a minute of waiting per
+   attempt, which is most of why that task was reported as painful.
+
+   The preview re-maps the picture already on screen, instantly and without
+   traffic. It cannot invent detail the current rendering threw away, so the
+   server is still asked for the exact image — but only once the slider has
+   settled, and the operator sees the effect while deciding rather than after.
+   When the exact render arrives the preview is dropped. */
+function renderWLPreview() {
+  const want = wlAbsolute(), have = S.renderedWL;
+  if (!S.imgEl || !want || !have) return;
+  if (Math.abs(want.wc - have.wc) < 0.5 && Math.abs(want.ww - have.ww) < 0.5) {
+    S.wlPreview = null;              // already exactly what is displayed
+    return;
+  }
+  const w = S.imgEl.width, h = S.imgEl.height;
+  if (!S.wlCanvas) S.wlCanvas = document.createElement("canvas");
+  const cv = S.wlCanvas;
+  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+  const c = cv.getContext("2d", { willReadFrequently: true });
+  c.drawImage(S.imgEl, 0, 0);
+  const data = c.getImageData(0, 0, w, h);
+  const px = data.data;
+
+  // The displayed byte v came from [have.lo, have.hi]; map it back to a value
+  // and forward through the requested window. Precomputed over the 256
+  // possible bytes, so the per-pixel work is one table lookup.
+  const haveLo = have.wc - have.ww / 2, wantLo = want.wc - want.ww / 2;
+  const lut = new Uint8ClampedArray(256);
+  for (let i = 0; i < 256; i++) {
+    const value = haveLo + (i / 255) * have.ww;
+    lut[i] = Math.round(((value - wantLo) / want.ww) * 255);
+  }
+  for (let i = 0; i < px.length; i += 4) {
+    px[i] = px[i + 1] = px[i + 2] = lut[px[i]];
+  }
+  c.putImageData(data, 0, 0);
+  S.wlPreview = cv;
+}
+
 let wlTimer = null;
 function onWL() {
   updateWLReadout();
+  renderWLPreview();                 // immediate, no request
+  draw();
   clearTimeout(wlTimer);
   wlTimer = setTimeout(() => {
     const a = wlAbsolute();
     if (a) loadImage(`?wc=${a.wc.toFixed(1)}&ww=${a.ww.toFixed(1)}`);
-  }, 200);
+  }, 400);
 }
 $("#wl-center").addEventListener("input", onWL);
 $("#wl-width").addEventListener("input", onWL);
@@ -427,7 +500,7 @@ function draw() {
   ctx2d.save();
   ctx2d.translate(S.view.tx, S.view.ty);
   ctx2d.scale(S.view.k, S.view.k);
-  ctx2d.drawImage(S.imgEl, 0, 0);
+  ctx2d.drawImage(S.wlPreview || S.imgEl, 0, 0);
   ctx2d.restore();
 
   /* registration corners */
@@ -482,21 +555,102 @@ function draw() {
     ctx2d.fillText(String(i + 1), c[0] + 8, c[1]);
   });
 
-  /* manual corner clicks */
+  /* manual corner clicks — handles, not marks: each one can still be moved */
   S.manualCorners.forEach((p, i) => {
     const s = nat2scr(p);
+    const chosen = i === S.selectedCorner;
     ctx2d.fillStyle = "#ff4040";
     ctx2d.beginPath(); ctx2d.arc(s[0], s[1], 5, 0, Math.PI * 2); ctx2d.fill();
-    ctx2d.fillText(String(i + 1), s[0] + 8, s[1]);
+    // A ring marks the point the arrow keys will nudge, so the keyboard has a
+    // visible subject rather than an invisible one.
+    if (chosen) {
+      ctx2d.strokeStyle = "#ffffff";
+      ctx2d.lineWidth = 2;
+      ctx2d.beginPath(); ctx2d.arc(s[0], s[1], 10, 0, Math.PI * 2); ctx2d.stroke();
+    }
+    ctx2d.fillStyle = "#ff4040";
+    ctx2d.fillText(String(i + 1), s[0] + 10, s[1] - 6);
   });
+}
+
+/* Which placed corner is under the pointer, or null.
+
+   The same 14-pixel reach the ROI handles use, so grabbing behaves the same
+   everywhere in the viewer. */
+function hitCorner(screenPos) {
+  let best = null, bestD = 14;
+  S.manualCorners.forEach((p, i) => {
+    const s = nat2scr(p);
+    const d = Math.hypot(s[0] - screenPos[0], s[1] - screenPos[1]);
+    if (d < bestD) { bestD = d; best = i; }
+  });
+  return best;
 }
 
 /* ---- mouse interaction ---- */
 let panning = null;
+/* Mouse buttons, by the numbers the DOM uses: 0 left, 1 middle, 2 right.
+
+   Only the LEFT button may place or move anything. Every button used to: the
+   handlers never looked at which one was pressed, so a middle click — the one
+   an operator reaches for to pan — dropped a registration corner, and a middle
+   drag over a measuring point moved it. */
+const LEFT = 0, MIDDLE = 1;
+
+/* Held space turns the left button into a pan, the convention every image
+   editor shares. It is the fallback for touchpads with no usable middle
+   click, and it is tracked here rather than read from the event because
+   mousedown carries no key state for the space bar. */
+let spaceHeld = false;
+document.addEventListener("keydown", (e) => {
+  if (e.code !== "Space" || isTypingTarget(e.target)) return;
+  spaceHeld = true;
+  e.preventDefault();               // stop the page scrolling under the image
+  canvas.style.cursor = "grab";
+});
+document.addEventListener("keyup", (e) => {
+  if (e.code !== "Space") return;
+  spaceHeld = false;
+  canvas.style.cursor = "";
+});
+
+/* Shortcuts must never fire while a site name or an angle is being typed. */
+function isTypingTarget(el) {
+  const tag = el && el.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT"
+         || (el && el.isContentEditable);
+}
+
 canvas.addEventListener("mousedown", (ev) => {
   const pos = [ev.offsetX, ev.offsetY];
-  if (S.mode === "corners" || S.mode === "fieldedge" || S.mode === "lccorners") return;
-  if (S.stage === "C" && !signedOff()) {
+  // Windows shows the autoscroll cursor on a middle press and then interprets
+  // pointer movement as scrolling, which fights any panning built on top of
+  // it. Claiming the event here is what stops that.
+  if (ev.button === MIDDLE) ev.preventDefault();
+  // Panning stays available WHILE picking. It used to be switched off
+  // entirely, so the only way to reach a corner was to zoom out again —
+  // losing the magnification the operator had zoomed in for, which is why
+  // placing corners meant fighting the view instead of reading the image.
+  const picking = S.mode === "corners" || S.mode === "fieldedge"
+                  || S.mode === "lccorners";
+  if (picking) {
+    // Anything but a plain left press is a pan: the middle button, the right
+    // button, or the space bar held down — three ways to reach the same
+    // gesture, because not every laptop touchpad offers a middle click.
+    if (ev.button !== LEFT || spaceHeld) { startPan(pos); return; }
+    // A left press on a point already placed grabs it instead of adding a
+    // fifth: a corner put down slightly wrong is corrected, not restarted.
+    const grabbed = hitCorner(pos);
+    if (grabbed !== null) {
+      S.dragCorner = grabbed;
+      S.selectedCorner = grabbed;
+      draw();
+      return;
+    }
+    S.pickPress = pos;
+    return;
+  }
+  if (S.stage === "C" && !signedOff() && ev.button === LEFT) {
     const hit = hitRoi(pos);
     if (hit && hit.drag) {
       // Remember where the press started: a click that never moves must stay a
@@ -511,15 +665,24 @@ canvas.addEventListener("mousedown", (ev) => {
       return;
     }
   }
+  startPan(pos);
+});
+
+function startPan(pos) {
   panning = { start: pos, tx: S.view.tx, ty: S.view.ty };
   canvas.style.cursor = "grabbing";
-});
+}
 canvas.addEventListener("mousemove", (ev) => {
   const pos = [ev.offsetX, ev.offsetY];
   const nat = scr2nat(pos);
   const mm = pxToMm(nat);
   $("#cursor-mm").textContent = mm
     ? `x ${mm[0].toFixed(1)} mm  y ${mm[1].toFixed(1)} mm` : "";
+  if (S.dragCorner !== null && S.dragCorner !== undefined) {
+    S.manualCorners[S.dragCorner] = nat;
+    draw();
+    return;
+  }
   if (S.dragRoi) {
     if (S.dragStart && Math.hypot(pos[0] - S.dragStart[0],
                                   pos[1] - S.dragStart[1]) > 3) {
@@ -540,10 +703,30 @@ canvas.addEventListener("mousemove", (ev) => {
 canvas.addEventListener("mouseup", async (ev) => {
   canvas.style.cursor = "grab";
   const pos = [ev.offsetX, ev.offsetY];
+  const placing = S.mode === "corners" || S.mode === "lccorners"
+                  || S.mode === "fieldedge";
+  if (placing) {
+    // A point is a deliberate left click that did not move. Releasing any
+    // other button ends a pan and marks nothing; a left press that travelled
+    // was a drag, and a drag is not a decision about where a corner is.
+    const press = S.pickPress;
+    S.pickPress = null;
+    if (S.dragCorner !== null && S.dragCorner !== undefined) {
+      S.dragCorner = null;          // finished adjusting a placed point
+      renderCornerControls();
+      return;
+    }
+    if (ev.button !== LEFT || spaceHeld) { panning = null; return; }
+    if (press && Math.hypot(pos[0] - press[0], pos[1] - press[1]) > 4) return;
+  }
   if (S.mode === "corners") {
-    S.manualCorners.push(scr2nat(pos));
+    // Dropping the fourth corner used to submit immediately. One slip — and
+    // slips were reported — meant the registration was already away, with no
+    // undo and no way to nudge a point: the only remedy was to start again.
+    // Four clicks now fill four slots, and nothing is sent until Apply.
+    if (S.manualCorners.length < 4) S.manualCorners.push(scr2nat(pos));
+    renderCornerControls();
     draw();
-    if (S.manualCorners.length === 4) await submitManualCorners();
     return;
   }
   if (S.mode === "lccorners") {
@@ -609,6 +792,20 @@ canvas.addEventListener("mouseup", async (ev) => {
     }
   }
 });
+/* No context menu over the image.
+
+   It would cover the very corner being placed, and the right button is wanted
+   as a second way to pan for mice and touchpads without a usable middle one.
+   Suppressed only on the canvas; the rest of the page keeps its menu. */
+canvas.addEventListener("contextmenu", (ev) => ev.preventDefault());
+
+/* A middle click that reaches the document still triggers autoscroll in some
+   browsers even after mousedown was claimed, so the follow-up event is
+   claimed too. */
+canvas.addEventListener("auxclick", (ev) => {
+  if (ev.button === MIDDLE) ev.preventDefault();
+});
+
 canvas.addEventListener("wheel", (ev) => {
   ev.preventDefault();
   const f = ev.deltaY < 0 ? 1.15 : 1 / 1.15;
@@ -831,6 +1028,40 @@ function nudgeRotation(delta) {
 
 /* [ and ] nudge whichever angle control is in play: the block's field when it
    has focus, otherwise the selected ROI's panel, otherwise the block. */
+/* Keyboard while placing corners: nudge, undo, apply, cancel.
+
+   A mouse cannot reliably place a point on one detector pixel, and the corner
+   decides the registration every later measurement rests on. The arrow keys
+   give that last pixel without asking the operator to zoom further in. */
+document.addEventListener("keydown", (e) => {
+  if (S.mode !== "corners" || isTypingTarget(e.target)) return;
+  if (e.key === "Escape") { e.preventDefault(); cancelCornerPicking(); return; }
+  if (e.key === "Backspace" && S.manualCorners.length) {
+    e.preventDefault();
+    S.manualCorners.pop();
+    S.selectedCorner = null;
+    renderCornerControls();
+    draw();
+    return;
+  }
+  if (e.key === "Enter" && S.manualCorners.length === 4) {
+    e.preventDefault();
+    submitManualCorners();
+    return;
+  }
+  const step = { ArrowLeft: [-1, 0], ArrowRight: [1, 0],
+                 ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+  if (!step || S.selectedCorner === null || S.selectedCorner === undefined) return;
+  e.preventDefault();
+  // Screen pixels, converted to image pixels, so a nudge means the same
+  // distance on screen whatever the zoom — one press, one visible step.
+  const by = e.shiftKey ? 10 : 1;
+  const p = nat2scr(S.manualCorners[S.selectedCorner]);
+  S.manualCorners[S.selectedCorner] =
+    scr2nat([p[0] + step[0] * by, p[1] + step[1] * by]);
+  draw();
+});
+
 document.addEventListener("keydown", (e) => {
   if (S.stage !== "C") return;
   if (e.key !== "[" && e.key !== "]") return;
@@ -1768,8 +1999,10 @@ function stageA(c) {
     } catch (e) { status(e.message, true); }
   });
   $("#btn-manual-corners").addEventListener("click", () => {
-    S.mode = "corners"; S.manualCorners = [];
-    status("Click the 4 phantom corners in order around the square.");
+    S.mode = "corners"; S.manualCorners = []; S.selectedCorner = null;
+    status("Click the 4 phantom corners in order around the square. "
+           + "Nothing is sent until you press Apply.");
+    renderCornerControls();
     draw();
   });
 }
@@ -1798,8 +2031,60 @@ function applyProposal(r) {
   }
 }
 
-async function submitManualCorners() {
+/* The controls that make corner picking correctable.
+
+   Rendered beside the image rather than as a dialog, so the picture stays
+   visible while they are used — the whole task is judging the picture. */
+function renderCornerControls() {
+  const box = $("#corner-controls");
+  if (!box) return;
+  if (S.mode !== "corners") { box.innerHTML = ""; box.classList.add("hidden"); return; }
+  const n = S.manualCorners.length;
+  box.classList.remove("hidden");
+  box.innerHTML = `
+    <b>Manual corners — ${n} of 4 placed.</b>
+    <p class="hint">Left click to place. Drag a placed point to adjust it, or
+      select one and nudge with the arrow keys (Shift for ten pixels).
+      Middle-drag, right-drag or hold Space to pan; the wheel zooms. Nothing is
+      sent until you press Apply.</p>
+    <button class="primary" id="btn-corners-apply" ${n === 4 ? "" : "disabled"}>
+      Apply corners</button>
+    <button class="secondary" id="btn-corners-undo" ${n ? "" : "disabled"}>
+      Undo last point</button>
+    <button class="secondary" id="btn-corners-clear" ${n ? "" : "disabled"}>
+      Start over</button>
+    <button class="secondary" id="btn-corners-cancel">Cancel</button>`;
+  $("#btn-corners-apply").addEventListener("click", () => submitManualCorners());
+  $("#btn-corners-undo").addEventListener("click", () => {
+    S.manualCorners.pop();
+    S.selectedCorner = null;
+    renderCornerControls();
+    draw();
+  });
+  $("#btn-corners-clear").addEventListener("click", () => {
+    S.manualCorners = [];
+    S.selectedCorner = null;
+    renderCornerControls();
+    draw();
+  });
+  $("#btn-corners-cancel").addEventListener("click", () => cancelCornerPicking());
+}
+
+function cancelCornerPicking() {
   S.mode = "normal";
+  S.manualCorners = [];
+  S.selectedCorner = null;
+  S.pickPress = null;
+  renderCornerControls();
+  draw();
+  status("Manual corners cancelled — the existing registration is unchanged.");
+}
+
+async function submitManualCorners() {
+  if (S.manualCorners.length !== 4) return;
+  S.mode = "normal";
+  S.selectedCorner = null;
+  renderCornerControls();
   status("Re-registering with manual corners…");
   try {
     S.reg = await postJSON(`api/analyses/${S.aid}/register`,

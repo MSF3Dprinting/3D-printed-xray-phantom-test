@@ -460,3 +460,100 @@ def test_a_refused_edit_reloads_the_page_and_says_so(app_js):
         "this refusal must not clear itself before it is read"
     assert app_js.count("handleStaleGeometry(e)") >= 4, \
         "every editing path must route a refusal through it"
+
+
+# ------------------------------------------------------ mouse button discipline
+
+def test_only_the_left_button_places_or_moves_anything(app_js):
+    """Reported from the field: points appeared where nobody meant to put one.
+
+    Neither handler looked at which button was pressed, so the middle button —
+    the one an operator reaches for to pan — dropped a registration corner, and
+    a middle drag over a measuring point moved it."""
+    assert "const LEFT = 0" in app_js and "MIDDLE = 1" in app_js, \
+        "the button numbers should be named, not written as bare 0 and 1"
+
+    up = app_js[app_js.index('canvas.addEventListener("mouseup"'):]
+    up = up[:up.index('canvas.addEventListener("wheel"')]
+    assert "ev.button !== LEFT" in up, \
+        "releasing a non-left button while picking must place nothing"
+    guard = up.index("ev.button !== LEFT")
+    for mode in ('S.mode === "corners"', 'S.mode === "lccorners"',
+                 'S.mode === "fieldedge"'):
+        assert up.index(mode, guard) > guard, \
+            f"{mode} places a point before the button is checked"
+
+    down = app_js[app_js.index('canvas.addEventListener("mousedown"'):]
+    down = down[:down.index('canvas.addEventListener("mousemove"')]
+    assert "ev.button === LEFT" in down, \
+        "a measuring point must only be dragged with the left button"
+
+
+def test_the_image_does_not_fight_the_browser_for_the_other_buttons(app_js):
+    """Middle-press autoscroll and the right-click menu both land on the image.
+
+    Autoscroll turns pointer movement into scrolling, which would fight any
+    panning built on the middle button; the context menu covers the corner
+    being placed."""
+    assert 'canvas.addEventListener("contextmenu"' in app_js
+    assert 'canvas.addEventListener("auxclick"' in app_js
+    down = app_js[app_js.index('canvas.addEventListener("mousedown"'):]
+    down = down[:down.index('canvas.addEventListener("mousemove"')]
+    assert "ev.button === MIDDLE) ev.preventDefault()" in down, \
+        "the middle press must be claimed before autoscroll starts"
+
+
+def test_panning_stays_available_while_corners_are_being_placed(app_js):
+    """It was switched off entirely, so reaching a corner meant zooming out —
+    losing the magnification the operator had zoomed in to get."""
+    down = app_js[app_js.index('canvas.addEventListener("mousedown"'):]
+    down = down[:down.index("function startPan")]
+    assert "if (picking) {" in down
+    picking = down[down.index("if (picking) {"):]
+    assert "startPan(pos)" in picking, \
+        "a non-left press while picking must pan, not be ignored"
+    assert "spaceHeld" in picking, \
+        "space+drag is the fallback for touchpads without a middle click"
+
+
+def test_a_drag_does_not_leave_a_point_behind(app_js):
+    """Releasing after a pan must not mark a corner where the pan ended."""
+    up = app_js[app_js.index('canvas.addEventListener("mouseup"'):]
+    up = up[:up.index('canvas.addEventListener("contextmenu"')]
+    assert "S.pickPress" in up and "> 4) return" in up, \
+        "a left press that travelled is a drag, not a placement"
+
+
+def test_placing_the_fourth_corner_does_not_submit(app_js):
+    """The field complaint: one slip and the registration was already away.
+
+    Four clicks fill four slots; nothing is sent until Apply is pressed."""
+    up = app_js[app_js.index('if (S.mode === "corners") {'):]
+    up = up[:up.index('if (S.mode === "lccorners")')]
+    assert "submitManualCorners" not in up, \
+        "the fourth click must not submit by itself"
+    assert "renderCornerControls()" in up
+
+    controls = app_js[app_js.index("function renderCornerControls("):]
+    controls = controls[:controls.index("function cancelCornerPicking")]
+    for control in ("btn-corners-apply", "btn-corners-undo",
+                    "btn-corners-clear", "btn-corners-cancel"):
+        assert control in controls, f"corner picking has no {control}"
+    assert "of 4 placed" in controls, "the operator must see the progress"
+
+
+def test_a_placed_corner_can_still_be_moved(app_js):
+    """What turns a misclick into a correction rather than a restart."""
+    assert "function hitCorner(" in app_js, "placed points must be grabbable"
+    assert "S.dragCorner" in app_js, "and draggable once grabbed"
+    keys = app_js[app_js.index('if (S.mode !== "corners" || isTypingTarget'):]
+    keys = keys[:keys.index("document.addEventListener", 10)]
+    for key in ("ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"):
+        assert key in keys, f"{key} must nudge the selected corner"
+    assert "shiftKey" in keys, "a coarse nudge as well as a fine one"
+    assert "Backspace" in keys and "Escape" in keys, \
+        "undo and cancel must also be reachable from the keyboard"
+
+
+def test_the_corner_controls_exist_in_the_markup(index_html):
+    assert 'id="corner-controls"' in index_html
