@@ -13,12 +13,22 @@ habits dominated the traffic, and all three were free to fix:
 
 Measured before this work, at 512 kbit/s: the record 197 kB, a proposal 92 kB,
 the printed report 1.7 MB, each image or window change about fifteen seconds.
+
+The second round re-encoded the two pictures that were left, since both are
+only looked at (tests/test_lighter_downloads.py). On the reference Philips
+scan the report fell from 1.72 MB to 0.39 (1.3 MB to 0.27 as it travels,
+compressed) and the viewer's picture from 1.1 MB to 0.11 — about four seconds
+and two at 512 kbit/s, where they were twenty and seventeen. The budgets below
+hold those gains on a real scan.
 """
 
+import io
 import os
+import re
 
 import pytest
 
+from conftest import HAVE_SAMPLES, SAMPLES, SKIP_REASON, needs_samples
 from test_unusable_exposures import SYNTHETIC, _png16
 
 STATIC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -68,6 +78,81 @@ def test_compression_actually_shrinks_the_big_payloads(client, analysed):
     assert len(packed) < len(raw) * 0.75, (
         f"the record compresses from {len(raw)} to {len(packed)} bytes; if "
         f"that ratio has collapsed the payload shape has changed")
+
+
+# ------------------------------------------------ budgets on a real scan
+
+@pytest.fixture(scope="module")
+def real_scan(tmp_path_factory):
+    """What one reference scan costs to open, look at and print.
+
+    A synthetic image compresses far better than an X-ray, so a budget checked
+    on one would pass whatever the encoding. Measured once for the module:
+    the analysis takes a while, and every payload is captured before the next
+    test reloads the application underneath it."""
+    if not HAVE_SAMPLES:
+        pytest.skip(SKIP_REASON)
+    from fastapi.testclient import TestClient
+    from test_authorization import _build_app, _login
+    with pytest.MonkeyPatch.context() as mp:
+        mod = _build_app(tmp_path_factory.mktemp("budget"), mp)
+        c = TestClient(mod.app)
+        c.headers.update({"X-CSRF-Token": _login(c)})
+        with open(SAMPLES[0], "rb") as f:
+            up = c.post("/api/analyses",
+                        files={"file": ("scan.dcm", io.BytesIO(f.read()))},
+                        data={"site": "T", "phantom": "BUDGET"})
+        aid = up.json()["analyses"][0]["id"]
+        c.post(f"/api/analyses/{aid}/confirm", json={"stage": "A"})
+        c.post(f"/api/analyses/{aid}/propose", json={})
+        c.post(f"/api/analyses/{aid}/confirm",
+               json={"stage": "C", "save_profile": False})
+        c.post(f"/api/analyses/{aid}/compute", json={"sid_mm": 1000.0})
+        got = {name: c.get(f"/api/analyses/{aid}/{path}")
+               for name, path in (("report", "report.html"),
+                                  ("png", "image.png"),
+                                  ("jpg", "image.jpg"),
+                                  ("thumb_png", "image.png?scale=200"),
+                                  ("thumb_jpg", "image.jpg?scale=200"))}
+        c.close()
+    for name, r in got.items():
+        assert r.status_code == 200, f"{name}: {r.status_code}"
+    return got
+
+
+@needs_samples
+def test_the_printed_report_fits_its_budget(real_scan):
+    """1.72 MB before, 0.39 after. The budget has room for the report to grow
+    a little; it has no room for the overview going back to PNG (1.3 MB) or
+    the charts losing their palette (another 0.14 MB)."""
+    size = len(real_scan["report"].content)
+    assert size < 450_000, f"the report is {size / 1e6:.2f} MB"
+
+
+@needs_samples
+def test_the_report_carries_the_overview_as_jpeg_and_the_charts_as_png(
+        real_scan):
+    kinds = re.findall(r'data:image/(\w+);base64,',
+                       real_scan["report"].text)
+    assert kinds.count("jpeg") == 1, kinds
+    assert kinds.count("png") >= 3, "the charts are missing from the report"
+
+
+@needs_samples
+def test_the_viewer_picture_fits_its_budget(real_scan):
+    """Opened with every analysis, and again each time the window settles."""
+    png, jpg = real_scan["png"], real_scan["jpg"]
+    assert jpg.headers["content-type"] == "image/jpeg"
+    assert len(jpg.content) < 150_000, f"{len(jpg.content)} B"
+    assert len(jpg.content) < len(png.content) / 5, (
+        f"JPEG {len(jpg.content)} B against PNG {len(png.content)} B")
+
+
+@needs_samples
+def test_the_duplicate_thumbnail_is_lighter_as_jpeg(real_scan):
+    thumb = real_scan["thumb_jpg"].content
+    assert len(thumb) < 8_000, f"{len(thumb)} B"
+    assert len(thumb) < len(real_scan["thumb_png"].content)
 
 
 def test_a_rendered_image_may_be_kept_but_only_by_the_operator(client, analysed):

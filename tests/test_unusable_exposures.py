@@ -131,7 +131,7 @@ def null_lowcontrast_metrics(results) -> list[str]:
     number. A test that measured nothing should say so instead of listing
     eight empty discs."""
     lc = results.get("lowcontrast") or {}
-    if lc.get("status") in ("n/a", "error"):
+    if lc.get("status") in ("not measured", "error"):
         return []
     return [f"{r.get('id')}.{k}" for r in lc.get("rows") or []
             for k in ("cnr", "abs_cnr") if r.get(k) is None]
@@ -409,7 +409,11 @@ def _sources(*dirs):
 _MAY_USE_FIELD_SCANS = {"field_scans.py", "test_unusable_exposures.py",
                         # checks the acquisition gate against the real broken
                         # exposures; sets nothing from them
-                        "test_quality_gate.py"}
+                        "test_quality_gate.py",
+                        # checks that turning MONOCHROME1 images the right way
+                        # up leaves the readable field scans identical to the
+                        # last pixel; an equality check, it sets nothing
+                        "test_monochrome1.py"}
 
 
 def test_no_analysis_code_reads_the_field_scans():

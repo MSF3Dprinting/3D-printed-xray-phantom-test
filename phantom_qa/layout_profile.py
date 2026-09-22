@@ -21,6 +21,18 @@ for the uniformity, wedge and line-pair objects. Every ``*_px`` field, by
 contrast, is a product of THIS scan's transform, so none of them are stored;
 they are re-derived with :func:`refresh_px_geometry` when a layout is replayed.
 
+Which way round the low-contrast insert is fitted
+-------------------------------------------------
+Also a property of the phantom — the two builds in use differ exactly by a half
+turn of the insert — and the one reading that a weak exposure cannot make for
+itself. It travels as ``lowcontrast_insert`` rather than as a per-test scalar,
+because replaying it is not a copy: it becomes a *kept* decision on the new
+scan (source "stored"), which the contrast order is then checked against
+rather than allowed to overrule. A scan that could not tell stores nothing and
+leaves an earlier decision in place, so one weak exposure cannot erase what a
+good one established. Layouts saved before this existed carry none and replay
+exactly as they always did: each scan decides for itself.
+
 What is deliberately NOT stored
 -------------------------------
 * field edges — collimation is a property of the exposure, not the phantom, and
@@ -138,9 +150,30 @@ def walk_rois(node, out=None):
 
 # ------------------------------------------------------------- extraction
 
+def insert_to_store(orientation: dict | None,
+                    previous_layout: dict | None = None) -> dict | None:
+    """What a layout being saved should record about the insert orientation.
+
+    ``orientation`` is how the confirmed geometry is read (see
+    ``lowcontrast.read_orientation``). A decision — measured on this scan,
+    already kept, or set by hand — is recorded. An undetermined one is not a
+    decision, and saving "as designed" from it would pin a coin toss onto every
+    later scan, so the previous layout's value is carried over instead, or
+    nothing when there was none."""
+    o = orientation or {}
+    if o.get("source") in ("measured", "stored", "user") \
+            and isinstance(o.get("flipped"), bool):
+        return {"flipped": o["flipped"]}
+    prev = (previous_layout or {}).get("lowcontrast_insert")
+    if isinstance(prev, dict) and isinstance(prev.get("flipped"), bool):
+        return {"flipped": prev["flipped"]}
+    return None
+
+
 def extract_layout(geometry: dict, *, pdef_name: str = "",
                    pdef_version: str = "", algo_version: str = "",
-                   registration: dict | None = None) -> dict:
+                   registration: dict | None = None,
+                   lowcontrast_insert: dict | None = None) -> dict:
     """Build the storable layout from a geometry blob the operator confirmed.
 
     Every ROI is captured, not only the hand-moved ones. The automatic
@@ -171,7 +204,7 @@ def extract_layout(geometry: dict, *, pdef_name: str = "",
         keep = {k: node[k] for k in _SCALARS.get(test, ()) if k in node}
         if keep:
             scalars[test] = keep
-    return {
+    layout = {
         "version": LAYOUT_VERSION,
         "pdef_name": pdef_name,
         "pdef_version": pdef_version,
@@ -184,6 +217,12 @@ def extract_layout(geometry: dict, *, pdef_name: str = "",
         # eight candidate assignments.
         "registration": registration or {},
     }
+    # Only when there is a decision to record: an absent key is what tells a
+    # replay to let each scan decide, as layouts saved before this did.
+    if isinstance((lowcontrast_insert or {}).get("flipped"), bool):
+        layout["lowcontrast_insert"] = {
+            "flipped": lowcontrast_insert["flipped"]}
+    return layout
 
 
 # ------------------------------------------------------------- application
@@ -282,4 +321,15 @@ def apply_layout(ctx, geometry: dict, layout: dict) -> tuple[dict, dict]:
         "n_applied": len(applied),
         "n_skipped": len(skipped),
     }
+
+    # Kept, not copied: this scan's compute() reads the discs this way and
+    # checks its own contrast order against it instead of deciding afresh.
+    # Confidence is None because the value was not measured on this scan.
+    insert = layout.get("lowcontrast_insert")
+    lcg = (geometry or {}).get("lowcontrast")
+    if isinstance(insert, dict) and isinstance(insert.get("flipped"), bool) \
+            and isinstance(lcg, dict) and not lcg.get("_error"):
+        lcg["orientation"] = {"flipped": insert["flipped"], "source": "stored",
+                              "confidence": None}
+        report["insert_turned"] = insert["flipped"]
     return geometry, report

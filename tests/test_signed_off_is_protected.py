@@ -101,6 +101,7 @@ MUTATORS = [
     ("/api/analyses/{aid}/roi_rotate",
      {"roi_id": "linepairs/G2.0", "angle_deg": 12.0}),
     ("/api/analyses/{aid}/lowcontrast_block", {"angle_deg": -45.0}),
+    ("/api/analyses/{aid}/lowcontrast_orientation", {"flipped": True}),
     ("/api/analyses/{aid}/field_edge", {"side": "top", "point_px": [32.0, 2.0]}),
     ("/api/analyses/{aid}/geometry/undo", {}),
     ("/api/analyses/{aid}/geometry/redo", {}),
@@ -117,7 +118,12 @@ def test_a_signed_off_analysis_refuses_every_edit(client, signed_off, path, body
     assert r.status_code == 409, (
         f"{path} returned {r.status_code} on a validated analysis")
     detail = r.json()["detail"]
-    assert "Dr A" in detail and "Withdraw" in detail, detail
+    # The refusal names who signed and the way through that actually works.
+    # It used to say "withdraw the validation first", but signing off also
+    # finalises and withdrawing does not un-finalise, so that advice led
+    # straight into a second refusal.
+    assert "Dr A" in detail and "Re-run" in detail, detail
+    assert "Withdraw the validation first" not in detail
 
 
 def test_the_refusal_leaves_the_signed_off_record_intact(client, mod, signed_off):
@@ -133,13 +139,43 @@ def test_the_refusal_leaves_the_signed_off_record_intact(client, mod, signed_off
     assert client.get("/api/export.csv").status_code == 200
 
 
-def test_withdrawing_the_ruling_makes_it_editable_again(client, mod, signed_off):
+def test_withdrawing_the_ruling_does_not_unfinish_the_numbers(client, mod,
+                                                              signed_off):
+    """Two separate statements, withdrawn separately.
+
+    Signing off says an approver ruled on these numbers. Finalising says the
+    operator declared them finished. Withdrawing the ruling retracts the first
+    — it does not retract the second, so the record stays locked and the only
+    way to new numbers is a re-run, which keeps the old ones."""
     r = client.post(f"/api/analyses/{signed_off}/validation",
                     json={"status": "", "admin_password": ADMIN_PW})
     assert r.status_code == 200, r.text
+
+    r = client.post(f"/api/analyses/{signed_off}/roi",
+                    json={"roi_id": "linepairs/G2.0", "center_px": [30.0, 30.0]})
+    assert r.status_code == 409, r.text
+    assert "Re-run" in r.json()["detail"], \
+        "a refusal that names no way forward is a dead end"
+    assert mod.store.get(signed_off)["results"] is not None
+
+
+def test_re_running_is_the_way_back_to_an_editable_record(client, mod,
+                                                          signed_off):
+    """Before, the same edit went through silently and dropped the results.
+
+    Now it costs a password and a reason, and the previous state is kept as a
+    revision — so the correction is recorded rather than merely permitted."""
+    client.post(f"/api/analyses/{signed_off}/validation",
+                json={"status": "", "admin_password": ADMIN_PW})
+    r = client.post(f"/api/analyses/{signed_off}/rerun",
+                    json={"start": "results", "admin_password": ADMIN_PW,
+                          "reason": "approver rejected the G2.0 placement"})
+    assert r.status_code == 200, r.text
+
     r = client.post(f"/api/analyses/{signed_off}/roi",
                     json={"roi_id": "linepairs/G2.0", "center_px": [30.0, 30.0]})
     assert r.status_code == 200, r.text
+    assert mod.store.list_revisions(signed_off), "the old numbers were kept"
 
 
 def test_an_unvalidated_analysis_is_still_freely_editable(client, aid):

@@ -1,6 +1,132 @@
-# Plan after the first field test — for approval
+# Development plan — 2026-09-21, approved and implemented
 
-Date: 2026-09-20. Status: **approved; WP0 (the safety net) is complete, nothing
+Everything built after the first field test. Each step says where it comes
+from — one of your requests, or my own review of the scans — what you will see,
+which numbers move, and what it costs on a slow connection. The original plan
+of 2026-09-20 and its findings follow below it, kept as the record of how we
+got here.
+
+## Status — 2026-09-22
+
+**Steps 1 to 7 are implemented.** Approved on 2026-09-21 with parallel agents
+allowed: five steps were built in parallel in separate copies, merged, then
+read by two independent reviewers and checked against the plan by a third
+agent, which found four plan items marked done that were incomplete. All seven
+review findings and all four gaps were fixed. Full suite: **1314 passed, none
+skipped**, in the project folder. Reference benchmark: the only change is 33 ×
+field alignment "n/a" → "not applicable" and 6 × overall "n/a" → "pass" on the
+original scans; no measured number moved.
+
+| Step | Result |
+|---|---|
+| 1 · "n/a" split | Done. The six original scans now read "pass". "Not measured" counts as a warning, so a broken exposure can never read "pass". Stored records keep their old wording (your decision: new and re-run analyses only). |
+| 2 · Insert orientation per phantom ID | Done. Saved with the measuring points, replayed on later scans, "check the phantom ID" warning on disagreement, a switch in the marking step. |
+| 3 · Comparison with pictures | Done. 42–54 kB per scan; one shared window per detector/protocol group (a single window across detectors turned the other detector's pictures black); pictures embedded in the page; capped at 12 columns — the reference plus the most recent — with a note. |
+| 4a · Lighter reports | Done. 1.72 MB → 0.39 MB on the original scans. |
+| 4b · Lighter viewer picture | Done. 0.9 MB PNG → 93–113 kB JPEG. |
+| 4c · Compressing uploads in the browser | **Not started — waiting for your decision.** |
+| 5 · Exposure index and date | Done. Identity bar, report, History and CSV; older records filled in from their stored files at start-up. |
+| 6 · User guide and design notes | Done. |
+| 7 · Second field-test checklist | Done: docs/FIELD_TEST_CHECKLIST.md. |
+
+**Plan items found incomplete and now finished:** the explicit "use these
+measuring points for future scans" choice (every confirm was still overwriting
+the stored layout); correctable picking for the low-contrast block corners and
+field edges; the administrator override for the quality gate; re-run from
+History.
+
+**Review findings fixed:** workers starting together after an upgrade could
+crash on "duplicate column"; the exposure backfill never retried if interrupted;
+comparison size unbounded and charts full-colour; a status fallback missing in
+the picture table; report wording for an undecided orientation with turned
+rings; the signed-off lock advice ("withdraw first") no longer unlocked anything
+— it now points to Re-run; finalised records looked editable in the marking
+step; the close-up did not follow the block; the results table named discs
+differently from the chart and report; and, found during the merge, the
+close-up picture was cached under the edit counter and could show an old
+picture after undo.
+
+**Known, not changed (candidates for a later round):** "Recompute the numbers
+only" and "Re-check the measuring points" both reopen at step C; earlier
+revisions are not restorable from the page once a re-run has produced results;
+a second re-run can be started while the first is still on its way; the
+"Use anyway (administrator)…" button shows even where no administrator password
+is configured (it explains on click); records analysed before this round keep
+their old quality wording; the comparison report does not show exposure values;
+a comparison that includes scans never drawn before decodes each one (about
+2 s per scan) the first time. The page code has no JavaScript runtime in the
+tests — **a manual pass in a browser is advised before the field test**.
+
+## Done since the field test
+
+| Your request | What was done |
+|---|---|
+| 1 · Delete before finalising | Discard with confirmation only; gone from History, trends and exports; the phantom's previous measuring points come back if the discarded scan had replaced them. |
+| 2 · Re-run any analysis | "Re-run analysis" on the same record, three starting points; free before finalising, admin password + reason after; previous results kept and restorable. |
+| 3 · Mouse and mis-clicks | Left places, middle drags the view; corners no longer submit on the 4th click — drag, undo, then "Apply corners". |
+| 4 · Discs hard to see | Close-up of the disc block (straightened, flattened, windowed to itself, 20 kB) with its own contrast slider and a visibility ring per disc; the dark print's insert orientation read from the contrast (32/33 reference scans, 1 honestly undecided); disc-order check replaced (8 false warnings gone, no measured number changed). |
+| 5 · Scans flagged as the same | Checked before uploading; the dialog shows both files; "Continue this analysis" is the main action; re-exported scans noted. |
+| 6 · Stuck on "Computing…" | Time limit with a failed result instead of a hang; report never 500; a scan with no signal can no longer pass; bad exposures flagged at upload. |
+| Slow connection | Compression, window/level in the browser, cached image, duplicate check before sending, upload progress with time left and Cancel. |
+| MONOCHROME1 (approved 2026-09-21) | Flipped about the detector's range instead of the brightest pixel. The three readable field scans come out identical to the last pixel; only the two completely faulty ones move (by 66 and 95). Nothing needs re-running. |
+
+## Steps, in proposed order
+
+### Step 1 — "n/a" stops hiding "pass" *(from my review; approved in the original plan)*
+- **Today:** the overall result is the worst of the test results, and "n/a" counts as worse than "pass". X-ray field alignment is "n/a" on every scan so far, because no field edge is in the image — so **all six original scans show "n/a" although every test passes.** Worse, the same word is used for two different things: *does not apply* (field alignment) and *could not be measured* (corners not found, discs unreadable, a flat wedge, patterns that could not be placed).
+- **Change:** two words instead of one. **"not applicable"** — only field alignment with no field edge in the image; it does not lower the overall result, which reads e.g. "pass — field alignment not checked". **"not measured"** — everything that should have been measured and was not; it counts like a warning, so a bad exposure can never read "pass". Simply ranking "n/a" below "pass" would have let exactly that happen.
+- **You will see:** the new wording on the History badge, results page, report and CSV. The six original scans become "pass". The blue-print scans stay fail/warn because of the parked line-pair problem below.
+- **Numbers:** none change — only the overall verdict and its wording. Benchmark: 6 overall verdicts n/a → pass.
+- **Connection:** none. **Size:** small.
+
+### Step 2 — Disc orientation saved per phantom ID *(your decision, 2026-09-21)*
+- The close-up in the marking step says how the insert is fitted ("as drawn" / "turned half round — read from the contrast").
+- Saved with the phantom ID when you choose "use these measuring points for future scans" — the same explicit save as the measuring points today, and never from a scan that fails the quality check.
+- Later scans of that phantom use the saved value instead of deciding again, so even a very weak exposure is read the right way round. If a scan's contrast clearly says the opposite, the saved value is still used and the scan is flagged: "this looks like the other print — check the phantom ID".
+- A switch in the marking step changes it; every change is logged; past analyses are not rewritten unless re-run.
+- **Numbers:** none on the reference scans. **Connection:** about 100 bytes more on a request the close-up already makes.
+
+### Step 3 — Comparing scans with pictures *(your item 7)*
+- A table in the comparison report: one column per scan; rows for the whole phantom, line pairs, wedge, low contrast (the same flattened close-up as in the marking step) and uniformity.
+- Every picture straightened to the phantom's frame, so scans taken at 0°, 90° or 180° line up. One window for all scans, taken from the first or baseline scan, so a brighter picture really is brighter; a switch per row windows each picture on its own. Key numbers under each picture; click to enlarge. A scan that could not be registered gets a labelled empty cell, not a gap.
+- **Pictures are embedded in the report**, so a saved copy contains them (your decision; nothing is e-mailed from the app).
+- **Connection:** about 60–70 kB per scan (the prototype measured 52 kB for all five regions) — a 10-scan comparison about 0.7 MB, roughly 10 s at 512 kbit/s. Each scan's pictures are made once on the server and kept, so reopening a comparison costs no rendering.
+- The line-pair pictures simply show the strip as it is; they do not depend on the parked question.
+
+### Step 4 — The rest of the slow-connection work *(your low-speed instruction)*
+- **4a · Reports:** one report is 1.7 MB, 1.33 MB of it a single embedded overlay picture → about 0.4 MB. No number changes.
+- **4b · Viewer picture:** the background image when an analysis opens, 0.9 MB PNG → about 0.1 MB JPEG. Measurements always run on the original scan on the server; the picture is only for looking, and disc placement uses the separate lossless close-up.
+- **4c · Optional, last:** compress the scan in the browser before uploading — 7.5 → 2.9 MB measured, about 2 minutes → 45 s at 512 kbit/s. It touches the upload path, so only if you want it once 4a and 4b are in.
+
+### Step 5 — Exposure index and acquisition date shown *(from my review; helps with your item 6)*
+- All three detectors write the standard exposure index; the Carestream and Fuji also write the target exposure index and the deviation index; all write the acquisition date and time. None of it is shown today.
+- Shown beside each analysis (identity bar, report, History, CSV), so an underexposed scan carries e.g. "deviation index −4.8" next to its result. Shown only — nothing is judged from it yet. "Not recorded" where a detector does not write it.
+
+### Step 6 — User guide and design notes
+Everything above written up for the operators and for maintenance.
+
+### Step 7 — Ready for the second field test
+Full suite, benchmark, and a one-page checklist of what to try in the field.
+
+## Parked — on the to-do list, nothing changes until decided
+
+**Line pairs on the blue prints.** On all 27 blue-print scans the line-pair test fails or warns, and so does the overall result. Established from the pixels (bar frequency at each designed position, independent of the software's detection): on the blue prints the finest bars sit at the design's G1.1 end and the notched frame line on the opposite side; on the original phantom (`MSF^PHANTOM001`, folders 20260727 and 20260730, 6 of 6) and the field Fuji phantom (3 of 3 readable) the strip is in design order. Every registration is correct (4/4 corner markers, not mirrored, low-contrast block where designed). The G1.1/G1.2 swap in the results is the software's error: when the order does not fit, it falls back to a coarse frequency reading that cannot tell 1.1 from 1.2 lp/mm (1.07 read as 1.13, 1.23 as 1.27) and gives G1.2 the wrong block by 0.004. **Waiting for:** a look at a physical blue phantom next to `MSF^PHANTOM001`, same way up — are the finest lines at the same end? Until then, no line-pair code changes. Also parked: group 1.6 fails on 8 blue scans — not investigated.
+
+## Dropped
+
+- **Widening the disc search (±2.5 mm):** measured to make the dark print worse — faint discs drift to the edge of any larger search area. Placement was already on all 8 discs on all 33 reference scans. Agreed 2026-09-21.
+
+## Decisions needed
+
+1. **Approve this plan and its order.**
+2. **Step 1, existing records:** recompute the overall verdict on analyses already stored, or apply the new wording only to new and re-run analyses? *Recommended: new and re-run only* — nothing already finalised or signed changes wording under anyone's feet.
+3. **Step 4c** (compressing uploads in the browser): decide when steps 4a and 4b are done.
+
+---
+
+# Original plan after the first field test (2026-09-20) — approved
+
+Status at the time: **approved; WP0 (the safety net) is complete, nothing
 else is implemented.** The five WP0 items are struck through below; the audit
 log has since been read and its findings are folded into sections 1 and 3.
 Scope: the seven feedback items, the low-bandwidth requirement, and what the
@@ -37,7 +163,7 @@ ignored as instructed) and the 5 field scans. Each claim below is marked
 - **Line pairs fail or warn on all 27 Carestream HQ scans**, pass on Philips and Fuji **[verified]**. The ROIs sit correctly on the groups and the pitch is measured correctly, but in the blue-print phantoms the **line-pair strip is mounted end-for-end** (2.0 lp/mm group found 122 mm from its nominal place). The fallback matching then swaps the labels of the two coarsest groups (measured 0.932 / 0.816 mm against nominal 0.833 / 0.909 → "+11.9 % / −10.2 %"). Some orientations/doses also detect only 3 of 5 groups.
 - **The dark-blue print's low-contrast insert is rotated 180°** — confirms your remark. Read rotated, its contrasts follow the same rising pattern as the light-blue print. The software cannot tell (its angle estimate is ambiguous by 180°) and its order check is lenient: it warns on 8 of 15 dark-blue scans and silently accepts 7. That invites inconsistent manual "Turn 180°" between operators.
 - **Clipped scan 001 is accepted without warning** although the registration is stretched 5 % in one direction and every right-hand ROI is off its target.
-- Fuji images are MONOCHROME1 and are inverted with each image's *own* maximum (`ingest.py:103`): 938 / 872 / 843 on the field scans → a scan-dependent offset in every mean value **[read + numbers verified]**.
+- Fuji images are MONOCHROME1 and are inverted with each image's *own* maximum (`ingest.py:103`). ~~→ a scan-dependent offset in every mean value~~ **Corrected 2026-09-21:** on all three readable field scans the image maximum *is* the detector maximum (1023, on 77,000–100,000 pixels of unblocked beam), so the old rule was exact there; only the two completely faulty scans differed (by 66 and 95). Fixed anyway, as a guard for future exposures with no unblocked beam.
 - Fuji CR headers carry no kV/mAs, so every CR scan gets the same protocol signature; ExposureIndex / Sensitivity / DeviationIndex are present but not extracted.
 - ~~Running the test suite creates `data/phantom_qa.sqlite3` + `data/uploads/` in the working tree~~ — it did, and the log directory too; on a server that would have opened the live database. **Fixed in WP0.2.** Of 708 tests, **35 were skipping** because `tests/conftest.py` still pointed at the pre-move sample folder; all now run.
 
@@ -63,7 +189,7 @@ ignored as instructed) and the 5 field scans. Each claim below is marked
 4. ~~Field scans as *negative* fixtures~~ — done: `tests/field_scans.py` and `tests/test_unusable_exposures.py`, with synthetic saturated / clipped / flat / no-phantom images so the checks also run where no scans exist. Guards: application code may not name the field drop, no other test may reach for it, and no field exposure's hash may appear in the reference benchmark. Two defects are recorded as `xfail(strict=True)` and will announce themselves when WP1 fixes them.
 5. Baseline established: **760 tests pass, 0 skipped** with sample scans, reference scans and the full benchmark all enabled, and the suite no longer writes anything into the checkout.
 
-### WP1 — Never stuck, never 500, never a false pass (item 6)
+### WP1 — Never stuck, never 500, never a false pass (item 6) — DONE
 1. Front end: null-safe formatting everywhere in the results page; rendering moved inside the error handling so a failure shows a message with "Back / Retry" and always clears the busy state; one global handler for unexpected errors.
 2. `report.py` / `comparison_report.py`: charts and tables tolerate missing values ("not measurable") instead of 500.
 3. Analysis modules: a value that cannot be measured becomes a structured **"not measurable" → fail with a reason**, never NaN → pass. One sanitising choke point before JSON/DB.
@@ -71,7 +197,7 @@ ignored as instructed) and the 5 field scans. Each claim below is marked
 5. Time limit, as asked: a cooperative deadline between analysis steps (default e.g. 120 s, configurable) that stores **"failed: timed out"** as the result; the browser request gets a matching timeout. Honest limitation: a single numpy call cannot be interrupted mid-way inside the current worker model; the steps are 0.1–4 s each, so the check between steps is sufficient. Registration during upload moved off the event loop so one slow scan no longer stalls other users of that worker.
 6. Reload resumes the open analysis; the upload page lists unfinished analyses ("continue").
 
-### WP2 — Record life-cycle (items 1, 2, 5)
+### WP2 — Record life-cycle (items 1, 2, 5) — DONE
 1. Make **"finalized" real**: `finalized_at/by` columns, set by Finalize (refused when there are no results). One shared definition of "protected" = finalized, signed-off, or baseline.
 2. **Discard** (item 1): new endpoint, confirmation only, works even with no admin password configured; refused once protected (then the existing admin delete applies, unchanged). State check and delete in one transaction. Hard delete → gone from History, trends, label counts, exports, duplicate check. Button inside the wizard and in History; no full-record download just to open the dialog (today 195 kB).
 3. If the discarded analysis had stored the phantom's layout (happens at step C, *before* finalize), the previous layout is restored, else forgotten.
@@ -80,7 +206,7 @@ ignored as instructed) and the 5 field scans. Each claim below is marked
 6. **Duplicates** (item 5): browser hashes the file and asks the server *before* uploading (saves 7.5 MB ≈ 2 min per true duplicate; falls back silently where unavailable); dialog rewritten — shows both sides (file name, size, modified time, upload and acquisition time, stage, thumbnail 4–8 kB) with **"Continue this analysis"** as the primary action; SOPInstanceUID as a non-blocking "same exposure re-exported" hint; never the file name. Zip uploads handled per member. Chosen-file box shows size + modified time so the two `003_0000.dcm` can be told apart.
 7. Small fixes found on the way: web compute does not stamp algorithm version; re-register leaves a stale status chip; cached image served after a delete on another worker.
 
-### WP3 — Viewer and bandwidth (item 3 + cross-cutting)
+### WP3 — Viewer and bandwidth (item 3 + cross-cutting) — mouse and picking DONE; bandwidth items 4–8 open
 1. Mouse rules everywhere in the viewer: **left = place/drag, middle-drag = pan** (also Space+drag and right-drag for mice/touchpads without a middle button), wheel = zoom at cursor; browser autoscroll/context menu suppressed on the canvas.
 2. Corner picking: panning and zoom stay available while picking; points are draggable handles with arrow-key nudge and "Undo last point"; **no auto-submit on the 4th click** — an explicit "Apply corners"; a magnifier loupe at the cursor. Same for low-contrast block corners and field edges.
 3. Optional: server snaps rough clicks to the sub-pixel phantom edge (prototype started) — makes zooming on every corner unnecessary.

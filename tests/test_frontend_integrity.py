@@ -23,6 +23,15 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATIC = os.path.join(ROOT, "phantom_qa", "webapp", "static")
 
 
+def body_of(app_js: str, name: str) -> str:
+    """The source of one function, from its definition to the next one."""
+    marker = "\nfunction "
+    start = app_js.index(f"function {name}(")
+    rest = app_js[start:]
+    end = rest.index(marker, 10) if marker in rest[10:] else len(rest)
+    return rest[:end]
+
+
 def _read(name: str) -> str:
     with open(os.path.join(STATIC, name), encoding="utf-8") as f:
         return f.read()
@@ -250,9 +259,12 @@ def test_step_e_leads_with_a_summary(app_js):
     assert "summaryRows" in app_js
     assert "<th>test</th><th>result</th><th>measured</th>" in app_js, (
         "step E has no per-test summary table")
-    # Anything that is not a pass opens its own detail — including "n/a",
-    # which means the test was never measured, not that it was fine.
-    assert 'cd.status !== "pass")).join("")' in app_js
+    # Anything that is not a pass opens its own detail — including "not
+    # measured", which means the test was never measured, not that it was
+    # fine. Only "not applicable" stays folded: there is nothing to look at.
+    assert 'needsLook(cd.status))).join("")' in app_js
+    assert 'const needsLook = (s) => s !== "pass" && s !== "not applicable";' \
+        in app_js
 
 
 def test_the_block_can_be_turned_end_for_end(app_js):
@@ -478,10 +490,12 @@ def test_only_the_left_button_places_or_moves_anything(app_js):
     assert "ev.button !== LEFT" in up, \
         "releasing a non-left button while picking must place nothing"
     guard = up.index("ev.button !== LEFT")
-    for mode in ('S.mode === "corners"', 'S.mode === "lccorners"',
-                 'S.mode === "fieldedge"'):
-        assert up.index(mode, guard) > guard, \
-            f"{mode} places a point before the button is checked"
+    # Every picking job (phantom corners, block corners, field edge) places
+    # through the one call, so checking where it sits covers all three.
+    assert "placePickPoint(" in up[guard:], \
+        "picking must place its point after the button is checked"
+    assert "placePickPoint(" not in up[:guard], \
+        "a point is placed before the button is checked"
 
     down = app_js[app_js.index('canvas.addEventListener("mousedown"'):]
     down = down[:down.index('canvas.addEventListener("mousemove"')]
@@ -528,9 +542,8 @@ def test_placing_the_fourth_corner_does_not_submit(app_js):
     """The field complaint: one slip and the registration was already away.
 
     Four clicks fill four slots; nothing is sent until Apply is pressed."""
-    up = app_js[app_js.index('if (S.mode === "corners") {'):]
-    up = up[:up.index('if (S.mode === "lccorners")')]
-    assert "submitManualCorners" not in up, \
+    up = body_of(app_js, "placePickPoint")
+    assert "submitManualCorners" not in up and "applyPicking" not in up, \
         "the fourth click must not submit by itself"
     assert "renderCornerControls()" in up
 
@@ -539,14 +552,15 @@ def test_placing_the_fourth_corner_does_not_submit(app_js):
     for control in ("btn-corners-apply", "btn-corners-undo",
                     "btn-corners-clear", "btn-corners-cancel"):
         assert control in controls, f"corner picking has no {control}"
-    assert "of 4 placed" in controls, "the operator must see the progress"
+    assert "of ${job.points} placed" in controls, \
+        "the operator must see the progress"
 
 
 def test_a_placed_corner_can_still_be_moved(app_js):
     """What turns a misclick into a correction rather than a restart."""
     assert "function hitCorner(" in app_js, "placed points must be grabbable"
     assert "S.dragCorner" in app_js, "and draggable once grabbed"
-    keys = app_js[app_js.index('if (S.mode !== "corners" || isTypingTarget'):]
+    keys = app_js[app_js.index("if (!job || isTypingTarget(e.target)) return;"):]
     keys = keys[:keys.index("document.addEventListener", 10)]
     for key in ("ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"):
         assert key in keys, f"{key} must nudge the selected corner"
@@ -557,3 +571,72 @@ def test_a_placed_corner_can_still_be_moved(app_js):
 
 def test_the_corner_controls_exist_in_the_markup(index_html):
     assert 'id="corner-controls"' in index_html
+
+
+# ---------------------------------------------------------- discarding work
+
+def test_the_panel_asks_the_small_endpoint_not_the_whole_record(app_js):
+    """Opening it used to cost 195 kB to read about a hundred bytes."""
+    body = app_js[app_js.index("async function deleteAnalysis("):]
+    body = body[:body.index("\nasync function ", 10)]
+    assert "delete_impact" in body
+    assert "await api(`api/analyses/${aid}`)" not in body, \
+        "the confirmation panel is fetching the entire record again"
+
+
+def test_an_unfinished_analysis_offers_discard_without_a_password(app_js):
+    body = app_js[app_js.index("async function discardAnalysis("):]
+    body = body[:body.index("async function deleteAnalysis(")]
+    assert "confirm: true" in body and "/discard" in body
+    assert "admin" not in body.lower().replace("administrator password", ""), \
+        "discarding must not ask for a credential"
+    assert "uploading it again" in body, \
+        "the operator must be told the file itself goes"
+
+
+def test_the_confirmation_is_a_real_panel_not_the_browser_dialog(app_js,
+                                                                 index_html):
+    """confirm() cannot show the detail that makes the answer obvious."""
+    assert "function confirmPanel(" in app_js
+    assert 'id="confirm-backdrop"' in index_html
+    panel = body_of(app_js, "confirmPanel")
+    assert "Escape" in panel, "the safe answer must be the easy one"
+
+
+def test_a_protected_record_offers_no_discard_button(app_js):
+    bar = app_js[app_js.index("function renderIdentityBar("):]
+    bar = bar[:bar.index("\nfunction ", 10)]
+    assert "(r.protection || []).length ? \"\"" in bar, \
+        "the button must be absent once anything has been decided"
+
+
+# ---------------------------------------------------------- re-running a scan
+
+def test_a_finished_analysis_can_be_rerun_from_the_page(app_js, index_html):
+    """It used to be a dead end: step F has no way back, so the only route to
+    fresh numbers was uploading the same file again."""
+    assert 'id="btn-rerun"' in app_js, "step F offers no way to re-run"
+    assert 'id="rerun-backdrop"' in index_html
+    for choice in ("results", "points", "registration"):
+        assert f'value="{choice}"' in index_html, \
+            f"the re-run panel offers no '{choice}' starting point"
+    assert "never needs uploading" in app_js or "nothing is uploaded" in index_html, \
+        "the operator should be told the file is not sent again"
+
+
+def test_the_panel_warns_about_what_a_rerun_undoes(app_js):
+    body = app_js[app_js.index("async function rerunAnalysis("):]
+    body = body[:body.index("async function undoRerun(")]
+    assert "withdrawn" in body, "a signed-off record must warn about the ruling"
+    assert "reference scan" in body, "and about being the phantom's reference"
+    assert "protection" in body, "the warnings key off the record's protection"
+
+
+def test_an_unfinished_rerun_offers_its_way_back(app_js):
+    """A dropped connection leaves a record with no results, missing from
+    trends. The undo must be visible on the record itself."""
+    assert "btn-undo-rerun" in app_js
+    assert "r.revision_count" in app_js, \
+        "the banner must key off a kept previous state"
+    assert "async function undoRerun(" in app_js
+    assert "rerun/cancel" in app_js

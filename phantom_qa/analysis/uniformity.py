@@ -108,7 +108,7 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
         return {
             "rows": [], "not_measured": not_measured,
             "snr_avg": None, "mean_avg": None, "max_abs_dsnr_pct": None,
-            "tolerance_pct": tol, "status": "n/a",
+            "tolerance_pct": tol, "status": "not measured",
             "reasons": [
                 f"not one of the {len(not_measured)} squares carries any "
                 f"variation, so uniformity could not be measured at all. "
@@ -147,7 +147,7 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
 
     # An incomplete answer is not a pass: with a square missing, the comparison
     # is against a mean that square never contributed to.
-    status = "fail" if bad else ("n/a" if not_measured else "pass")
+    status = "fail" if bad else ("not measured" if not_measured else "pass")
     return {
         "rows": rows, "not_measured": not_measured,
         "snr_avg": snr_avg, "mean_avg": mean_avg,

@@ -216,7 +216,8 @@ def _summary(failed) -> str:
     else:
         head = ("This image is missing features the measurements rely on.")
     return head + " The analysis can still be run, but it cannot become a " \
-                  "reference scan or set the measuring points for this phantom."
+                  "reference scan or set the measuring points for this " \
+                  "phantom unless an administrator approves it."
 
 
 def blocks_reference_use(quality) -> bool:
@@ -227,5 +228,9 @@ def blocks_reference_use(quality) -> bool:
     later scans are compared against, nor supply the measuring points the next
     operator starts from. That is how one ruined exposure contaminates a
     phantom's whole history.
+
+    True means refused on an ordinary user's say-so. The web layer lets an
+    administrator overrule it, with a written reason, for the rare exposure
+    that failed a check and is still the best a site has.
     """
     return bool(quality) and quality.get("verdict") == "poor"

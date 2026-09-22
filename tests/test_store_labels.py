@@ -40,7 +40,8 @@ def results_for(sd=100.0, cnr=-0.8, snr=47.0, wedge_mean=3200.0):
                           "residuals_pct_of_span": [0.0]},
                   "rows": [{"step": 1, "mean": wedge_mean, "std": 20.0,
                             "n": 100, "saturated": False}]},
-        "geometry": {"dimension_status": "pass", "field_status": "n/a",
+        "geometry": {"dimension_status": "pass",
+                     "field_status": "not applicable",
                      "rulers": {}, "dimensions": {}, "field_alignment": {},
                      "central_line_separations": {}, "scale": {}},
     }

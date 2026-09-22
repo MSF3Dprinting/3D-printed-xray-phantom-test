@@ -352,11 +352,17 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
         worst_pct = max(worst_pct, abs(pct))
 
     dim_tol = tol.get("dim_dev_pct", 1.0)
-    dim_status = "n/a"
+    # Two different absences, worded apart. Every phantom has corner marks, so
+    # dimensions that could not be measured are a shortfall of this exposure.
+    # A radiation field edge is only in the picture when the field was
+    # collimated inside the detector, and the usual exposure is not taken that
+    # way — so with no edge anywhere, alignment does not apply rather than
+    # having failed to measure.
+    dim_status = "not measured"
     if dims:
         dim_status = ("pass" if abs(dims["dev_from_nominal_pct"]) <= dim_tol
                       else "warn")
-    field_status = "n/a"
+    field_status = "not applicable"
     if any_field:
         field_status = ("pass" if worst_pct <= tol.get("field_pct_sid", 2.0)
                         else "fail")
@@ -414,8 +420,9 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
         why = {side: f.get("reason") for side, f in field_rows.items()
                if f.get("reason")}
         field_reasons.append(
-            "no radiation-field edge could be measured on any side, so "
-            "alignment was not assessed.")
+            "no radiation-field edge was found on any side, so alignment was "
+            "not checked. It can only be checked when the edge of the field "
+            "falls inside the image.")
         for side, r in why.items():
             field_reasons.append(f"{side}: {r}")
     else:

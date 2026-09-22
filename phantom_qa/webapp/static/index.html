@@ -71,19 +71,38 @@
 
 <div id="dup-backdrop" class="hidden">
   <div id="dup-card">
-    <h3>This file has already been analysed</h3>
-    <p class="hint">The uploaded file is byte-for-byte identical to an existing
-      record. Analysing it again would add a second row to History and count
-      twice in every trend.</p>
-    <div class="card"><div class="kv">
-      <div>Analysis</div><div class="mono" id="dup-id"></div>
-      <div>Site / phantom</div><div id="dup-who"></div>
-      <div>Recorded</div><div id="dup-when"></div>
-      <div>Result</div><div id="dup-status"></div>
-    </div></div>
+    <h3>This scan is already here</h3>
+    <p class="hint" id="dup-lead"></p>
+    <div class="dup-sides">
+      <div class="dup-side">
+        <h4>The file you chose</h4>
+        <div class="dup-thumb dup-thumb-empty" id="dup-new-thumb">not sent</div>
+        <div class="kv">
+          <div>File name</div><div id="dup-new-name"></div>
+          <div>Size</div><div id="dup-new-size"></div>
+          <div>Modified</div><div id="dup-new-mtime"></div>
+        </div>
+      </div>
+      <div class="dup-side">
+        <h4>The analysis already here</h4>
+        <img class="dup-thumb" id="dup-thumb" alt="Thumbnail of the stored scan">
+        <div class="kv">
+          <div>Analysis</div><div class="mono" id="dup-id"></div>
+          <div>File name</div><div id="dup-name"></div>
+          <div>Size</div><div id="dup-size"></div>
+          <div>Site / phantom</div><div id="dup-who"></div>
+          <div>Operator</div><div id="dup-operator"></div>
+          <div>Exposure taken</div><div id="dup-acquired"></div>
+          <div>Uploaded</div><div id="dup-when"></div>
+          <div>Progress</div><div id="dup-stage"></div>
+          <div>Result</div><div id="dup-status"></div>
+        </div>
+      </div>
+    </div>
     <div class="modal-actions">
-      <button id="dup-open" class="primary">Open the existing analysis</button>
-      <button id="dup-again" class="secondary">Analyse again anyway</button>
+      <button id="dup-open" class="primary">Continue this analysis</button>
+      <button id="dup-again" class="secondary">Analyse the file again as a
+        separate record</button>
       <button id="dup-cancel" class="secondary">Cancel</button>
     </div>
   </div>
@@ -112,6 +131,72 @@
     <div class="modal-actions">
       <button id="v-save" class="primary">Record decision</button>
       <button id="v-cancel" class="secondary">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div id="rerun-backdrop" class="hidden">
+  <div id="rerun-card">
+    <h3>Re-run this analysis</h3>
+    <!-- Which record, because the panel is also opened from a History row,
+         where nothing else on screen says which analysis it is about. -->
+    <p class="hint" id="rerun-target"></p>
+    <p class="hint">The scan is already on the server — nothing is uploaded.
+      The record keeps its id, labels and dates.</p>
+    <div id="rerun-warnings"></div>
+    <label class="vfield"><input type="radio" name="rerun-start" value="results"
+      checked> Recompute the numbers only — keeps the registration and the
+      measuring points exactly as they are</label>
+    <label class="vfield"><input type="radio" name="rerun-start" value="points">
+      Re-check the measuring points — keeps the registration</label>
+    <label class="vfield"><input type="radio" name="rerun-start"
+      value="registration"> Start again from registration — re-detects the
+      phantom; manual corners can be used afterwards</label>
+    <div id="rerun-admin" class="hidden">
+      <label class="vfield">Reason (recorded in the audit log)
+        <textarea id="rerun-reason" rows="2"
+                  placeholder="e.g. re-measured after the algorithm update"></textarea></label>
+      <label class="vfield">Administrator password
+        <input id="rerun-pw" type="password" autocomplete="off"></label>
+    </div>
+    <p id="rerun-error" class="login-error"></p>
+    <div class="modal-actions">
+      <button id="rerun-go" class="primary">Re-run</button>
+      <button id="rerun-cancel" class="secondary">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- The administrator's override of the image-quality check. The failed
+     checks are filled in by app.js, so whoever decides sees exactly what they
+     are overruling; the reason goes in the audit log beside them. -->
+<div id="override-backdrop" class="hidden">
+  <div id="override-card">
+    <h3 id="override-title"></h3>
+    <div id="override-body"></div>
+    <label class="vfield">Reason (recorded in the audit log)
+      <textarea id="override-reason" rows="2"
+                placeholder="e.g. only exposure possible today; checked by eye"></textarea></label>
+    <label class="vfield">Administrator password
+      <input id="override-pw" type="password" autocomplete="off"></label>
+    <p id="override-error" class="login-error"></p>
+    <div class="modal-actions">
+      <button id="override-go" class="danger"></button>
+      <button id="override-cancel" class="secondary">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- A plain yes/no panel. Its own markup rather than the browser's confirm(),
+     which cannot be styled, cannot show the detail that makes the answer
+     obvious, and blocks the page while it is up. -->
+<div id="confirm-backdrop" class="hidden">
+  <div id="confirm-card">
+    <h3 id="confirm-title"></h3>
+    <div id="confirm-body"></div>
+    <div class="modal-actions">
+      <button id="confirm-yes" class="danger"></button>
+      <button id="confirm-no" class="secondary">Cancel</button>
     </div>
   </div>
 </div>
@@ -184,7 +269,9 @@
       <tr><th><input type="checkbox" id="sel-all"></th>
           <th title="from the scanner's own clock (DICOM)">acquired</th>
           <th title="when the file reached this server">uploaded</th>
-          <th>site</th><th>phantom</th><th>source</th><th>protocol</th>
+          <th>site</th><th>phantom</th><th>source</th>
+          <th title="Exposure index (EI) and deviation index (DI), as written by the detector. DI 0 is the exposure the detector was set up to expect; +1 is about a quarter more, −1 about a fifth less.">exposure</th>
+          <th>protocol</th>
           <th>stage</th><th>status</th><th>validation</th><th>base</th>
           <th></th></tr>
     </thead><tbody></tbody></table>

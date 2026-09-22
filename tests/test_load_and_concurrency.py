@@ -218,13 +218,18 @@ def test_simultaneous_baseline_marks_leave_exactly_one(mod):
 def test_simultaneous_stage_c_confirms_share_one_layout(mod):
     """Two scans of one phantom confirmed at the same moment: the stored
     layout is an upsert inside the write lock, so both succeed and one row
-    remains."""
+    remains.
+
+    Both operators ticked "use these measuring points for future scans".
+    Without that the second to arrive leaves the first one's layout alone,
+    and there is no race on the row left to test."""
     a1, _ = _editable_analysis(mod, phantom="MSF-01", seed=1)
     a2, _ = _editable_analysis(mod, phantom="MSF-01", seed=2)
 
     def confirmer(aid):
         c = _client(mod)
-        r = c.post(f"/api/analyses/{aid}/confirm", json={"stage": "C"})
+        r = c.post(f"/api/analyses/{aid}/confirm",
+                   json={"stage": "C", "save_profile": True})
         return r.status_code, r.json().get("profile_saved")
 
     out = _run_threads([lambda a=a1: confirmer(a), lambda a=a2: confirmer(a)])

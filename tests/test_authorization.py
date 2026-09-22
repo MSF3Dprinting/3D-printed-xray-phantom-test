@@ -129,6 +129,13 @@ ROUTES = [
     ("GET",  "/app.js",                            "user"),
     ("GET",  "/api/analyses",                      "user"),
     ("POST", "/api/analyses",                      "user"),
+    # Answers "do you already hold this file", for hashes the caller names.
+    # Same reach as the upload it precedes, so the same level guards it.
+    ("POST", "/api/upload_check",                  "user"),
+    # The block on its own, and where its discs are. Reads only; same reach
+    # as the record it belongs to.
+    ("GET",  "/api/analyses/{aid}/lowcontrast_view", "user"),
+    ("GET",  "/api/analyses/{aid}/lowcontrast_view.png", "user"),
     ("GET",  "/api/labels",                        "user"),
     ("GET",  "/api/phantom_profiles",              "user"),
     ("GET",  "/api/signatures",                    "user"),
@@ -139,6 +146,9 @@ ROUTES = [
     ("GET",  "/api/comparison_report.html",        "user"),
     ("GET",  "/api/analyses/{aid}",                "user"),
     ("GET",  "/api/analyses/{aid}/image.png",      "user"),
+    # The same render as JPEG, for the viewer on slow links. Same picture,
+    # same reach, so the same level.
+    ("GET",  "/api/analyses/{aid}/image.jpg",      "user"),
     ("GET",  "/api/analyses/{aid}/roi_stats",      "user"),
     ("GET",  "/api/analyses/{aid}/verify",         "user"),
     ("GET",  "/api/analyses/{aid}/export.json",    "user"),
@@ -150,8 +160,16 @@ ROUTES = [
     ("POST", "/api/analyses/{aid}/roi",            "user"),
     ("POST", "/api/analyses/{aid}/roi_rotate",     "user"),
     ("POST", "/api/analyses/{aid}/lowcontrast_block", "user"),
+    # Which way round the low-contrast insert is read: a measuring-point edit
+    # like the block placement above, locked the same way on a signed-off or
+    # finalised record.
+    ("POST", "/api/analyses/{aid}/lowcontrast_orientation", "user"),
     ("POST", "/api/analyses/{aid}/compute_preview", "user"),
     ("POST", "/api/analyses/{aid}/field_edge",     "user"),
+    # Confirming a step is a user's action. Storing the phantom's measuring
+    # points from an exposure that failed the image-quality check asks for
+    # the administrator password and a reason itself, which the inventory
+    # cannot express per-state (the same holds for baseline, below).
     ("POST", "/api/analyses/{aid}/confirm",        "user"),
     ("POST", "/api/analyses/{aid}/geometry/undo",  "user"),
     ("POST", "/api/analyses/{aid}/geometry/redo",  "user"),
@@ -160,6 +178,18 @@ ROUTES = [
     ("POST", "/api/analyses/{aid}/finalize",       "user"),
     ("POST", "/api/analyses/{aid}/baseline",       "user"),
     ("GET",  "/api/baselines",                     "user"),
+    # Discarding is an ordinary user's action on their OWN unfinished work —
+    # the endpoint refuses the moment anything has been decided about the
+    # record, which is what keeps it out of the admin column. delete_impact is
+    # what the confirmation panel reads to know which of the two it is.
+    ("POST", "/api/analyses/{aid}/discard",        "user"),
+    ("GET",  "/api/analyses/{aid}/delete_impact",  "user"),
+    # Re-running is a user's action while the record is still open; it asks
+    # for the administrator password itself once the record has been
+    # finalised, which the inventory cannot express per-state.
+    ("POST", "/api/analyses/{aid}/rerun",          "user"),
+    ("POST", "/api/analyses/{aid}/rerun/cancel",   "user"),
+    ("GET",  "/api/analyses/{aid}/revisions",      "user"),
 
     ("POST", "/api/analyses/{aid}/delete",         "admin"),
     ("POST", "/api/analyses/{aid}/validation",     "admin"),

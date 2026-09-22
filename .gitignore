@@ -20,6 +20,9 @@ DICOMDIR
 # memory index: runtime-only, recreated automatically, never committed.
 /data/uploads/
 /data/backup/
+# Pictures of each scan kept for the comparison report: cut from the scans, so
+# never committed; derived, so rebuilt on demand if lost.
+/data/thumbs/
 /data/*.sqlite3
 /data/*.sqlite3-wal
 /data/*.sqlite3-shm

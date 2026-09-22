@@ -2,8 +2,15 @@
 
 Organised as one section per phantom pattern (geometry, line patterns, low
 contrast, uniformity, wedge), each with its own table, chart and pass/fail
-state. Charts are rendered server-side with matplotlib and inlined as base64
-PNGs, so the report file has no external dependencies (offline/archive safe).
+state. Charts are rendered server-side with matplotlib and inlined as base64,
+so the report file has no external dependencies (offline/archive safe).
+
+Every byte of a picture travels to a field site at about 512 kbit/s, so each
+picture is encoded in whatever carries it in the fewest bytes without losing
+anything a reader can see: the charts as palette PNGs, the annotated overview
+of the scan as JPEG. On a reference scan the report was 1.7 MB before this and
+0.39 MB after, with every number and verdict in it unchanged — only pictures
+were re-encoded.
 """
 
 from __future__ import annotations
@@ -14,18 +21,43 @@ import io
 
 import numpy as np
 
+from .pipeline import verdict_notes
 from .store import flatten_results
 
+#: "not measured" counts as a warning in the verdict and is coloured like one;
+#: "not applicable" keeps the neutral grey of the "n/a" that analyses stored
+#: before the two were told apart still carry.
 _STATUS_COLOR = {"pass": "#2e9e44", "warn": "#d9a021", "fail": "#cf3f3f",
-                 "n/a": "#7a7a7a", "error": "#cf3f3f"}
+                 "n/a": "#7a7a7a", "error": "#cf3f3f",
+                 "not applicable": "#7a7a7a", "not measured": "#d9a021"}
 
 
 def _fig_to_b64(fig) -> str:
+    """A chart as a palette PNG.
+
+    A chart is a few flat colours plus the anti-aliased edges between them, so
+    a 64-colour palette holds everything visible — no pixel of the reference
+    line-pattern chart moved by more than 7 of 255 grey levels, and those
+    only on edges — at half the bytes: that chart, the heaviest, went from
+    196 kB to 92. JPEG is the wrong tool here; it came out larger than the
+    full-colour PNG for every chart, and blurs text.
+
+    Max-coverage rather than the faster octree quantiser: the octree averages
+    each colour bucket, which turned the white page into 254 across every
+    chart. Max-coverage keeps the colours the chart actually uses.
+    """
     import matplotlib.pyplot as plt
+    from PIL import Image
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=110, bbox_inches="tight")
     plt.close(fig)
-    return base64.b64encode(buf.getvalue()).decode()
+    # Opaque already (the figure has a white face), so dropping alpha loses
+    # nothing and lets the palette spend every entry on visible colour.
+    chart = Image.open(io.BytesIO(buf.getvalue())).convert("RGB")
+    out = io.BytesIO()
+    chart.quantize(colors=64, method=Image.Quantize.MAXCOVERAGE).save(
+        out, format="png", optimize=True)
+    return base64.b64encode(out.getvalue()).decode()
 
 
 def _chip(s: str) -> str:
@@ -70,6 +102,35 @@ def _delta_cell(value, base):
 
 def _img(b64: str) -> str:
     return f'<img src="data:image/png;base64,{b64}">'
+
+
+#: Widest picture of the scan worth sending: the report column is about a
+#: thousand pixels on screen, and this still prints at about 180 dpi across
+#: the printable width of A4.
+_PHOTO_MAX_PX = 1400
+
+
+def _photo(raw: bytes) -> str:
+    """The annotated overview of the scan, embedded as JPEG.
+
+    The web route renders it as JPEG to begin with. Anything else handed in —
+    a PNG from an older caller, say — is re-encoded here with the same
+    settings, so no caller can quietly put the megabyte back into a document
+    that has to cross a field link. It is a picture for looking at; every
+    number in the report was measured on the original scan."""
+    from PIL import Image
+    from .pipeline import OVERLAY_JPEG
+    if not raw.startswith(b"\xff\xd8"):
+        pic = Image.open(io.BytesIO(raw)).convert("RGB")
+        if pic.width > _PHOTO_MAX_PX:
+            pic = pic.resize((_PHOTO_MAX_PX,
+                              round(pic.height * _PHOTO_MAX_PX / pic.width)),
+                             Image.LANCZOS)
+        buf = io.BytesIO()
+        pic.save(buf, format="jpeg", **OVERLAY_JPEG)
+        raw = buf.getvalue()
+    b64 = base64.b64encode(raw).decode()
+    return f'<img src="data:image/jpeg;base64,{b64}">'
 
 
 # --------------------------------------------------------------------- charts
@@ -118,7 +179,11 @@ def _chart_lowcontrast(res, baseline_rows=None):
     lc = res.get("lowcontrast") or {}
     if not lc.get("rows"):
         return None
-    labels = [r["id"] for r in lc["rows"]]
+    # Shown by the disc's design level, looked up by its position on the block.
+    # They differ when the insert is fitted a half turn round, and the stored
+    # baseline is keyed on the position, so the two must not be confused.
+    labels = [r.get("disc") or r["id"] for r in lc["rows"]]
+    keys = [r["id"] for r in lc["rows"]]
     cnrs = [r.get("abs_cnr") for r in lc["rows"]]
     if not _all_numbers(cnrs):
         return None
@@ -130,8 +195,8 @@ def _chart_lowcontrast(res, baseline_rows=None):
         bmap = {r["object"]: r["value"] for r in baseline_rows
                 if r["test"] == "lowcontrast" and r["metric"] == "cnr"}
         # A baseline value can be missing, and abs(None) raises.
-        bl = [abs(bmap[l]) if isinstance(bmap.get(l), (int, float))
-              else np.nan for l in labels]
+        bl = [abs(bmap[k]) if isinstance(bmap.get(k), (int, float))
+              else np.nan for k in keys]
         ax.bar(x + 0.2, bl, width=0.4, color="#b9c6d8", label="baseline")
         ax.legend(fontsize=8)
     ax.set_xticks(x)
@@ -280,9 +345,10 @@ def _geometry_section(res, bmap):
 <tr><td>implied magnification vs detector plane</td>
     <td class='num'>{_num(sc.get('implied_magnification_vs_detector_plane'), 4)}</td><td>×</td></tr>
 </table>
-<h3>X-ray field vs central long lines {_chip(g.get('field_status'))}</h3>
+<h3>X-ray field vs central long lines {_chip(g.get('field_status') or g.get('status'))}</h3>
 <table><tr><th>side</th><th>deviation [mm]</th><th>% of SID</th><th></th></tr>{fields}</table>"""
-    return _section("Geometry & dimensions", g.get("dimension_status"), body)
+    return _section("Geometry & dimensions",
+                    g.get("dimension_status") or g.get("status"), body)
 
 
 def _not_analysed(title: str, res: dict, key: str) -> str:
@@ -352,7 +418,8 @@ def _lowcontrast_section(res, bmap, baseline_rows):
     for r in lc["rows"]:
         b = bmap.get(("lowcontrast", r["id"], "cnr"))
         rows += (
-            f"<tr><td>{r['id']}</td><td class='num'>{r['level']}</td>"
+            f"<tr><td>{r.get('disc') or r['id']}</td>"
+            f"<td class='num'>{r.get('design_level', r['level'])}</td>"
             f"<td class='num'>{_num(r['cnr'], 3)}</td>"
             f"<td class='num'>{_num(r['obj_mean'], 1)}</td>"
             f"<td class='num'>{_num(r['obj_std'], 1)}</td>"
@@ -368,6 +435,34 @@ def _lowcontrast_section(res, bmap, baseline_rows):
             "Background is the ring immediately around each circle, so every "
             "value is local to its own object. Circles carry positional design "
             "order L1…L8 — no nominal contrast percentages are assumed.")
+    # Printed with the numbers, because a report compared against another
+    # print of the phantom is unreadable without it: the same disc appears
+    # under a different name in each, and only this says why.
+    o = lc.get("orientation") or {}
+    how = {"measured": "read from the contrast order itself",
+           "stored": "as saved for this phantom",
+           "user": "as set by hand for this analysis"}
+    if o.get("flipped") and o.get("source") in how:
+        note += (" The insert in this phantom is fitted a half turn from the "
+                 "drawing — a known build variant — so the discs are named by "
+                 f"the design level they actually carry, {how[o['source']]}.")
+    elif o.get("source") == "undetermined":
+        # Undecided is not the same as "as drawn": when the rings were turned
+        # by hand their labels are taken at face value, which names the discs
+        # as if the insert were fitted a half turn round — and the signed page
+        # has to say what was actually assumed.
+        assumed = ("as the rings were turned by hand — that is, as if the "
+                   "insert were fitted a half turn round"
+                   if o.get("flipped") else "as drawn")
+        note += (" Which way round the insert is fitted could not be told from "
+                 f"this exposure, so the discs are named {assumed}; if this "
+                 "phantom is built the other way, the names are exchanged in "
+                 "pairs.")
+    if o.get("conflict"):
+        # On a document somebody signs: the reading was kept although this
+        # exposure's own contrast order disagreed with it.
+        note += (" The contrast order on this exposure looks like the other "
+                 "build of the phantom; check that the phantom ID is right.")
     return _section("Low contrast", lc.get("status"), body, note)
 
 
@@ -464,14 +559,37 @@ def _validation_block(record: dict) -> str:
 </section>"""
 
 
+def exposure_text(value, *, signed: bool = False) -> str:
+    """One exposure value as a reader expects to see it.
+
+    Indices to the whole number; the deviation index to one decimal with its
+    sign always shown, because the sign is the point — minus is under-exposed,
+    plus over. A value the detector did not write is said to be missing, never
+    shown as zero."""
+    if value is None or isinstance(value, bool) \
+            or not isinstance(value, (int, float)) or not np.isfinite(value):
+        return "not recorded"
+    # Halves round away from zero and the digits are built by hand, exactly as
+    # the page's exposureText() does, so the report and the screen never
+    # disagree. Python's round() goes to the even digit and the browser's
+    # Math.round() upwards, which would split -4.75 into -4.8 and -4.7.
+    steps = int(abs(float(value)) * (10 if signed else 1) + 0.5)
+    if not signed:
+        return str(-steps if value < 0 else steps)
+    if steps == 0:
+        return "0.0"                  # neither "+0.0" nor "-0.0"
+    return ("+" if value > 0 else "−") + f"{steps // 10}.{steps % 10}"
+
+
 def _identity_block(record: dict) -> str:
-    from .store import acquisition_flag
+    from .store import acquisition_flag, exposure_of
     flag = acquisition_flag(record)
     acquired = (record.get("acquired_at") or "")[:16]
     if flag == "missing":
         acquired = "not recorded by the scanner"
     elif flag == "implausible":
         acquired += " (implausible — check the scanner clock)"
+    exposure = exposure_of(record)
     rows = [("Site", record.get("site")),
             ("Phantom", record.get("phantom")),
             ("Operator", record.get("operator")),
@@ -480,17 +598,29 @@ def _identity_block(record: dict) -> str:
             # upload date is then the only reliable ordering.
             ("Acquired", acquired),
             ("Uploaded", (record.get("created_at") or "")[:16]),
+            # Next to the date, because an exposure that was off is the
+            # first thing to rule out when a scan's numbers look wrong.
+            ("Exposure index", exposure_text(exposure["exposure_index"])),
+            ("Target exposure index",
+             exposure_text(exposure["target_exposure_index"])),
+            ("Deviation index",
+             exposure_text(exposure["deviation_index"], signed=True)),
+            ("Sensitivity (S value)", exposure_text(exposure["sensitivity"])),
             ("Notes", record.get("notes"))]
     cells = "".join(
         f'<div class="idcell"><span class="idk">{html.escape(k)}</span>'
         f'<span class="idv">{html.escape(str(v)) if v else "—"}</span></div>'
         for k, v in rows)
+    note = ('<p class="note">Exposure values are as the detector wrote them. '
+            'A deviation index of 0 is the exposure the detector was set up to '
+            'expect; +1 is about a quarter more, −1 about a fifth less.</p>'
+            if any(v is not None for v in exposure.values()) else "")
     warn = ""
     if not record.get("site") and not record.get("phantom"):
         warn = ('<p class="warnbox">⚠ No site or phantom recorded — this '
                 'analysis will not appear in grouped trends.</p>')
     return f'<section class="card"><h2>Identification</h2>' \
-           f'<div class="idgrid">{cells}</div>{warn}</section>'
+           f'<div class="idgrid">{cells}</div>{note}{warn}</section>'
 
 
 def _integrity_block(record: dict, integrity: dict | None) -> str:
@@ -539,7 +669,7 @@ server kept and reports any mismatch. Every check is written to the audit log.</
 </section>"""
 
 
-def build_report(record: dict, overlay_png: bytes | None = None,
+def build_report(record: dict, overlay: bytes | None = None,
                  baseline: dict | None = None,
                  integrity: dict | None = None) -> str:
     results = record.get("results") or {}
@@ -553,9 +683,12 @@ def build_report(record: dict, overlay_png: bytes | None = None,
         for row in baseline_rows:
             bmap[(row["test"], row["object"], row["metric"])] = row["value"]
 
+    geo = results.get("geometry") or {}
     statuses = [
-        ("Geometry / dimensions", (results.get("geometry") or {}).get("dimension_status", "n/a")),
-        ("Field alignment", (results.get("geometry") or {}).get("field_status", "n/a")),
+        # A geometry test that never ran carries only its own "status" (e.g.
+        # "not measured"), and that is what both of its cells must say.
+        ("Geometry / dimensions", geo.get("dimension_status") or geo.get("status", "n/a")),
+        ("Field alignment", geo.get("field_status") or geo.get("status", "n/a")),
         ("Line patterns", (results.get("linepairs") or {}).get("status", "n/a")),
         ("Low contrast", (results.get("lowcontrast") or {}).get("status", "n/a")),
         ("Uniformity", (results.get("uniformity") or {}).get("status", "n/a")),
@@ -564,6 +697,17 @@ def build_report(record: dict, overlay_png: bytes | None = None,
     summary = "".join(
         f'<div class="sumcell"><span>{html.escape(k)}</span>{_chip(v)}</div>'
         for k, v in statuses)
+    # The overall verdict as stored — the one History shows — with what it
+    # left out, so a "pass" on a signed report cannot be read as covering a
+    # test that was never applied to this image.
+    if results and record.get("status") in _STATUS_COLOR:
+        notes = verdict_notes(results)
+        summary = (
+            f'<div class="sumcell"><span><b>Overall</b></span>'
+            f'{_chip(record["status"])}'
+            + (f'<span class="muted">— {html.escape("; ".join(notes))}</span>'
+               if notes else "")
+            + "</div>" + summary)
 
     sections = (
         _geometry_section(results, bmap)
@@ -574,11 +718,9 @@ def build_report(record: dict, overlay_png: bytes | None = None,
     )
 
     overlay_html = ""
-    if overlay_png:
-        b64 = base64.b64encode(overlay_png).decode()
-        overlay_html = _section(
-            "Confirmed geometry overlay", "",
-            f'<img src="data:image/png;base64,{b64}">')
+    if overlay:
+        overlay_html = _section("Confirmed geometry overlay", "",
+                                _photo(overlay))
 
     audit_html = "".join(
         f"<tr><td>{html.escape(a['ts'])}</td><td>{html.escape(a['stage'])}</td>"

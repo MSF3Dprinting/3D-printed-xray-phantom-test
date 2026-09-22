@@ -5,8 +5,10 @@ Run with:  python run_app.py   (or: uvicorn phantom_qa.webapp.main:app)
 
 from __future__ import annotations
 
+import hashlib
 import html as _html
 import io
+import json
 import logging
 import math
 import os
@@ -27,9 +29,10 @@ from pydantic import BaseModel, conlist, field_validator
 
 from .. import ALGO_VERSION
 from .. import ingest, layout_profile, pipeline, quality
-from ..analysis import linepairs
+from ..analysis import linepairs, lowcontrast
 from ..analysis.common import roi_center_from_px
-from ..comparison_report import build_comparison_report
+from ..comparison_report import COMPARISON_SCRIPT_CSP, build_comparison_report
+from .. import thumbnails
 from ..config import get_config
 from ..logging_setup import audit, get_logger, setup_logging
 from ..phantom_def import load_default
@@ -38,8 +41,9 @@ from ..report import build_report
 from ..security import (CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, SharedThrottle,
                         csrf_ok, issue_session, new_csrf_token, read_session,
                         verify_password)
-from ..store import (VALIDATION_LABELS, VALIDATION_STATES, StaleGeometry,
-                     Store, acquisition_flag, csv_export, flatten_results,
+from ..store import (VALIDATION_LABELS, VALIDATION_STATES,
+                     ProtectedAnalysis, StaleGeometry, Store,
+                     acquisition_flag, csv_export, flatten_results,
                      resolve_root, wide_csv_export)
 
 #: A deletion reason short enough to be meaningless is the same as none at all,
@@ -217,9 +221,16 @@ async def security_middleware(request: Request, call_next):
     response.headers["Permissions-Policy"] = \
         "geolocation=(), microphone=(), camera=()"
     # Reports embed their charts as data: URIs; nothing is loaded cross-origin.
+    # The comparison report carries one inline script — the shared picture
+    # window and the enlargement — inline so that a copy saved from the
+    # browser keeps working. It is admitted by the hash of its exact text,
+    # not by 'unsafe-inline', so nothing else inline can run on that page.
+    script_src = "'self'"
+    if path == "/api/comparison_report.html":
+        script_src += " " + COMPARISON_SCRIPT_CSP
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
-        "script-src 'self'; connect-src 'self'; frame-ancestors 'none'; "
+        f"script-src {script_src}; connect-src 'self'; frame-ancestors 'none'; "
         "base-uri 'none'; form-action 'self'")
     if cfg.https_only:
         response.headers["Strict-Transport-Security"] = \
@@ -232,9 +243,19 @@ async def security_middleware(request: Request, call_next):
         # same bytes. Re-fetching ~1 MB on every open and every window change
         # was the single heaviest habit on a field link — about fifteen
         # seconds each time at 512 kbit/s. Private: it is patient-adjacent
-        # imagery and must not sit in a shared proxy.
-        if path.endswith("/image.png") and response.status_code == 200:
+        # imagery and must not sit in a shared proxy. The JPEG the viewer now
+        # draws is the same render, so the same reasoning holds for it.
+        if path.endswith(("/image.png", "/image.jpg")) \
+                and response.status_code == 200:
             response.headers["Cache-Control"] = "private, max-age=86400"
+        elif path.endswith("/lowcontrast_view.png") \
+                and response.status_code == 200 \
+                and response.headers.get("Cache-Control", "").startswith(
+                    "private"):
+            # The close-up decides for itself: it is keepable only when its
+            # URL names the placement it actually shows, so its own header
+            # stands.
+            pass
         else:
             response.headers["Cache-Control"] = "no-store"
     return response
@@ -375,7 +396,7 @@ def secrets_equal(a: str, b: str) -> bool:
     return hmac.compare_digest((a or "").encode(), (b or "").encode())
 
 
-def _scan(aid: str) -> ingest.ScanData:
+def _scan(aid: str, cache: bool = True) -> ingest.ScanData:
     if aid in _scans:
         # The cache is per gunicorn worker. A delete served by ANOTHER worker
         # cannot reach this dict, so an existence check is what keeps a deleted
@@ -405,7 +426,11 @@ def _scan(aid: str) -> ingest.ScanData:
             422, "The stored source file could not be decoded as an image. "
                  "It may be corrupted — run 'verify' to check its SHA-256.")
     match = next((s for s in scans if s.sha256 == rec["sha256"]), scans[0])
-    _scans[aid] = match
+    # A comparison reads many scans once each. Keeping every one of them
+    # decoded — some 70 MB apiece at float64, in every worker — would turn one
+    # ten-scan report into most of a gigabyte that nothing ever releases.
+    if cache:
+        _scans[aid] = match
     return match
 
 
@@ -465,7 +490,12 @@ def _require_unsigned(rec: dict, what: str):
     and the date all survive while the numbers they refer to are gone, and the
     record then vanishes from every trend and export, which filter on completed
     results. The reanalyze CLI already skips signed-off analyses; the web path
-    now does the same. Withdrawing the ruling is one click, and it is recorded."""
+    now does the same.
+
+    The way through is a re-run, not withdrawing the ruling: signing off also
+    finalises, and withdrawing a ruling does not un-finalise, so an operator
+    who followed "withdraw first" met a second refusal. A re-run withdraws the
+    ruling and keeps the numbers it replaces, in one recorded step."""
     if (rec.get("validation_status") or "").strip():
         raise HTTPException(
             409,
@@ -473,8 +503,22 @@ def _require_unsigned(rec: dict, what: str):
             f"{rec.get('validated_by') or 'an administrator'}"
             + (f" on {rec['validated_at'][:16]}" if rec.get("validated_at") else "")
             + f", so {what} would change measurements somebody has taken "
-              f"responsibility for. Withdraw the validation first if the "
-              f"analysis really needs to be reworked.")
+              f"responsibility for. If it really needs reworking, use "
+              f"“Re-run analysis” with the administrator password — that "
+              f"withdraws the ruling and keeps the previous results.")
+    # Finalising is a weaker statement than signing off, but it is still a
+    # statement: the operator said these numbers are done. Editing straight
+    # through it used to drop the results silently and take the record out of
+    # every trend, with nothing to show that had happened. Re-run is the way
+    # to rework it, because that keeps what it replaces.
+    if (rec.get("finalized_at") or "").strip():
+        raise HTTPException(
+            409,
+            f"This analysis was finalised on {rec['finalized_at'][:16]}"
+            + (f" by {rec['finalized_by']}" if rec.get("finalized_by") else "")
+            + f", so {what} would change numbers that were declared finished. "
+              f"Use “Re-run analysis” instead — it keeps the previous results "
+              f"so nothing is lost.")
 
 
 def _roi_stats_or_none(ctx, node):
@@ -550,6 +594,49 @@ def _do_register(aid: str, corners_hint=None):
 
 
 # ------------------------------------------------------------------ endpoints
+
+class UploadCheckBody(BaseModel):
+    #: Hex SHA-256 of each file the operator picked, computed in the browser.
+    sha256: list[str] = []
+
+
+@app.post("/api/upload_check")
+def upload_check(body: UploadCheckBody, request: Request):
+    """Is this exact file already here? Asked before sending it.
+
+    The duplicate refusal itself was always correct — seven weeks of audit log
+    show eight refusals, every one of them byte-identical to a record that
+    already existed, and three file names that carried genuinely different
+    files each went through without complaint. What made it hurt was the
+    price: on a 512 kbit/s link the operator paid two minutes to be told the
+    file was already there.
+
+    Hashing in the browser costs nothing and moves the answer in front of the
+    transfer. A hash is cheap to fake, but nothing here acts on it — it can
+    only reveal records the same login may already read — and the real check
+    still runs on the bytes at upload, so a lie changes nothing but the
+    advice.
+
+    Only the hashes actually asked about are answered, and only for files the
+    server holds; an unknown hash returns nothing at all, so the endpoint
+    cannot be used to walk the archive."""
+    seen, out = set(), []
+    for raw in body.sha256[:32]:                 # a CD export, not a scrape
+        h = str(raw or "").strip().lower()
+        if len(h) != 64 or not all(c in "0123456789abcdef" for c in h):
+            continue
+        if h in seen:
+            continue
+        seen.add(h)
+        dupes = store.find_by_sha256(h)
+        if dupes:
+            out.append({"sha256": h, "duplicate_of": dupes})
+    if out:
+        audit("upload_check", user=_current_user(request),
+              client=_client_key(request), outcome="duplicate",
+              existing=[d["id"] for e in out for d in e["duplicate_of"]])
+    return pipeline.to_jsonable({"duplicates": out})
+
 
 @app.post("/api/analyses")
 async def upload(request: Request, file: UploadFile = File(...),
@@ -628,6 +715,18 @@ async def upload(request: Request, file: UploadFile = File(...),
         log.info("uploaded analysis=%s source=%r site=%r phantom=%r sha=%s",
                  aid, scan.source_name, labels["site"], labels["phantom"],
                  scan.sha256[:16])
+        # Different file, same exposure: re-exported from the archive with the
+        # header rewritten. The hash cannot see it, and the second record would
+        # count again in every trend. Said, not refused — and only once the
+        # record exists, so accepting it costs the operator nothing.
+        same_exposure = store.find_by_sop_uid(
+            (scan.meta or {}).get("SOPInstanceUID", ""), exclude_id=aid)
+        if same_exposure:
+            store.audit(aid, "A", "same exposure as existing record",
+                        {"existing": [d["id"] for d in same_exposure]})
+            audit("upload", user=user, client=client, analysis=aid,
+                  outcome="same_exposure",
+                  existing=[d["id"] for d in same_exposure])
         try:
             # Registration is the other CPU-heavy half of an upload; same
             # reasoning as the decode above.
@@ -635,6 +734,7 @@ async def upload(request: Request, file: UploadFile = File(...),
             created.append({"id": aid, "source_name": scan.source_name,
                             "registered": True,
                             "phantom_profile": stored_layout,
+                            "same_exposure": same_exposure,
                             # The operator is standing at the machine now; if
                             # the exposure is unusable this is the moment to
                             # say so, while repeating it is still easy.
@@ -643,6 +743,7 @@ async def upload(request: Request, file: UploadFile = File(...),
         except Exception as e:
             created.append({"id": aid, "source_name": scan.source_name,
                             "registered": False, "error": str(e),
+                            "same_exposure": same_exposure,
                             "phantom_profile": stored_layout})
     return {"analyses": created, "phantom_profile": stored_layout}
 
@@ -678,14 +779,26 @@ def list_analyses(site: str = "", phantom: str = "", signature: str = "",
     # history — a listing is one of the few things an operator on a slow link
     # waits for repeatedly.
     limit = max(0, min(int(limit or 0), 200))
-    return {"analyses": store.list_all(site=site or None,
-                                       phantom=phantom or None,
-                                       signature=signature or None,
-                                       validation=validation or None,
-                                       completed_only=completed_only,
-                                       unfinished_only=unfinished_only,
-                                       limit=limit or None,
-                                       order_by=order),
+    rows = store.list_all(site=site or None,
+                          phantom=phantom or None,
+                          signature=signature or None,
+                          validation=validation or None,
+                          completed_only=completed_only,
+                          unfinished_only=unfinished_only,
+                          limit=limit or None,
+                          order_by=order)
+    # History prints its verdict with the same note the results page and the
+    # report print ("pass — X-ray field alignment not checked"), built from the
+    # per-test statuses alone so the results themselves never travel here.
+    fields = [(test, key) for test, key, _ in pipeline.STATUS_FIELDS]
+    statuses = store.result_statuses([a["id"] for a in rows], fields)
+    for a in rows:
+        a["verdict_notes"] = pipeline.verdict_notes(statuses.get(a["id"]))
+        # History's "re-run" asks for the administrator password exactly when
+        # step F would. Both read the one definition of protection, so a row
+        # and the opened record cannot disagree about the same analysis.
+        a["protection"] = store.protection(a)
+    return {"analyses": rows,
             "order": "uploaded" if order == "uploaded" else "acquired"}
 
 
@@ -789,7 +902,16 @@ def get_analysis(aid: str):
                                    "site", "phantom", "operator", "notes",
                                    "acquired_at", "validation_status",
                                    "validated_by", "validation_comment",
-                                   "validated_at")}
+                                   "validated_at", "finalized_at",
+                                   "finalized_by")}
+    # One list, computed in one place, so the page, the discard endpoint and
+    # the re-run endpoint cannot disagree about whether a record is protected.
+    payload["protection"] = store.protection(rec)
+    # A record with a kept previous state and no results is a re-run that has
+    # not finished — possibly because a connection dropped. The interface uses
+    # this to offer the way back rather than leaving the operator with a
+    # record that has quietly vanished from every trend.
+    payload["revision_count"] = len(store.list_revisions(aid))
     payload["meta"] = rec.get("meta")
     payload["geometry"] = rec.get("geometry")
     payload["results"] = rec.get("results")
@@ -822,9 +944,36 @@ def get_analysis(aid: str):
     return pipeline.to_jsonable(payload)
 
 
-@app.get("/api/analyses/{aid}/image.png")
-def image_png(aid: str, wc: float | None = None, ww: float | None = None,
-              scale: int = 1600):
+def _drop_cached_image(aid: str):
+    """Forget every rendered view of one analysis, and its decoded pixels.
+
+    The caches are per worker and keyed by window, scale and which picture it
+    is, so one entry per view anyone happened to look at. A delete handled by
+    another worker leaves all of them behind, still serveable.
+    """
+    for cached in [k for k in _img_cache if k[0] == aid]:
+        _img_cache.pop(cached, None)
+    _scans.pop(aid, None)
+
+
+#: How the viewer's picture is encoded as JPEG. Quality 75 puts a reference
+#: scan at 1600 px near a hundred kilobytes, against about 1.1 MB as PNG —
+#: two seconds at 512 kbit/s instead of seventeen, on every analysis opened.
+#: The picture is single-channel, so there is no colour to subsample, and
+#: optimised, progressive coding is lossless and a few per cent smaller.
+_VIEW_JPEG = {"quality": 75, "optimize": True, "progressive": True}
+
+
+def _render_view(aid: str, wc: float | None, ww: float | None, scale: int,
+                 fmt: str) -> bytes:
+    """The scan windowed to eight bits for looking at, encoded as ``fmt``.
+
+    One function behind both the PNG and the JPEG route, so the two cannot
+    drift apart in the window they apply, the size they come out at, or the
+    checks around them. The size matters most: the viewer places every
+    outline through the picture's width over the scan's, so a picture one
+    pixel narrower would put every ROI in the wrong place.
+    """
     # Query values are viewer state, not trusted input: a zero or negative
     # scale crashes PIL's thumbnail, a huge one asks for a gigapixel resample,
     # and NaN passes FastAPI's float parsing and poisons the window arithmetic.
@@ -833,7 +982,15 @@ def image_png(aid: str, wc: float | None = None, ww: float | None = None,
         wc = None
     if ww is not None and not math.isfinite(ww):
         ww = None
-    key = (aid, wc, ww, scale)
+    # Every other route reads the record first and answers 404 when it is gone;
+    # this one could answer from its own memory instead. The caches are
+    # per-worker, so a delete served by one worker left the others still
+    # handing out the picture of a record that no longer exists — and, with the
+    # image now privately cacheable, the browser would go on showing it.
+    if not store.exists(aid):
+        _drop_cached_image(aid)
+        raise HTTPException(404, "not found")
+    key = (aid, wc, ww, scale, fmt)
     if key not in _img_cache:
         from PIL import Image
         img = _scan(aid).pixels
@@ -846,13 +1003,138 @@ def image_png(aid: str, wc: float | None = None, ww: float | None = None,
         if max(pil.size) > scale:
             pil.thumbnail((scale, scale), Image.LANCZOS)
         buf = io.BytesIO()
-        pil.save(buf, format="png")
+        if fmt == "jpeg":
+            pil.save(buf, format="jpeg", **_VIEW_JPEG)
+        else:
+            pil.save(buf, format="png")
         # FIFO eviction: clearing the whole cache meant one operator paging
         # through History threw away every other operator's rendered view.
         while len(_img_cache) > 24:
             _img_cache.pop(next(iter(_img_cache)), None)
         _img_cache[key] = buf.getvalue()
-    return Response(_img_cache[key], media_type="image/png")
+    return _img_cache[key]
+
+
+@app.get("/api/analyses/{aid}/image.png")
+def image_png(aid: str, wc: float | None = None, ww: float | None = None,
+              scale: int = 1600):
+    """The lossless render. The viewer takes the JPEG below; this stays for
+    anything that wants the exact eight-bit picture."""
+    return Response(_render_view(aid, wc, ww, scale, "png"),
+                    media_type="image/png")
+
+
+@app.get("/api/analyses/{aid}/image.jpg")
+def image_jpg(aid: str, wc: float | None = None, ww: float | None = None,
+              scale: int = 1600):
+    """The same render as JPEG: what the viewer draws, about a tenth the bytes.
+
+    Safe to be lossy because nothing is measured from it. Every number comes
+    from the original scan on the server, and the low-contrast discs — the
+    one place where a few grey levels decide what an operator can see — are
+    placed on their own lossless close-up, lowcontrast_view.png. The
+    browser's window preview re-maps whatever picture it was given, so it
+    works on the decoded JPEG exactly as it did on the PNG.
+    """
+    return Response(_render_view(aid, wc, ww, scale, "jpeg"),
+                    media_type="image/jpeg")
+
+
+def _block_placement(rec: dict):
+    """Where the low-contrast block currently is, as the operator left it."""
+    geom = (rec.get("geometry") or {}).get("lowcontrast") or {}
+    block = geom.get("block") or {}
+    if not block.get("center_mm"):
+        raise HTTPException(400, "the measuring points have not been proposed "
+                                 "for this analysis yet")
+    return geom, block["center_mm"], float(block.get("angle_deg", 0.0))
+
+
+def _block_view_key(rec: dict, centre, angle: float) -> str:
+    """What the close-up picture depends on, as a short digest.
+
+    The edit counter cannot stand in for it: it steps back on undo and then
+    forward again onto a different edit, and it restarts at zero when the
+    phantom is registered again, so the same counter value can name two
+    different placements — and a cache keyed on it served the old picture
+    under the new rings. The picture is a function of the stored pixels, the
+    registration and where the block sits, so those are what it is keyed on.
+    """
+    reg = (rec.get("reg") or {}).get("transform")
+    basis = json.dumps([rec.get("sha256") or "", reg, ALGO_VERSION,
+                        [round(float(c), 4) for c in centre],
+                        round(float(angle), 4)], sort_keys=True, default=str)
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
+
+
+@app.get("/api/analyses/{aid}/lowcontrast_view")
+def lowcontrast_view(aid: str):
+    """Where each disc is in the block view, and how plainly it shows.
+
+    Separate from the picture so the picture can be cached on its own: the
+    markers change whenever the block is nudged, the picture only when the
+    geometry it was rendered from changes.
+    """
+    rec = store.get(aid)
+    if rec is None:
+        raise HTTPException(404, "not found")
+    geom, centre, angle = _block_placement(rec)
+    ctx = _ctx(aid, rec)
+    view = lowcontrast.block_view(ctx, centre, angle)
+    return pipeline.to_jsonable({
+        "size_px": view["size_px"],
+        "px_per_mm": view["px_per_mm"],
+        "flat": view["flat"],
+        "seq": rec.get("geometry_seq") or 0,
+        "key": _block_view_key(rec, centre, angle),
+        "markers": lowcontrast.view_markers(ctx, geom, centre, angle),
+        # Read afresh from the rings as they now sit, the same way compute()
+        # will read them, so the close-up can show which way round the
+        # insert is taken — and any disagreement with a kept value — before
+        # anything is measured. Four values; no extra request.
+        "orientation": lowcontrast.orientation_summary(
+            lowcontrast.read_orientation(ctx, geom)),
+    })
+
+
+@app.get("/api/analyses/{aid}/lowcontrast_view.png")
+def lowcontrast_view_png(aid: str, key: str = "", seq: int = 0):
+    """The block on its own: straightened, flattened, windowed to itself.
+
+    About twenty kilobytes against the nine hundred of the full render, which
+    is the difference between glancing at the discs and waiting fifteen
+    seconds for them on the link this is deployed over — and the reason the
+    field report was that the discs were hard to see at all: re-windowing the
+    whole image to hunt for objects a fraction of a percent in contrast cost a
+    transfer every attempt.
+
+    The picture is always rendered from the record as it is now; ``key`` is
+    what the page believes that is. When they agree, the URL names exactly
+    these bytes and the browser may keep them. When they do not — a page
+    asking about a placement that has since moved — the current picture is
+    still sent, but marked not to be kept, so it can never be stored under the
+    name of a placement it does not show. ``seq`` is accepted from pages
+    loaded before this changed and otherwise ignored.
+    """
+    if not store.exists(aid):
+        _drop_cached_image(aid)
+        raise HTTPException(404, "not found")
+    rec = store.get(aid)
+    _, centre, angle = _block_placement(rec)
+    current = _block_view_key(rec, centre, angle)
+    cache_key = (aid, "lcview", current)
+    if cache_key not in _img_cache:
+        from PIL import Image
+        view = lowcontrast.block_view(_ctx(aid, rec), centre, angle)
+        buf = io.BytesIO()
+        Image.fromarray((view["image"] * 255).astype(np.uint8)).save(
+            buf, format="png")
+        while len(_img_cache) > 24:
+            _img_cache.pop(next(iter(_img_cache)), None)
+        _img_cache[cache_key] = buf.getvalue()
+    keep = "private, max-age=86400" if key == current else "no-store"
+    return Response(_img_cache[cache_key], media_type="image/png",
+                    headers={"Cache-Control": keep})
 
 
 class CornersBody(BaseModel):
@@ -874,7 +1156,13 @@ def re_register(aid: str, body: CornersBody):
                 {"manual_corners": body.corners_px is not None})
     # Geometry proposals are expressed in pixels derived from the transform, so
     # a new transform invalidates them — and every undo state built on top.
-    store.update(aid, geometry=None, results=None, stage="A", geometry_seq=0)
+    #
+    # The verdict goes with them. It was left behind, so a record re-registered
+    # after a "pass" kept showing pass in History and in the label counts while
+    # holding no results at all — a green chip for a measurement that no longer
+    # existed.
+    store.update(aid, geometry=None, results=None, stage="A", geometry_seq=0,
+                 status="draft")
     store.clear_geometry_history(aid)
     return _reg_payload(aid, reg)
 
@@ -1242,6 +1530,69 @@ def place_lowcontrast_block(aid: str, body: BlockPlace, request: Request):
                                  "history": hist})
 
 
+class InsertOrientation(BaseModel):
+    #: True when the insert is fitted a half turn from the drawing.
+    flipped: bool
+    #: State of the measuring points this edit was made from. When given
+    #: and no longer current, the edit is refused instead of silently
+    #: overwriting someone else's correction.
+    expect_seq: int | None = None
+
+
+@app.post("/api/analyses/{aid}/lowcontrast_orientation")
+def set_lowcontrast_orientation(aid: str, body: InsertOrientation,
+                                request: Request):
+    """Say by hand which way round the low-contrast insert is fitted.
+
+    For the scan the contrast order cannot decide, and for the phantom whose
+    saved value turns out to be wrong. It is an edit to the measuring points
+    like any other — undoable, refused on a stale state or a locked record,
+    audited — and it stays on this analysis: it reaches the phantom's stored
+    layout only when the operator saves the measuring points for future scans,
+    and no analysis already measured is ever read again because of it.
+
+    Nothing moves. The rings stay on the discs they are on; only the design
+    level each one is read as changes, which is why this is a different thing
+    from turning the block end for end."""
+    rec = store.get(aid)
+    if rec is None:
+        raise HTTPException(404, "analysis not found")
+    _require_unsigned(rec, "changing which way round the low-contrast insert "
+                           "is read")
+    ctx = _ctx(aid, rec)
+    wanted = {"flipped": bool(body.flipped), "source": "user",
+              "confidence": None}
+
+    def edit(geom):
+        lcg = (geom or {}).get("lowcontrast")
+        if not isinstance(lcg, dict) or lcg.get("_error") \
+                or not lcg.get("circles"):
+            raise HTTPException(400, "the low-contrast discs were not proposed "
+                                     "on this scan, so there is nothing to read "
+                                     "either way round")
+        before = lcg.get("orientation")
+        lcg["orientation"] = dict(wanted)
+        return before, lcg
+
+    try:
+        (before, lcg), hist = store.mutate_geometry(
+            aid, edit, action="lowcontrast_orientation",
+            user=_current_user(request), detail={"flipped": wanted["flipped"]},
+            expect_seq=body.expect_seq)
+    except KeyError:
+        raise HTTPException(404, "analysis not found")
+
+    store.audit(aid, "C", "low-contrast insert orientation set",
+                {"from": before, "to": wanted})
+    # How the discs will now be read, conflict included, so the close-up can
+    # update from this answer instead of fetching its picture again.
+    return pipeline.to_jsonable({
+        "orientation": lcg["orientation"],
+        "view": lowcontrast.orientation_summary(
+            lowcontrast.read_orientation(ctx, lcg)),
+        "history": hist})
+
+
 @app.get("/api/analyses/{aid}/roi_stats")
 def roi_stats(aid: str, roi_id: str):
     rec = store.get(aid)
@@ -1267,7 +1618,15 @@ def compute_preview(aid: str, body: PreviewBody):
     rec = store.get(aid)
     if not rec or not rec.get("geometry"):
         raise HTTPException(400, "no geometry yet")
-    store.update(aid, sid_mm=body.sid_mm)
+    # Previewing is harmless; STORING the SID is not. This wrote it to the
+    # record whatever its state, so a signed-off analysis could end up printing
+    # a source-to-detector distance its field-alignment verdict was never
+    # computed with. The preview still runs on a locked record — reading is
+    # always allowed — using the SID already stored.
+    if store.protection(rec):
+        body.sid_mm = rec.get("sid_mm") or body.sid_mm
+    else:
+        store.update(aid, sid_mm=body.sid_mm)
     ctx = _ctx(aid)
     out = {}
     for name in body.tests:
@@ -1275,7 +1634,12 @@ def compute_preview(aid: str, body: PreviewBody):
             continue
         geom = rec["geometry"].get(name)
         if not geom or geom.get("_error"):
-            out[name] = {"status": "n/a"}
+            # Worded as compute_all words it, so step D and step E cannot
+            # disagree about the same missing geometry.
+            out[name] = {"status": pipeline.NOT_MEASURED,
+                         "error": (geom or {}).get(
+                             "_error", "no measuring areas were placed for "
+                                       "this test")}
             continue
         try:
             out[name] = pipeline._MODULES[name].compute(ctx, geom)
@@ -1467,13 +1831,59 @@ def geometry_reset(aid: str, body: GeometryReset, request: Request):
         "profile": _profile_summary(prof), "profile_report": report})
 
 
+def _insert_orientation_to_store(aid: str, rec: dict, label: str):
+    """The insert orientation a layout saved from this analysis should carry.
+
+    Read from the confirmed rings the way compute() will read them, not taken
+    from the value noted when the patterns were proposed: the block may have
+    been moved since, and that note was read under the old rings. When the
+    image cannot be read here — a record whose stored file or registration is
+    gone — the geometry's own note stands in, because the layout itself does
+    not need the image and must still be storable."""
+    lcg = (rec.get("geometry") or {}).get("lowcontrast")
+    if not isinstance(lcg, dict) or lcg.get("_error") \
+            or not lcg.get("circles"):
+        return None
+    try:
+        reading = lowcontrast.read_orientation(_ctx(aid, rec), lcg)
+    except HTTPException:
+        reading = lcg.get("orientation")
+    prev = store.get_phantom_profile(label)
+    return layout_profile.insert_to_store(reading, (prev or {}).get("layout"))
+
+
 class StageConfirm(BaseModel):
     stage: str
     note: str | None = None
-    #: Stage C only. None means "store the layout if the phantom is named";
-    #: false is the escape hatch for a one-off correction that should not
-    #: become the default for every future scan of that phantom.
+    #: Stage C only: whether these measuring points become the phantom's
+    #: stored layout. The page always says, from a checkbox the operator can
+    #: see. None — a page cached from before the question was asked — gets the
+    #: page's own default (_layout_save_default), so an old page can still
+    #: store a phantom's FIRST layout but can no longer replace one that
+    #: another analysis stored.
     save_profile: bool | None = None
+    #: Stage C only, and only for a scan that failed the image-quality check
+    #: whose measuring points are to be stored anyway: the administrator's
+    #: password and a written reason. Ignored when the check passed.
+    admin_password: str = ""
+    reason: str = ""
+
+
+def _layout_save_default(aid: str, rec: dict) -> bool:
+    """Whether confirming step C stores the layout when nobody said.
+
+    Yes while the phantom has no stored layout, or the one it has came from
+    this very analysis — nudging a mark and confirming again must still
+    update it. No once ANOTHER analysis has set the phantom's points: the
+    field audit log shows one phantom's layout rewritten six times in twelve
+    minutes, three of those from exposures nothing could be measured in, each
+    one silently becoming where the next operator started. Replacing a layout
+    somebody else confirmed is a decision, so it has to be asked for.
+
+    The page ticks its checkbox by exactly this rule; this is the same rule
+    for a request that does not carry the answer."""
+    prof = store.get_phantom_profile(rec.get("phantom") or "")
+    return prof is None or (prof.get("source_analysis_id") or "") == aid
 
 
 @app.post("/api/analyses/{aid}/confirm")
@@ -1484,17 +1894,34 @@ def confirm_stage(aid: str, body: StageConfirm, request: Request):
     order = ["A", "B", "C", "D", "E", "F"]
     if body.stage not in order:
         raise HTTPException(400, "bad stage")
+    want_layout, override = False, None
+    # Confirming step C writes the phantom's SHARED measuring points, which is
+    # an edit with consequences beyond this record — on a locked analysis it
+    # let a signed-off scan quietly redefine where every later scan starts.
+    if body.stage == "C":
+        _require_unsigned(rec, "storing the measuring points for this phantom")
+        want_layout = (body.save_profile if body.save_profile is not None
+                       else _layout_save_default(aid, rec))
+        # An administrator's override is checked before anything is written,
+        # so a mistyped password leaves the step exactly where it was and the
+        # panel that asked for it can simply ask again.
+        if want_layout:
+            override = _quality_override(request, rec, aid, "phantom_profile",
+                                         body.admin_password, body.reason)
     nxt = order[min(order.index(body.stage) + 1, len(order) - 1)]
     store.update(aid, stage=nxt)
     store.audit(aid, body.stage, "confirmed", {"note": body.note})
 
+    # `save_profile` says what was decided, which for a request that did not
+    # say is the only way its sender can find out.
     out = {"stage": nxt, "profile_saved": False, "profile": None,
-           "profile_error": None}
+           "profile_error": None, "save_profile": want_layout}
     # Confirming Stage C is the moment the operator says "these measuring
     # points are right for this phantom" — so that is when the layout becomes
-    # the phantom's stored default. Saving on every drag instead would let a
-    # half-finished correction become the default for everyone.
-    if body.stage != "C" or body.save_profile is False:
+    # the phantom's stored default, if they choose. Saving on every drag
+    # instead would let a half-finished correction become the default for
+    # everyone.
+    if body.stage != "C" or not want_layout:
         return out
     label = store.profile_key(rec.get("phantom") or "")
     if not label:
@@ -1507,10 +1934,11 @@ def confirm_stage(aid: str, body: StageConfirm, request: Request):
         return out
     refused = _reference_use_refused(
         rec, "set the measuring points for future scans of this phantom")
-    if refused:
+    if refused and override is None:
         # The analysis itself goes on; only the shared layout is protected.
         out["profile_error"] = refused
         out["profile_blocked_by_quality"] = True
+        out["override_available"] = cfg.deletion_enabled
         store.audit(aid, "C", "phantom layout refused",
                     {"phantom": store.profile_key(rec.get("phantom") or ""),
                      "reason": "acquisition quality"})
@@ -1526,21 +1954,44 @@ def confirm_stage(aid: str, body: StageConfirm, request: Request):
         reg = _reg(aid, rec).summary()
     except HTTPException:
         reg = {}
+    insert = _insert_orientation_to_store(aid, rec, label)
     layout = layout_profile.extract_layout(
         rec["geometry"], pdef_name=pdef.name, pdef_version=pdef.version,
-        algo_version=ALGO_VERSION, registration=pipeline.to_jsonable(reg))
+        algo_version=ALGO_VERSION, registration=pipeline.to_jsonable(reg),
+        lowcontrast_insert=insert)
     saved = store.save_phantom_profile(
         label, layout, pdef_version=pdef.version, algo_version=ALGO_VERSION,
-        source_analysis_id=aid, updated_by=_current_user(request))
+        source_analysis_id=aid, updated_by=_current_user(request),
+        # Only an explicit yes may replace what another analysis stored.
+        replace_others=body.save_profile is not None)
+    if saved is None:
+        # A request that did not say, beaten to it by another analysis of the
+        # same phantom between reading the default and taking the lock. The
+        # layout that got there first stands, as it would have if this
+        # request had arrived a moment later.
+        out["save_profile"] = False
+        log.info("left the stored layout for phantom=%r alone: analysis=%s "
+                 "did not ask to replace it", label, aid)
+        return out
     store.audit(aid, "C", "phantom layout stored",
-                {"phantom": label, "rois": saved["n_rois"]})
+                {"phantom": label, "rois": saved["n_rois"],
+                 "insert_turned": (insert or {}).get("flipped"),
+                 **({"quality_override": override} if override else {})})
     audit("phantom_profile", user=_current_user(request),
           client=_client_key(request), analysis=aid, phantom=label,
-          outcome="saved", rois=saved["n_rois"])
+          outcome="saved", rois=saved["n_rois"],
+          **({"override": True, "reason": override["reason"],
+              "failed": override["failed"]} if override else {}))
     log.info("stored measuring-point layout for phantom=%r from analysis=%s "
-             "(%d ROIs)", label, aid, saved["n_rois"])
+             "(%d ROIs)%s", label, aid, saved["n_rois"],
+             " over a failed quality check, by administrator override"
+             if override else "")
     out["profile_saved"] = True
-    out["profile"] = saved
+    # None when nothing was decided about the insert, so the page can say
+    # what later scans of this phantom will be read with — or that they will
+    # still decide for themselves.
+    out["profile"] = {**saved, "insert_turned": (insert or {}).get("flipped"),
+                      "quality_override": bool(override)}
     return out
 
 
@@ -1564,7 +2015,13 @@ def compute(aid: str, body: ComputeBody, request: Request):
     status = pipeline.overall_status(results)
     timed_out = [t for t in pipeline.TESTS
                  if (results.get(t) or {}).get("timed_out")]
-    store.update(aid, results=results, status=status, stage="F")
+    # Stamp what actually produced these numbers. The record kept the versions
+    # it was uploaded under, so a re-measurement after an upgrade left results
+    # from the new code labelled with the old version — and `reanalyze` skips
+    # records whose stamp already matches, so those were quietly excluded from
+    # the very sweep meant to bring them up to date.
+    store.update(aid, results=results, status=status, stage="F",
+                 algo_version=ALGO_VERSION, pdef_version=pdef.version)
     store.audit(aid, "E", "computed", {"overall": status,
                                        "sid_mm": body.sid_mm,
                                        **({"timed_out": timed_out}
@@ -1579,6 +2036,7 @@ def compute(aid: str, body: ComputeBody, request: Request):
                                   exclude_id=aid)
     return pipeline.to_jsonable({
         "results": results, "overall": status,
+        "verdict_notes": pipeline.verdict_notes(results),
         "baseline": ({"id": baseline["id"],
                       "phantom": baseline.get("phantom", ""),
                       "acquired_at": baseline.get("acquired_at", ""),
@@ -1613,11 +2071,69 @@ def _reference_use_refused(rec: dict, what: str) -> str | None:
             f"(failed: {', '.join(q.get('failed') or [])})").strip()
 
 
-def _set_baseline(aid: str, rec: dict, value: bool, request: Request) -> dict:
+class QualityRefusal(Exception):
+    """A failed exposure refused as reference data.
+
+    Its own exception rather than a plain 409, so the page can tell this
+    refusal from every other one and put the failed checks — and the one way
+    past them, the administrator's override — in front of the person deciding,
+    instead of parsing an English sentence to find out what happened."""
+
+    def __init__(self, message: str, rec: dict):
+        super().__init__(message)
+        self.message = message
+        q = rec.get("quality") or {}
+        self.summary = q.get("summary") or ""
+        self.failed_checks = [
+            {"id": c.get("id"), "label": c.get("label"),
+             "detail": c.get("detail"), "ok": False}
+            for c in (q.get("checks") or []) if not c.get("ok")]
+
+
+@app.exception_handler(QualityRefusal)
+async def _quality_refusal(request: Request, exc: QualityRefusal):
+    return JSONResponse(status_code=409, content=pipeline.to_jsonable({
+        "detail": exc.message,
+        "quality_refused": True,
+        "summary": exc.summary,
+        "failed_checks": exc.failed_checks,
+        # Whether asking an administrator is even possible here, so the page
+        # does not offer a password field nobody can fill in.
+        "override_available": cfg.deletion_enabled,
+    }))
+
+
+def _quality_override(request: Request, rec: dict, aid: str, event: str,
+                      password: str, reason: str) -> dict | None:
+    """An administrator's decision to use a failed exposure as reference data.
+
+    The gate withholds trust from an exposure nothing could be measured in,
+    and that is right almost every time. Almost: a site may have one
+    exposure this week, looked at by someone who knows what they are looking
+    at. That is let through — but as an administrator's decision, with a
+    written reason, recorded beside the checks it overrode.
+
+    None when the exposure passed (there is nothing to override, and a
+    password sent anyway is ignored rather than checked), or when no override
+    was asked for, in which case the ordinary refusal applies. Otherwise
+    _require_admin decides, with its usual order and throttle, and refuses
+    outright where no administrator password is configured — the same rule as
+    delete."""
+    if not quality.blocks_reference_use(rec.get("quality")):
+        return None
+    if not (password or (reason or "").strip()):
+        return None
+    why = _require_admin(request, password, event, aid, reason=reason)
+    return {"reason": why,
+            "failed": list((rec.get("quality") or {}).get("failed") or [])}
+
+
+def _set_baseline(aid: str, rec: dict, value: bool, request: Request,
+                  override: dict | None = None) -> dict:
     if value:
         refused = _reference_use_refused(rec, "become the reference scan")
-        if refused:
-            raise HTTPException(409, refused)
+        if refused and override is None:
+            raise QualityRefusal(refused, rec)
     if value and rec.get("reduced_precision"):
         raise HTTPException(
             400, "A reduced-precision analysis (a plain image, 8-bit and "
@@ -1630,20 +2146,40 @@ def _set_baseline(aid: str, rec: dict, value: bool, request: Request) -> dict:
         out = store.set_baseline(aid, value)
     except KeyError:
         raise HTTPException(404, "not found")   # deleted while we were editing
+    if value:
+        # A scan every later scan is judged against is a decision, not a
+        # draft. Finalising it here means the protections that follow from
+        # being finished apply to the reference as well, without the operator
+        # having to remember two separate actions.
+        store.set_finalized(aid, _current_user(request))
+    # An overridden refusal is written down beside the checks it overrode, so
+    # anyone reading the record later sees that the reference was a failed
+    # exposure somebody chose to trust, and why.
+    overridden = bool(value and override)
     store.audit(aid, "F", "baseline set" if value else "baseline cleared",
-                {"phantom": out["phantom"], "replaced": out["replaced"]})
+                {"phantom": out["phantom"], "replaced": out["replaced"],
+                 **({"quality_override": override} if overridden else {})})
     audit("baseline", user=_current_user(request), client=_client_key(request),
           analysis=aid, outcome="set" if value else "cleared",
           phantom=out["phantom"], signature=out["signature"],
-          replaced=out["replaced"])
-    log.info("baseline %s for phantom=%r protocol=%r: analysis=%s%s",
+          replaced=out["replaced"],
+          **({"override": True, "reason": override["reason"],
+              "failed": override["failed"]} if overridden else {}))
+    log.info("baseline %s for phantom=%r protocol=%r: analysis=%s%s%s",
              "set" if value else "cleared", out["phantom"], out["signature"],
-             aid, f" (replacing {out['replaced']})" if out["replaced"] else "")
-    return out
+             aid, f" (replacing {out['replaced']})" if out["replaced"] else "",
+             " over a failed quality check, by administrator override"
+             if overridden else "")
+    return {**out, "quality_override": overridden}
 
 
 class BaselineBody(BaseModel):
     baseline: bool = True
+    #: Only to make an exposure that failed the image-quality check the
+    #: reference anyway: the administrator's password and a written reason.
+    #: Ignored for an exposure that passed, and for clearing a reference.
+    admin_password: str = ""
+    reason: str = ""
 
 
 @app.post("/api/analyses/{aid}/baseline")
@@ -1656,7 +2192,11 @@ def set_baseline(aid: str, body: BaselineBody, request: Request):
     rec = store.get(aid)
     if rec is None:
         raise HTTPException(404, "not found")
-    out = _set_baseline(aid, rec, bool(body.baseline), request)
+    override = (_quality_override(request, rec, aid, "baseline",
+                                  body.admin_password, body.reason)
+                if body.baseline else None)
+    out = _set_baseline(aid, rec, bool(body.baseline), request,
+                        override=override)
     return {"ok": True, **out}
 
 
@@ -1671,20 +2211,302 @@ def finalize(aid: str, body: FinalizeBody, request: Request):
     rec = store.get(aid)
     if rec is None:
         raise HTTPException(404, "not found")
+    # Finalising a record with nothing measured used to succeed and leave a
+    # record claiming to be complete with no numbers in it.
+    if not rec.get("results"):
+        raise HTTPException(
+            400, "This analysis has no results yet, so there is nothing to "
+                 "finalise. Compute the results first.")
     store.update(aid, stage="F", status=rec.get("status") or "complete")
+    when = store.set_finalized(aid, _current_user(request))
     changed = None
     if body.baseline is not None:
         changed = _set_baseline(aid, rec, body.baseline, request)
-    store.audit(aid, "F", "finalized", {"baseline": body.baseline})
+    store.audit(aid, "F", "finalized",
+                {"baseline": body.baseline, "at": when})
     audit("finalize", user=_current_user(request), client=_client_key(request),
-          analysis=aid, baseline=body.baseline,
+          analysis=aid, baseline=body.baseline, finalized_at=when,
           site=rec.get("site"), phantom=rec.get("phantom"))
-    return {"ok": True, "baseline": changed}
+    return {"ok": True, "baseline": changed, "finalized_at": when}
 
 
 class DeleteBody(BaseModel):
     admin_password: str = ""
     reason: str = ""
+
+
+def _require_admin(request: Request, password: str, event: str, aid: str = "-",
+                   *, reason: str | None = None) -> str:
+    """The administrator gate, in one place.
+
+    Three endpoints grew their own copy of this sequence and a fourth was about
+    to. The order matters and is easy to get subtly wrong: the password is
+    checked BEFORE the reason, so a missing reason cannot be used to find out
+    whether a password was right; every outcome reaches the audit log; and a
+    wrong password counts towards the shared throttle, which is shared across
+    workers so an attacker does not get one allowance per process.
+
+    Returns the trimmed reason when one was required.
+    """
+    user, client = _current_user(request), _client_key(request)
+    if not cfg.deletion_enabled:
+        audit(event, user=user, client=client, analysis=aid, outcome="refused",
+              refusal="no administrator password configured")
+        raise HTTPException(
+            403, "This needs an administrator password, and none is configured "
+                 "on this installation. Set PHANTOMQA_ADMIN_PASSWORD_HASH in "
+                 ".env (python -m phantom_qa.manage set-admin-password).")
+
+    wait = admin_throttle.locked_for(client)
+    if wait > 0:
+        audit(event, user=user, client=client, analysis=aid,
+              outcome="throttled")
+        raise HTTPException(429, f"Too many failed admin attempts. Try again "
+                                 f"in {wait // 60 + 1} min.")
+
+    if not verify_password(password, cfg.admin_password_hash):
+        admin_throttle.record_failure(client)
+        audit(event, user=user, client=client, analysis=aid, outcome="denied",
+              refusal="bad admin password")
+        log.warning("%s denied (bad admin password) analysis=%s client=%s",
+                    event, aid, client)
+        raise HTTPException(401, "Incorrect administrator password.")
+    admin_throttle.reset(client)
+
+    if reason is None:
+        return ""
+    trimmed = (reason or "").strip()
+    if len(trimmed) < MIN_DELETE_REASON_CHARS:
+        audit(event, user=user, client=client, analysis=aid, outcome="refused",
+              refusal="no reason given")
+        raise HTTPException(
+            400, f"Give a reason of at least {MIN_DELETE_REASON_CHARS} "
+                 f"characters — it is recorded in the audit log.")
+    return trimmed[:MAX_DELETE_REASON_CHARS]
+
+
+class RerunBody(BaseModel):
+    #: Where to pick the analysis up again.
+    #:   registration — re-detect the phantom, then everything after it
+    #:   points       — keep the registration, re-check the measuring points
+    #:   results      — keep both, recompute the numbers
+    start: str = "registration"
+    admin_password: str = ""
+    reason: str = ""
+
+
+@app.post("/api/analyses/{aid}/rerun")
+def rerun(aid: str, body: RerunBody, request: Request):
+    """Analyse a stored scan again, in place.
+
+    The server has always been able to do this from the file it keeps — no
+    upload is needed — but nothing in the interface could reach it. A completed
+    record opened on the last step, which has no way back, so the only route to
+    fresh numbers was to upload the same 7.5 MB again and press "analyse anyway",
+    producing a second record that double-counts in every trend.
+
+    Before the record is finalised this is an ordinary edit and needs nothing.
+    Afterwards it rewrites numbers somebody declared done — and possibly signed
+    — so it takes the administrator password and a written reason, like every
+    other decision of that weight. What it never needs is the file again.
+    """
+    user, client = _current_user(request), _client_key(request)
+    rec = store.get(aid)
+    if rec is None:
+        raise HTTPException(404, "not found")
+    if body.start not in ("registration", "points", "results"):
+        raise HTTPException(400, "start must be registration, points or results")
+    if body.start != "registration" and not rec.get("geometry"):
+        raise HTTPException(
+            400, "This analysis has no measuring points yet, so there is "
+                 "nothing to keep — start again from registration.")
+
+    protection = store.protection(rec)
+    if protection:
+        _require_admin(request, body.admin_password, "rerun", aid,
+                       reason=body.reason)
+
+    # New numbers must not be computed from a file that is no longer the one
+    # the old numbers came from — the same rule the command line applies.
+    integrity = store.verify_integrity(aid)
+    if integrity["status"] != "ok":
+        raise HTTPException(409, (
+            f"The stored scan file no longer matches the fingerprint recorded "
+            f"when it was analysed ({integrity['status']}), so it cannot be "
+            f"re-analysed. Check the source file before trusting this record."))
+
+    # Registration is seconds of CPU and must not run inside the write lock.
+    new_reg = None
+    if body.start == "registration":
+        reg = pipeline.run_stage_a(_scan(aid), pdef)
+        new_reg = pipeline.to_jsonable({
+            "transform": reg.transform.to_dict(),
+            "corners_px": reg.corners_px,
+            "coarse_angle_deg": reg.coarse_angle_deg,
+            "score": reg.score, "candidate_scores": reg.candidate_scores,
+            "landmarks": reg.landmarks,
+            "residual_rms_mm": reg.residual_rms_mm,
+        })
+
+    try:
+        out = store.begin_rerun(
+            aid, user=user, reason=body.reason, mode=body.start,
+            new_reg=new_reg, keep_geometry=body.start != "registration")
+    except KeyError:
+        raise HTTPException(404, "not found")
+    _forget(aid)
+
+    if body.start == "registration":
+        # Re-assess the exposure against the fresh fit, exactly as an upload
+        # would — manual corners can rescue a scan the automatic fit mangled,
+        # and the verdict should follow the registration it describes.
+        verdict = quality.assess(_scan(aid).pixels, reg)
+        store.update(aid, quality=verdict, quality_verdict=verdict["verdict"])
+
+    store.audit(aid, "A", "re-run started", {
+        "start": body.start, "revision": out["revision"],
+        "reason": body.reason, "was_protected": protection})
+    audit("rerun", user=user, client=client, analysis=aid, outcome="ok",
+          start=body.start, revision=out["revision"], reason=body.reason,
+          was_protected=protection, site=rec.get("site"),
+          phantom=rec.get("phantom"))
+    log.info("re-run analysis=%s from %s (revision %s kept, was %s)", aid,
+             body.start, out["revision"], protection or "open")
+    return {"ok": True, "stage": out["stage"], "revision": out["revision"],
+            "was_baseline": bool(rec.get("is_baseline")),
+            "withdrew_ruling": rec.get("validation_status") or "",
+            "registration": _reg_payload(aid, reg) if new_reg else None}
+
+
+@app.post("/api/analyses/{aid}/rerun/cancel")
+def rerun_cancel(aid: str, request: Request):
+    """Put the previous results back and forget the re-run.
+
+    A re-run interrupted by a dropped connection leaves a record with no
+    numbers, missing from every trend — and if it was the reference, its
+    phantom comparing against nothing. This is the way back, and it needs no
+    password: it restores a state that was already approved rather than
+    creating a new one.
+    """
+    user, client = _current_user(request), _client_key(request)
+    rec = store.get(aid)
+    if rec is None:
+        raise HTTPException(404, "not found")
+    if rec.get("results"):
+        raise HTTPException(
+            409, "This analysis has new results already. Cancelling now would "
+                 "throw those away — re-run it again if they are wrong.")
+    try:
+        out = store.restore_revision(aid)
+    except KeyError:
+        raise HTTPException(409, "There is no previous state to restore.")
+    _forget(aid)
+    store.audit(aid, "F", "re-run cancelled", out)
+    audit("rerun", user=user, client=client, analysis=aid, outcome="cancelled",
+          restored=out["restored"], site=rec.get("site"),
+          phantom=rec.get("phantom"))
+    return {"ok": True, **out}
+
+
+@app.get("/api/analyses/{aid}/revisions")
+def revisions(aid: str):
+    """Metadata only — the snapshots themselves never travel."""
+    if not store.exists(aid):
+        raise HTTPException(404, "not found")
+    return {"revisions": store.list_revisions(aid)}
+
+
+class DiscardBody(BaseModel):
+    #: Guards against a bare POST reaching this by accident. Not a password:
+    #: the operator is throwing away their own unfinished work, and requiring
+    #: a credential for that is exactly what drove the field team to delete
+    #: and re-upload the same file four times in seventy minutes.
+    confirm: bool = False
+
+
+@app.post("/api/analyses/{aid}/discard")
+def discard_analysis(aid: str, body: DiscardBody, request: Request):
+    """Throw away an analysis that was never finished. Confirmation only.
+
+    The everyday mistake — the wrong phantom typed in, a mis-set exposure, an
+    attempt abandoned half way — needed the administrator password to clear,
+    and on an installation with no administrator password configured it could
+    not be cleared at all. The field audit log shows what that cost: the same
+    file deleted and re-uploaded four times inside seventy minutes, each cycle
+    a multi-megabyte transfer, with reasons like "Mark alighment correction"
+    and "Failed manual point detection".
+
+    Deliberately NOT gated, because nothing here has been decided yet. The
+    moment anything has been — finalised, ruled on, or made a reference —
+    this refuses and the administrator-gated delete applies unchanged.
+    """
+    user, client = _current_user(request), _client_key(request)
+    rec = store.get(aid)
+    if rec is None:
+        raise HTTPException(404, "not found")
+    if not body.confirm:
+        raise HTTPException(400, "Discarding needs an explicit confirmation.")
+
+    try:
+        out = store.delete(aid, only_if_unprotected=True)
+    except ProtectedAnalysis as blocked:
+        why = ", ".join(store.PROTECTION_REASONS.get(r, r)
+                        for r in blocked.reasons)
+        audit("delete", mode="discard", user=user, client=client, analysis=aid,
+              outcome="refused", refusal=",".join(blocked.reasons))
+        raise HTTPException(409, (
+            f"This analysis cannot be discarded because {why}. Removing it "
+            f"destroys a decision someone recorded, so it needs the "
+            f"administrator password."))
+
+    # Same event name as the administrator delete, with the mode alongside, so
+    # one `grep event=delete` still shows everything that ever removed data.
+    audit("delete", mode="discard", user=user, client=client, analysis=aid,
+          outcome="ok", stage=rec.get("stage"), status=rec.get("status"),
+          had_results=bool(rec.get("results")), site=rec.get("site"),
+          phantom=rec.get("phantom"), source=rec.get("source_name"),
+          sha256=rec.get("sha256"), created_at=rec.get("created_at"),
+          acquired_at=rec.get("acquired_at"),
+          layout_deleted=out["profile_deleted"],
+          layout_restored=out["profile_restored"])
+    log.info("discarded unfinished analysis=%s source=%r phantom=%r "
+             "(layout %s)", aid, rec.get("source_name"), rec.get("phantom"),
+             "restored" if out["profile_restored"] else
+             "deleted" if out["profile_deleted"] else "untouched")
+    _forget(aid)
+    return {"ok": True, "phantom": out["phantom"],
+            "layout_deleted": out["profile_deleted"],
+            "layout_restored": out["profile_restored"]}
+
+
+@app.get("/api/analyses/{aid}/delete_impact")
+def delete_impact(aid: str):
+    """What removing this record would take with it, and how.
+
+    Opening the delete panel used to fetch the entire record — measured at
+    195 kB on a real analysis — to read a hundred bytes of it. On a field link
+    that is three seconds before the dialog appears."""
+    rec = store.get(aid)
+    if rec is None:
+        raise HTTPException(404, "not found")
+    blocked = store.protection(rec)
+    label = store.profile_key(rec.get("phantom") or "")
+    n_same = store.count_for_phantom(rec.get("phantom") or "")
+    profile = store.get_phantom_profile(rec.get("phantom") or "")
+    return {
+        "mode": ("admin" if blocked and cfg.deletion_enabled else
+                 "disabled" if blocked else "confirm"),
+        "protection": blocked,
+        "protection_reasons": [store.PROTECTION_REASONS.get(r, r)
+                               for r in blocked],
+        "phantom": label,
+        "analyses_for_phantom": n_same,
+        "layout_would_be_deleted": bool(profile and n_same <= 1),
+        "min_reason_chars": MIN_DELETE_REASON_CHARS,
+        "source_name": rec.get("source_name"),
+        "created_at": rec.get("created_at"),
+        "has_results": bool(rec.get("results")),
+    }
 
 
 @app.post("/api/analyses/{aid}/delete")
@@ -1750,13 +2572,15 @@ def delete_analysis(aid: str, body: DeleteBody, request: Request):
           site=rec.get("site"), phantom=rec.get("phantom"),
           source=rec.get("source_name"), sha256=rec.get("sha256"),
           created_at=rec.get("created_at"), acquired_at=rec.get("acquired_at"),
-          layout_deleted=out["profile_deleted"], reason=reason)
+          layout_deleted=out["profile_deleted"],
+          layout_restored=out["profile_restored"], reason=reason)
     log.warning("DELETED analysis=%s site=%r phantom=%r by user=%s client=%s "
                 "layout_deleted=%s", aid, rec.get("site"), rec.get("phantom"),
                 user, client, out["profile_deleted"])
     _forget(aid)
     return {"ok": True, "phantom": out["phantom"],
-            "layout_deleted": out["profile_deleted"]}
+            "layout_deleted": out["profile_deleted"],
+            "layout_restored": out["profile_restored"]}
 
 
 @app.get("/api/deletion_policy")
@@ -1824,6 +2648,13 @@ def set_validation(aid: str, body: ValidationBody, request: Request):
                                        body.comment)
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+    # A ruling is a stronger statement than "finished", so it implies it. The
+    # reverse is not true, and withdrawing a ruling does not un-finalise:
+    # someone still declared the numbers done, and the re-run path is where
+    # that gets undone deliberately.
+    if applied["validation_status"]:
+        store.set_finalized(aid, user)
 
     before = {"validation_status": rec.get("validation_status", ""),
               "validated_by": rec.get("validated_by", "")}
@@ -1899,6 +2730,65 @@ def export_csv_many(ids: str = "", site: str = "", phantom: str = "",
     return wide_csv_export(recs) if layout == "wide" else csv_export(recs)
 
 
+def _picture_ctx(aid: str, rec: dict):
+    """An analysis context for drawing the comparison pictures.
+
+    The same as _ctx, except that the decoded scan is not kept in this
+    worker's cache — see _scan."""
+    scan = _scan(aid, cache=False)
+    return pipeline.build_ctx(scan, pdef, _reg(aid, rec),
+                              {"scan_meta": scan.meta,
+                               "sid_mm": rec.get("sid_mm") or 1000.0})
+
+
+#: Columns of pictures in one comparison. Twelve fit an A4 landscape page at
+#: a readable size, and at about fifty kilobytes a scan keep the page near
+#: half a megabyte of pictures.
+PICTURE_COLUMNS_MAX = 12
+
+
+def _comparison_pictures(recs: list[dict]) -> dict:
+    """The pictures of every test area, per analysis, for the comparison.
+
+    Kept on disk once drawn (thumbnails.pictures_for), so only a scan never
+    shown before costs a decode. Whatever goes wrong with one scan — a
+    missing source file, a corrupted registration, a region that will not
+    render — becomes labelled empty cells for that scan; the report itself
+    never fails because of a picture.
+
+    At most PICTURE_COLUMNS_MAX scans get pictures: the reference scans first,
+    then the most recent. A comparison is built from a filter, and "every
+    analysis of this phantom" can be sixty — about three megabytes of pictures
+    and minutes of first-time decoding inside one request, on a 512 kbit/s
+    link. The page says how many were left out; the charts still cover all.
+    """
+    # Only analyses with results are in the report at all.
+    eligible = [r for r in recs if r.get("results")]
+    references = [r for r in eligible if r.get("is_baseline")]
+    others = sorted((r for r in eligible if not r.get("is_baseline")),
+                    key=lambda r: r.get("acquired_at") or r.get("created_at")
+                    or "", reverse=True)
+    out = {}
+    for slim in (references + others)[:PICTURE_COLUMNS_MAX]:
+        aid = slim["id"]
+        try:
+            rec = store.get(aid)        # the listing omits reg and geometry
+            if rec is None:
+                continue
+            directory = store.thumbs_dir(aid)
+            out[aid] = thumbnails.pictures_for(
+                rec, directory, lambda a=aid, r=rec: _picture_ctx(a, r),
+                pdef_version=pdef.version, algo_version=ALGO_VERSION)
+            # Deleted by another request while this one was drawing: the
+            # pictures just written would otherwise outlive the record.
+            if not store.exists(aid):
+                thumbnails.forget(directory)
+        except Exception:
+            log.exception("comparison pictures failed for analysis=%s", aid)
+            out[aid] = thumbnails.unavailable(thumbnails.FAILED)
+    return out
+
+
 @app.get("/api/comparison_report.html", response_class=HTMLResponse)
 def comparison_report(ids: str = "", site: str = "", phantom: str = "",
                       signature: str = "", validation: str = ""):
@@ -1912,7 +2802,8 @@ def comparison_report(ids: str = "", site: str = "", phantom: str = "",
     return build_comparison_report(
         recs, title_suffix=suffix,
         filters={"site": site, "phantom": phantom, "signature": signature,
-                 "validation": validation})
+                 "validation": validation},
+        pictures=_comparison_pictures(recs))
 
 
 @app.get("/api/analyses/{aid}/report.html", response_class=HTMLResponse)
@@ -1924,7 +2815,8 @@ def report_html(aid: str):
     if rec.get("geometry"):
         try:
             ctx = _ctx(aid)
-            overlay = pipeline.render_overlay(_scan(aid), ctx, rec["geometry"])
+            overlay = pipeline.render_overlay(_scan(aid), ctx, rec["geometry"],
+                                              fmt="jpeg")
         except Exception:
             overlay = None
     baseline = store.baseline_for(rec["signature"], rec.get("phantom", ""),
@@ -1934,7 +2826,7 @@ def report_html(aid: str):
     if integrity.get("status") != "ok":
         log.error("integrity %s while building report for analysis=%s",
                   integrity.get("status"), aid)
-    return build_report(rec, overlay_png=overlay, baseline=baseline,
+    return build_report(rec, overlay=overlay, baseline=baseline,
                         integrity=integrity)
 
 

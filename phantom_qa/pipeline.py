@@ -3,7 +3,7 @@
 Stage A: register()                -> registration + transform
 Stage B/C: propose_all()           -> per-test geometry proposals (editable)
 Stage D/E: compute_all()           -> results from (possibly adjusted) geometry
-Overlays: render_overlay()         -> annotated PNG for reports/UI snapshots
+Overlays: render_overlay()         -> annotated PNG/JPEG for reports/snapshots
 """
 
 from __future__ import annotations
@@ -150,8 +150,12 @@ def compute_all(ctx: Ctx, geometry_all: dict,
             continue
         geom = geometry_all.get(name)
         if not geom or geom.get("_error"):
-            out[name] = {"status": "n/a",
-                         "error": (geom or {}).get("_error", "no geometry")}
+            # "not measured", never "not applicable": the test applies to
+            # every exposure of this phantom, it simply had nowhere to measure.
+            out[name] = {"status": NOT_MEASURED,
+                         "error": (geom or {}).get(
+                             "_error", "no measuring areas were placed for "
+                                       "this test")}
             continue
         try:
             out[name] = _MODULES[name].compute(ctx, geom)
@@ -170,16 +174,87 @@ def compute_all(ctx: Ctx, geometry_all: dict,
     return to_jsonable(out)
 
 
+#: A test that does not apply to this image — at present only X-ray field
+#: alignment when no field edge is in the picture, which is how every
+#: exposure so far has been taken. Nothing is wrong and nothing was missed,
+#: so it does not lower the overall verdict; the verdict says it separately.
+NOT_APPLICABLE = "not applicable"
+
+#: A test that applies and could not produce an answer: nothing measurable
+#: in its areas, too few objects to judge, or no areas placed at all. It
+#: counts as a warning, because the usual cause is an exposure that has to
+#: be repeated, and an exposure nothing could be measured on must never read
+#: as a pass.
+NOT_MEASURED = "not measured"
+
+#: What both of the above were called before they were told apart. Nothing
+#: writes it any more; it is only read back from analyses stored before then.
+LEGACY_NA = "n/a"
+
+#: Rank of each per-test status in the overall verdict. "not applicable" is
+#: absent on purpose: it is skipped, not ranked. The legacy "n/a" keeps the
+#: rank it had when it meant both things at once, so re-reading an analysis
+#: stored before the split reproduces the verdict it was stored with.
+_RANK = {"pass": 0, LEGACY_NA: 1, "warn": 2, "fail": 3, "error": 3}
+
+
 def overall_status(results: dict) -> str:
-    order = {"pass": 0, "n/a": 1, "warn": 2, "fail": 3, "error": 3}
-    worst = "pass"
+    """The worst per-test status, as one of pass / warn / fail / error / n/a.
+
+    "not measured" is reported as "warn", so the overall vocabulary — what
+    History, the exports and every stored analysis already use — does not
+    grow. A status this function does not know counts as a warning too:
+    ranking an unrecognised word as a pass is how an unmeasured test would
+    slip through. "n/a" comes back only when nothing was judged at all."""
+    worst, judged = "pass", False
     for name in TESTS:
-        r = results.get(name, {})
+        r = results.get(name) or {}
         for key in ("status", "field_status", "dimension_status"):
             s = r.get(key)
-            if s and order.get(s, 0) > order.get(worst, 0):
+            if not s or s == NOT_APPLICABLE:
+                continue
+            judged = True
+            if s == NOT_MEASURED or s not in _RANK:
+                s = "warn"
+            if _RANK[s] > _RANK[worst]:
                 worst = s
-    return worst
+    return worst if judged else LEGACY_NA
+
+
+#: Every status an analysis carries, with the name a reader knows it by.
+STATUS_FIELDS = (
+    ("geometry", "status", "Geometry"),
+    ("geometry", "dimension_status", "Phantom size"),
+    ("geometry", "field_status", "X-ray field alignment"),
+    ("linepairs", "status", "Line patterns"),
+    ("lowcontrast", "status", "Low contrast"),
+    ("uniformity", "status", "Uniformity"),
+    ("wedge", "status", "Wedge"),
+)
+
+#: Why a test does not apply, wherever more can be said than that.
+_NOT_APPLICABLE_WHY = {
+    ("geometry", "field_status"): "no field edge found in the image",
+}
+
+
+def verdict_notes(results: dict | None) -> list[str]:
+    """What the overall verdict leaves out, in words, for printing beside it.
+
+    A "pass" that silently skipped a test reads as though that test passed
+    too. Skipping it is right — the test does not apply — but the reader of a
+    signed report has to be told, e.g. "X-ray field alignment not checked (no
+    field edge found in the image)". Only "not applicable" produces a note: a
+    test that was not measured already pulls the verdict down to a warning
+    and is named wherever the warning is explained."""
+    notes = []
+    for name, key, title in STATUS_FIELDS:
+        r = (results or {}).get(name)
+        if isinstance(r, dict) and r.get(key) == NOT_APPLICABLE:
+            why = _NOT_APPLICABLE_WHY.get((name, key),
+                                          "it does not apply to this image")
+            notes.append(f"{title} not checked ({why})")
+    return notes
 
 
 # ------------------------------------------------------------------ overlays
@@ -188,10 +263,28 @@ _COLORS = {"geometry": "#00c8ff", "linepairs": "#ffd400",
            "lowcontrast": "#ff7bda", "uniformity": "#7bff9f",
            "wedge": "#ff9d5c", "reg": "#ff4040"}
 
+#: How the overview is encoded when it travels as JPEG. The picture is an
+#: X-ray, which JPEG suits, but the ROI outlines drawn on it are one pixel wide
+#: and coloured. Chroma subsampling (PIL's default) halves the colour
+#: resolution, and on the reference scans that smeared the magenta disc rings
+#: into a grey-pink blur and made the dotted background rings vanish; full
+#: colour resolution costs about a fifth more bytes and keeps them legible.
+#: Optimised, progressive coding is lossless and a few per cent smaller.
+OVERLAY_JPEG = {"quality": 80, "subsampling": 0, "optimize": True,
+                "progressive": True}
+
 
 def render_overlay(scan: ScanData, ctx: Ctx, geometry_all: dict,
-                   max_px: int = 1400) -> bytes:
-    """Annotated overview PNG: image + registration corners + all ROIs."""
+                   max_px: int = 1400, fmt: str = "png") -> bytes:
+    """Annotated overview: image + registration corners + all ROIs.
+
+    PNG by default, which is what the command line writes beside its results.
+    The printed report asks for ``fmt="jpeg"``: as PNG the overview was a
+    megabyte, four-fifths of the whole report and fifteen seconds or more on a
+    field link, for a picture that is only looked at. Rendering the JPEG
+    directly, rather than re-encoding a finished PNG, also saves the second or
+    so the PNG encoder spends on a noisy X-ray.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -248,6 +341,9 @@ def render_overlay(scan: ScanData, ctx: Ctx, geometry_all: dict,
 
     buf = io.BytesIO()
     fig.tight_layout(pad=0.2)
-    fig.savefig(buf, format="png")
+    if fmt == "jpeg":
+        fig.savefig(buf, format="jpeg", pil_kwargs=dict(OVERLAY_JPEG))
+    else:
+        fig.savefig(buf, format="png")
     plt.close(fig)
     return buf.getvalue()

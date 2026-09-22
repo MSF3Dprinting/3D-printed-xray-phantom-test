@@ -9,20 +9,27 @@ Because "many phantoms" has no meaningful first entry, every deviation is
 measured against the **median of the selection**, not against the first scan.
 The output is plots rather than tables — the numeric table is kept as a
 collapsed appendix. Every visual identifies entries by Site / Phantom ID.
+Near the top, a table of pictures shows every test area of every scan side by
+side, so the images themselves can be compared and not only their numbers.
 """
 
 from __future__ import annotations
 
 import base64
+import hashlib
 import html
 import io
 
 import numpy as np
 
 from .store import flatten_results
+from .thumbnails import REGIONS as _PICTURE_REGIONS
 
+#: "not measured" counts as a warning and shares its colour; "not applicable"
+#: shares the grey of the legacy "n/a" it partly replaces.
 _STATUS_COLOR = {"pass": "#2e9e44", "warn": "#d9a021", "fail": "#cf3f3f",
-                 "n/a": "#9aa4b2", "error": "#cf3f3f", "": "#9aa4b2"}
+                 "n/a": "#9aa4b2", "error": "#cf3f3f", "": "#9aa4b2",
+                 "not measured": "#d9a021", "not applicable": "#9aa4b2"}
 
 _VALIDATION_COLOR = {"validated": "#2e9e44",
                      "conditionally_validated": "#d9a021",
@@ -58,11 +65,24 @@ _PANELS = {
 
 
 def _b64(fig) -> str:
+    """A chart as a 64-colour palette PNG.
+
+    The same encoding the single report uses, for the same reason: a chart is
+    a few flat colours and text, so a palette loses nothing visible and halves
+    the bytes — which matters more here, where the charts repeat for every
+    test and the page now also carries the pictures. Max-coverage keeps the
+    colours the chart actually uses (the faster octree greyed the white page).
+    """
     import matplotlib.pyplot as plt
+    from PIL import Image
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=115, bbox_inches="tight")
     plt.close(fig)
-    return base64.b64encode(buf.getvalue()).decode()
+    chart = Image.open(io.BytesIO(buf.getvalue())).convert("RGB")
+    out = io.BytesIO()
+    chart.quantize(colors=64, method=Image.Quantize.MAXCOVERAGE).save(
+        out, format="png", optimize=True)
+    return base64.b64encode(out.getvalue()).decode()
 
 
 def _img(b64, cls="") -> str:
@@ -166,7 +186,9 @@ def _status_grid(ordered, labels):
     fig, ax = plt.subplots(figsize=(_fig_width(n), 0.42 * nrows + 2.2))
     for row, (test, key, label) in enumerate(tests):
         for col, rec in enumerate(ordered):
-            st = ((rec.get("results") or {}).get(test) or {}).get(key, "n/a")
+            blob = (rec.get("results") or {}).get(test) or {}
+            # a geometry test that never ran has only its own overall status
+            st = blob.get(key) or blob.get("status") or "n/a"
             ax.add_patch(plt.Rectangle((col - 0.46, row - 0.42), 0.92, 0.84,
                                        color=_STATUS_COLOR.get(st, "#9aa4b2")))
     # the administrator's ruling, separated by a gap so it reads as a verdict
@@ -190,8 +212,8 @@ def _status_grid(ordered, labels):
     handles = [plt.Rectangle((0, 0), 1, 1, color=_STATUS_COLOR[k])
                for k in ("pass", "warn", "fail", "n/a")]
     ax.legend(handles,
-              ["pass / validated", "warn / conditional", "fail / not validated",
-               "n/a / pending"],
+              ["pass / validated", "warn, not measured / conditional",
+               "fail / not validated", "not applicable, n/a / pending"],
               ncol=4, fontsize=7, loc="upper center",
               bbox_to_anchor=(0.5, -0.42), frameon=False)
     fig.tight_layout()
@@ -453,10 +475,489 @@ def _variability_chart(keys, maps, top=14):
     return _b64(fig), rel + absolute
 
 
+# ------------------------------------------------------------------- pictures
+#
+# The table of pictures answers the field's request to compare the images
+# themselves, not only the numbers. The pictures are made by thumbnails.py and
+# handed in; this only lays them out. Everything is embedded, so the page saved
+# from the browser keeps every picture — nothing is e-mailed from the app, and
+# a saved copy is how a comparison travels.
+
+_PICTURE_TITLES = {
+    "phantom": "Whole phantom",
+    "linepairs": "Line-pair strip",
+    "wedge": "Wedge",
+    "lowcontrast": "Low-contrast block",
+    "uniformity": "Uniformity squares",
+}
+_PICTURE_HINTS = {
+    "linepairs": "along the strip as printed; enlarge to see the lines",
+    "wedge": "laid on its side — S1, the top of the phantom, at the left",
+    "uniformity": "the five squares side by side",
+}
+_OWN_WINDOW = "Each picture in its own window."
+_ALONE_ON_PROTOCOL = ("own window — the only scan here from its detector and "
+                      "protocol, so its brightness does not compare")
+_SELF_NORMALISED = (
+    "Flattened and windowed to itself, as in the marking step. Brightness "
+    "does not compare between scans here — compare which discs you can see.")
+
+_PICTURE_MIMES = ("image/jpeg", "image/png")
+_B64_ALPHABET = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+                          "0123456789+/=")
+
+
+def _clean_b64(value) -> str:
+    """The picture data, if it is plainly base64 and nothing else.
+
+    It comes from a file on the server's own disk, but it is pasted into an
+    attribute; a damaged file must not be able to close that attribute."""
+    s = str(value or "")
+    return s if s and set(s) <= _B64_ALPHABET else ""
+
+
+def _num(value, spec: str) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not np.isfinite(value):
+        return None
+    return format(value, spec)
+
+
+def _picture_facts(region: str, results: dict) -> tuple[str, list[str]]:
+    """The status and the few numbers worth reading under one picture.
+
+    Taken from the stored results, never re-measured from the picture: the
+    picture is for looking, the numbers are the record."""
+    res = results or {}
+    lines: list[str] = []
+    if region == "phantom":
+        g = res.get("geometry") or {}
+        d = g.get("dimensions") or {}
+        side = _num(d.get("mean_side_mm"), ".1f")
+        dev = _num(d.get("dev_from_nominal_pct"), "+.2f")
+        if side:
+            lines.append(f"side {side} mm"
+                         + (f" ({dev} % from nominal)" if dev else ""))
+        if g.get("field_status"):
+            lines.append(f"field alignment: {g['field_status']}")
+        # A geometry test that never produced dimensions — errored, timed out,
+        # or had no measuring areas — carries only its own status. Falling
+        # back to it shows "error" or "not measured", as the status grid on
+        # the same page does, instead of a neutral "no result".
+        return g.get("dimension_status") or g.get("status"), lines
+    if region == "linepairs":
+        lp = res.get("linepairs") or {}
+        rows = [r for r in lp.get("rows") or [] if isinstance(r, dict)]
+        fitted = [(r.get("id"), (r.get("linearity") or {}).get("pitch_dev_pct"))
+                  for r in rows]
+        fitted = [(gid, v) for gid, v in fitted if _num(v, "f")]
+        if rows:
+            lines.append(f"pitch measured on {len(fitted)} of {len(rows)} "
+                         f"groups")
+        if fitted:
+            gid, dev = max(fitted, key=lambda t: abs(t[1]))
+            tol = _num(lp.get("pitch_tolerance_pct"), "g")
+            lines.append(f"largest pitch deviation {dev:+.1f} % ({gid})"
+                         + (f", limit ±{tol} %" if tol else ""))
+        return lp.get("status"), lines
+    if region == "wedge":
+        w = res.get("wedge") or {}
+        ratio = _num(w.get("dynamic_range_ratio"), ".1f")
+        if ratio:
+            lines.append(f"dynamic range {ratio}×")
+        if "monotonic" in w:
+            lines.append("steps in order" if w.get("monotonic")
+                         else "steps out of order")
+        sat = [f"S{r.get('step')}" for r in w.get("rows") or []
+               if isinstance(r, dict) and r.get("saturated")]
+        if sat:
+            lines.append("saturated: " + ", ".join(sat))
+        return w.get("status"), lines
+    if region == "lowcontrast":
+        lc = res.get("lowcontrast") or {}
+        rows = [r for r in lc.get("rows") or [] if isinstance(r, dict)]
+        cnrs = [abs(r["cnr"]) for r in rows if _num(r.get("cnr"), "f")]
+        rho = _num(lc.get("order_rho"), ".2f")
+        if rho:
+            lines.append(f"disc order {rho} (rank correlation; 1 = as "
+                         f"designed)")
+        if cnrs:
+            lines.append(f"|CNR| {min(cnrs):.2f} – {max(cnrs):.2f}")
+        total = len(rows) + len(lc.get("not_measured") or [])
+        if total:
+            lines.append(f"{len(cnrs)} of {total} discs measured")
+        if (lc.get("orientation") or {}).get("flipped"):
+            lines.append("insert fitted a half turn round")
+        return lc.get("status"), lines
+    if region == "uniformity":
+        u = res.get("uniformity") or {}
+        worst = _num(u.get("max_abs_dsnr_pct"), ".1f")
+        tol = _num(u.get("tolerance_pct"), "g")
+        if worst:
+            lines.append(f"worst SNR deviation {worst} %"
+                         + (f" (limit ±{tol} %)" if tol else ""))
+        n_ok, n_not = len(u.get("rows") or []), len(u.get("not_measured") or [])
+        if n_not:
+            lines.append(f"{n_ok} of {n_ok + n_not} squares measured")
+        return u.get("status"), lines
+    return "", lines
+
+
+def _status_chip(status) -> str:
+    st = str(status or "")
+    word = st.replace("_", " ") if st else "no result"
+    return (f"<span class='chip' style='background:"
+            f"{_STATUS_COLOR.get(st, '#9aa4b2')}'>{html.escape(word)}</span>")
+
+
+def _picture_cell(pic, caption: str, rec: dict, region: str,
+                  shared_with: dict | None = None, own_note: str = "") -> str:
+    """One scan's picture of one region, with its numbers underneath.
+
+    ``shared_with`` is the picture whose window this one is shown on in the
+    page; without it the picture keeps its own window, and ``own_note`` says
+    whose window it is when that is not the row's. A missing picture is a
+    labelled empty cell saying why — never a gap, which would shift the rest
+    of the row and let the reader compare the wrong columns."""
+    pic = pic if isinstance(pic, dict) else {}
+    b64 = _clean_b64(pic.get("b64"))
+    mime = pic.get("mime") if pic.get("mime") in _PICTURE_MIMES else ""
+    if b64 and mime:
+        window = ""
+        if shared_with:
+            window = (f' data-lo="{float(pic["lo"]):.7g}"'
+                      f' data-hi="{float(pic["hi"]):.7g}"'
+                      f' data-rlo="{float(shared_with["lo"]):.7g}"'
+                      f' data-rhi="{float(shared_with["hi"]):.7g}"')
+        w, h = int(pic.get("w") or 0), int(pic.get("h") or 0)
+        size = f' width="{w}" height="{h}"' if w > 0 and h > 0 else ""
+        body = (f'<figure class="pic" data-caption="{html.escape(caption)}">'
+                f'<img src="data:{mime};base64,{b64}"{size}{window} '
+                f'alt="{html.escape(caption)}"></figure>')
+        labels = [str(x) for x in pic.get("labels") or []]
+        if labels:
+            body += ("<div class='pic-labels'>"
+                     + "".join(f"<span>{html.escape(x)}</span>" for x in labels)
+                     + "</div>")
+        if own_note:
+            body += f"<div class='pic-own'>{html.escape(own_note)}</div>"
+    else:
+        reason = str(pic.get("missing") or "no picture")
+        body = f"<div class='pic-missing'>{html.escape(reason)}</div>"
+    try:
+        status, lines = _picture_facts(region, rec.get("results") or {})
+    except Exception:           # odd stored results must not cost the page
+        status, lines = "", []
+    facts = (f"<div class='pic-facts'>{_status_chip(status)}"
+             + "".join(f"<br>{html.escape(x)}" for x in lines) + "</div>")
+    return f"<td class='pic-cell'>{body}{facts}</td>"
+
+
+def _window_reference(ordered) -> int:
+    """Which scan's window the rows share: the reference scan when the
+    selection holds one, otherwise the first scan."""
+    return next((i for i, r in enumerate(ordered) if r.get("is_baseline")), 0)
+
+
+def _window_sources(ordered, usable: list[int], ref: int) -> dict[int, int]:
+    """For each picture in a row, whose window it is shown on.
+
+    Pixel values only compare within one detector and protocol — the same
+    rule that scopes a baseline. On the window of a scan from another
+    detector a picture comes out black or white, which reads as a fault that
+    is not there. So the scans are grouped by protocol: the reference scan's
+    group shares its window, and any other group shares the window of its own
+    reference scan, or else its first. A scan alone on its protocol has
+    nothing to share with and keeps its own window (it is left out).
+
+    In the usual comparison — one phantom on one detector over time — there
+    is one group, and this is simply "the reference scan's window"."""
+    groups: dict[str, list[int]] = {}
+    for i in usable:
+        groups.setdefault(ordered[i].get("signature") or "", []).append(i)
+    source = {}
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        own_ref = next((i for i in members if ordered[i].get("is_baseline")),
+                       members[0])
+        src = ref if ref in members else own_ref
+        for i in members:
+            source[i] = src
+    return source
+
+
+def _picture_section(ordered, labels, pictures: dict) -> str:
+    """The table: one column per scan, one row per test area.
+
+    Only scans that were given pictures get a column. The caller leaves some
+    out on purpose when many are selected (see the note this adds), and a
+    column of empty cells for each of those would be both heavy and useless;
+    a scan whose pictures failed still has an entry, and so still gets its
+    labelled empty cells."""
+    shown = [(r, lab) for r, lab in zip(ordered, labels) if r["id"] in pictures]
+    left_out = len(ordered) - len(shown)
+    ordered = [r for r, _ in shown]
+    labels = [lab for _, lab in shown]
+    ref = _window_reference(ordered)
+    flat_labels = [lab.replace("\n", " ") for lab in labels]
+
+    body, window_sources = "", set()
+    for region in _PICTURE_REGIONS:
+        row_pics = [(pictures.get(r["id"]) or {}).get(region) for r in ordered]
+        title = _PICTURE_TITLES.get(region, region)
+        hint = _PICTURE_HINTS.get(region, "")
+        attrs, note = "", f"<div class='win-note'>{_OWN_WINDOW}</div>"
+        on_shared, own_notes = {}, {}
+        if region == "lowcontrast":
+            note = f"<div class='win-note'>{html.escape(_SELF_NORMALISED)}</div>"
+        else:
+            # Whose window each picture is shown on; the note names the one
+            # most pictures share, which is the reference scan's whenever it
+            # has a picture in this row.
+            usable = [i for i, p in enumerate(row_pics)
+                      if isinstance(p, dict) and p.get("window") == "raw"
+                      and _clean_b64(p.get("b64"))
+                      and _num(p.get("lo"), "g") and _num(p.get("hi"), "g")]
+            source = _window_sources(ordered, usable, ref)
+            window_sources.update(source.values())
+            if source:
+                primary = source.get(ref, min(source.values()))
+                if len(set(source.values())) == 1:
+                    shared = (f"One window for every scan, taken from "
+                              f"{flat_labels[primary]}, so a brighter picture "
+                              f"really is brighter.")
+                else:
+                    shared = (f"One window for each detector and protocol, "
+                              f"taken from its reference or first scan "
+                              f"({flat_labels[primary]} for the first), so a "
+                              f"brighter picture really is brighter.")
+                for i in usable:
+                    if i not in source:
+                        own_notes[i] = _ALONE_ON_PROTOCOL
+                    elif source[i] != primary:
+                        own_notes[i] = (f"window from {flat_labels[source[i]]}"
+                                        f" — another detector or protocol")
+                on_shared = {i: row_pics[s] for i, s in source.items()}
+                attrs = (f' data-ref-lo="{float(row_pics[primary]["lo"]):.7g}"'
+                         f' data-ref-hi="{float(row_pics[primary]["hi"]):.7g}"')
+                # Without JavaScript every picture shows in its own window,
+                # and the note says so; the script switches both.
+                note = (f"<div class='win-note' data-own='{_OWN_WINDOW}' "
+                        f"data-shared='{html.escape(shared, quote=True)}'>"
+                        f"{_OWN_WINDOW}</div>"
+                        f"<label class='win-toggle' hidden><input "
+                        f"type='checkbox'> window each picture on its own"
+                        f"</label>")
+        cells = "".join(
+            _picture_cell(p, f"{flat_labels[i]} — {title}", ordered[i], region,
+                          shared_with=on_shared.get(i),
+                          own_note=own_notes.get(i, ""))
+            for i, p in enumerate(row_pics))
+        body += (f"<tr{attrs}><th class='row-head'>{html.escape(title)}"
+                 + (f"<div class='muted'>{html.escape(hint)}</div>"
+                    if hint else "")
+                 + f"{note}</th>{cells}</tr>")
+
+    head = ""
+    for i, rec in enumerate(ordered):
+        acquired = (rec.get("acquired_at") or "")[:16]
+        when = (f"acquired {acquired}" if acquired else
+                f"acquisition date not recorded · uploaded "
+                f"{(rec.get('created_at') or '')[:16]}")
+        tags = []
+        if rec.get("is_baseline"):
+            tags.append("reference scan")
+        if i in window_sources:
+            tags.append("shared window taken from here")
+        head += (f"<th class='pic-head'>"
+                 f"<b>{html.escape(rec.get('site') or '—')} / "
+                 f"{html.escape(rec.get('phantom') or '—')}</b>"
+                 f"<br><span class='muted'>{html.escape(when)}</span>"
+                 f"<br>{_status_chip(rec.get('status'))}"
+                 + "".join(f" <span class='tag'>{html.escape(t)}</span>"
+                           for t in tags)
+                 + "</th>")
+
+    return f"""
+<section class="card pics-card">
+  <h2>The scans side by side</h2>
+  <p class="muted">Every picture is straightened to the phantom's own frame, so
+  scans taken at any angle, or face down, line up column by column. The numbers
+  under each picture are the stored results. Click a picture to enlarge it.
+  The pictures are part of this page, so saving the page keeps them.</p>
+  {(f'<p class="muted"><b>Pictures are shown for {len(ordered)} of '
+    f'{len(ordered) + left_out} scans</b> — the reference scan and the most '
+    f'recent ones — so the page stays light on a slow connection. The charts '
+    f'below still cover all of them. Select fewer scans to see the others '
+    f'side by side.</p>') if left_out else ''}
+  <div class="scroll"><table class="pics">
+    <thead><tr><th class="row-head"></th>{head}</tr></thead>
+    <tbody>{body}</tbody>
+  </table></div>
+</section>"""
+
+
+#: Row windows and picture enlargement. Inline, so a copy saved from the
+#: browser keeps working with no server behind it; the server admits exactly
+#: this text by its hash (COMPARISON_SCRIPT_CSP) rather than allowing inline
+#: scripts in general. Without it the page still reads: every picture then
+#: shows in its own window, and the row notes say so.
+_PICTURE_SCRIPT = """
+(function () {
+  "use strict";
+  function each(list, fn) { Array.prototype.forEach.call(list, fn); }
+  function ready(img, fn) {
+    if (img.complete && img.naturalWidth) { fn(); }
+    else { img.addEventListener("load", fn); }
+  }
+  // Every picture was encoded with 0..255 standing for its own data-lo..
+  // data-hi, so one 256-entry table moves it onto the shared window
+  // data-rlo..data-rhi without fetching anything.
+  function remap(img, rlo, rhi) {
+    var box = img.parentNode, old = box.querySelector("canvas");
+    if (old) { box.removeChild(old); }
+    var lo = parseFloat(img.getAttribute("data-lo"));
+    var hi = parseFloat(img.getAttribute("data-hi"));
+    var c = document.createElement("canvas");
+    c.width = img.naturalWidth;
+    c.height = img.naturalHeight;
+    var g = c.getContext("2d");
+    g.drawImage(img, 0, 0);
+    var d = g.getImageData(0, 0, c.width, c.height), p = d.data;
+    var lut = new Uint8ClampedArray(256), k = (hi - lo) / 255, span = rhi - rlo;
+    for (var v = 0; v < 256; v++) { lut[v] = (lo + v * k - rlo) / span * 255; }
+    for (var i = 0; i < p.length; i += 4) {
+      var q = lut[p[i]];
+      p[i] = q; p[i + 1] = q; p[i + 2] = q;
+    }
+    g.putImageData(d, 0, 0);
+    box.appendChild(c);
+  }
+  each(document.querySelectorAll("tr[data-ref-lo]"), function (row) {
+    var note = row.querySelector(".win-note");
+    var toggle = row.querySelector(".win-toggle");
+    var own = toggle ? toggle.querySelector("input") : null;
+    function show() {
+      var mine = !own || own.checked;
+      row.classList.toggle("own-window", mine);
+      if (note) {
+        note.textContent = note.getAttribute(mine ? "data-own" : "data-shared");
+      }
+    }
+    function failed() {
+      own = null;
+      if (toggle) { toggle.hidden = true; }
+      show();
+    }
+    each(row.querySelectorAll("img[data-rlo]"), function (img) {
+      var rlo = parseFloat(img.getAttribute("data-rlo"));
+      var rhi = parseFloat(img.getAttribute("data-rhi"));
+      if (!(rhi > rlo)) { return; }
+      ready(img, function () {
+        try { remap(img, rlo, rhi); } catch (e) { failed(); }
+      });
+    });
+    if (toggle && own) {
+      toggle.hidden = false;
+      own.addEventListener("change", show);
+    }
+    show();
+  });
+
+  var box = document.getElementById("pic-lightbox");
+  if (!box) { return; }
+  var big = box.querySelector("img"), cap = box.querySelector("figcaption");
+  function close() { box.hidden = true; big.removeAttribute("src"); }
+  function open(fig) {
+    var img = fig.querySelector("img"), c = fig.querySelector("canvas");
+    var row = fig.closest ? fig.closest("tr") : null;
+    var shared = c && row && !row.classList.contains("own-window");
+    big.src = shared ? c.toDataURL("image/png") : img.src;
+    var w = img.naturalWidth || 300, h = img.naturalHeight || 300;
+    var k = Math.max(1, Math.min(4, window.innerWidth * 0.94 / w,
+                                 window.innerHeight * 0.8 / h));
+    big.style.width = Math.round(w * k) + "px";
+    cap.textContent = fig.getAttribute("data-caption") || "";
+    box.hidden = false;
+  }
+  document.addEventListener("click", function (e) {
+    if (!box.hidden) { close(); return; }
+    var fig = e.target.closest ? e.target.closest(".pic") : null;
+    if (fig && fig.querySelector("img")) { open(fig); }
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && !box.hidden) { close(); }
+  });
+})();
+"""
+
+#: The Content-Security-Policy source that admits _PICTURE_SCRIPT and nothing
+#: else. Computed from the text itself, so editing the script cannot leave a
+#: stale hash behind that silently switches the script off.
+COMPARISON_SCRIPT_CSP = "'sha256-{}'".format(base64.b64encode(
+    hashlib.sha256(_PICTURE_SCRIPT.encode("utf-8")).digest()).decode("ascii"))
+
+_PICTURE_CSS = """
+ table.pics { width:auto; }
+ table.pics td, table.pics th { white-space:normal; vertical-align:top; }
+ table.pics th.row-head { width:150px; min-width:130px; background:#f7f9fb; }
+ table.pics th.pic-head { width:250px; min-width:170px; font-weight:400; }
+ table.pics td.pic-cell { width:250px; min-width:170px; }
+ .pic { position:relative; display:block; margin:0; cursor:zoom-in;
+        line-height:0; }
+ .pic img { display:block; margin:0; width:100%; max-width:100%; height:auto;
+            background:#000; }
+ .pic canvas { position:absolute; top:0; left:0; width:100%; height:100%; }
+ tr.own-window .pic canvas { visibility:hidden; }
+ .pic-labels { display:flex; justify-content:space-around; font-size:10px;
+               color:#6b7688; margin-top:2px; }
+ .pic-own { font-size:10px; color:#8a5a00; margin-top:3px; }
+ tr.own-window .pic-own { display:none; }
+ .pic-missing { display:flex; align-items:center; justify-content:center;
+                min-height:70px; padding:8px; text-align:center; font-size:11px;
+                color:#6b7688; background:repeating-linear-gradient(45deg,
+                #f4f6f8, #f4f6f8 6px, #eceff3 6px, #eceff3 12px);
+                border:1px dashed #c9d1db; border-radius:6px; }
+ .pic-facts { font-size:11px; line-height:1.45; margin-top:5px; }
+ .win-note { font-size:10.5px; font-weight:400; color:#41506a; margin-top:6px; }
+ .win-toggle { display:block; font-size:10.5px; font-weight:400;
+               margin-top:6px; cursor:pointer; }
+ .win-toggle[hidden] { display:none; }
+ .tag { display:inline-block; font-size:10px; color:#41506a;
+        background:#e3eaf3; border-radius:8px; padding:0 7px; margin-top:3px; }
+ .lightbox { position:fixed; inset:0; background:rgba(10,14,20,.88);
+             display:flex; align-items:center; justify-content:center;
+             z-index:10; cursor:zoom-out; }
+ .lightbox[hidden] { display:none; }
+ .lightbox figure { margin:0; text-align:center; }
+ .lightbox img { max-width:96vw; max-height:84vh; width:auto; height:auto;
+                 margin:0 auto; background:#000; }
+ .lightbox figcaption { color:#e8edf3; font-size:13px; margin-top:8px; }
+ @page pictures { size:A4 landscape; margin:10mm; }
+ @media print {
+   .pics-card { page:pictures; }
+   .pics-card .scroll { overflow:visible; }
+   table.pics { width:100%; table-layout:fixed; }
+   table.pics th.pic-head, table.pics td.pic-cell { width:auto; min-width:0; }
+   table.pics tr { break-inside:avoid; }
+   .win-toggle, .lightbox { display:none !important; }
+ }
+"""
+
+
 # --------------------------------------------------------------------- report
 
 def build_comparison_report(records: list[dict], title_suffix: str = "",
-                            filters: dict | None = None) -> str:
+                            filters: dict | None = None,
+                            pictures: dict | None = None) -> str:
+    """The whole comparison as one self-contained page.
+
+    ``pictures`` maps an analysis id to its pictures from
+    ``thumbnails.pictures_for``. Given, the page leads with a table of them;
+    an analysis missing from it gets labelled empty cells. Left out, the page
+    is charts only, as it was before the pictures existed."""
     ordered, keys, maps = _collect(records)
     if not ordered:
         return ("<!doctype html><html><body style='font-family:sans-serif;"
@@ -546,6 +1047,15 @@ def build_comparison_report(records: list[dict], title_suffix: str = "",
 
     span = f"{_stamp(ordered[0])} → {_stamp(ordered[-1])}"
 
+    picture_card, picture_css, picture_tail = "", "", ""
+    if pictures is not None:
+        picture_card = _picture_section(ordered, labels, pictures)
+        picture_css = _PICTURE_CSS
+        picture_tail = ('<div id="pic-lightbox" class="lightbox" hidden>'
+                        '<figure><img alt=""><figcaption></figcaption>'
+                        '</figure></div>'
+                        f"<script>{_PICTURE_SCRIPT}</script>")
+
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <title>Phantom QA — comparison</title>
 <style>
@@ -573,6 +1083,7 @@ def build_comparison_report(records: list[dict], title_suffix: str = "",
           font-size:12px; }}
  .fact b {{ font-size:15px; display:block; }}
  @media print {{ body {{ background:#fff; }} .card {{ break-inside:avoid; }} }}
+{picture_css}
 </style></head><body><div class="wrap">
 <h1>MSF Phantom QA — comparison{html.escape(title_suffix)}</h1>
 <p class="muted" style="font-size:12px">{html.escape(span)}
@@ -598,7 +1109,7 @@ def build_comparison_report(records: list[dict], title_suffix: str = "",
   many phantoms against each other.</p>
   {_img(grid)}
 </section>
-
+{picture_card}
 <section class="card">
   <h2>Where the differences are</h2>
   {_img(var_chart)}
@@ -609,4 +1120,4 @@ def build_comparison_report(records: list[dict], title_suffix: str = "",
 </section>
 
 {sections}
-</div></body></html>"""
+</div>{picture_tail}</body></html>"""

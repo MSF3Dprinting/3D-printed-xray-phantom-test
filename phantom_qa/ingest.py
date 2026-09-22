@@ -9,11 +9,15 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
+import math
 import os
 import zipfile
 from dataclasses import dataclass, field
 
 import numpy as np
+
+log = logging.getLogger("phantomqa.ingest")
 
 DICOM_EXTENSIONS = {".dcm", ".dicom", ""}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
@@ -44,11 +48,75 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+#: The detector's own account of how much radiation reached it (IEC 62494-1):
+#: the exposure index, the index it was set up to expect, the deviation of one
+#: from the other, and a sensitivity (the Fuji's S value). All three detectors
+#: in use write the exposure index; the Carestream and the field Fuji also
+#: write the other three, the Philips does not.
+#:
+#: They are what tells an operator at a glance that a scan was under- or
+#: over-exposed, which is the first thing to rule out when its numbers look
+#: wrong. Stored as NUMBERS, unlike the rest of the header, so they can be
+#: listed and exported without re-parsing text.
+EXPOSURE_TAGS = ("ExposureIndex", "TargetExposureIndex", "DeviationIndex",
+                 "Sensitivity")
+
+
+def _dicom_number(value):
+    """A header value as an int or float, or None when there is none.
+
+    Read from the text the detector wrote rather than from pydicom's float, so
+    an index written as "251" is stored as 251 and not as 251.0. A blank, a
+    malformed value or a non-finite one is treated as absent: an exposure index
+    that is not a real number is not one, and inventing a value is worse than
+    showing that the detector recorded none."""
+    if isinstance(value, (list, tuple)) or \
+            value.__class__.__name__ == "MultiValue":
+        value = value[0] if len(value) else None
+    if value is None or isinstance(value, bool):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        pass
+    try:
+        number = float(text)
+    except ValueError:
+        return None
+    return number if math.isfinite(number) else None
+
+
+def exposure_values(ds) -> dict:
+    """The exposure tags this dataset carries, as numbers. Absent stays absent."""
+    out = {}
+    for tag in EXPOSURE_TAGS:
+        number = _dicom_number(getattr(ds, tag, None))
+        if number is not None:
+            out[tag] = number
+    return out
+
+
+def read_exposure_header(path: str) -> dict:
+    """The exposure tags of a stored DICOM, reading its header only.
+
+    Used to fill in records stored before these tags were kept. Stopping before
+    the pixel data is what makes that affordable at start-up: a detector image
+    is tens of megabytes, its header a few kilobytes."""
+    import pydicom
+
+    ds = pydicom.dcmread(path, stop_before_pixels=True)
+    return exposure_values(ds)
+
+
 def _extract_dicom_meta(ds) -> dict:
     tags = [
         "SOPInstanceUID", "SOPClassUID", "Modality", "Manufacturer",
         "ManufacturerModelName", "StationName", "DetectorID", "DetectorType",
-        "StudyDate", "StudyTime", "SeriesTime", "AcquisitionTime",
+        "StudyDate", "StudyTime", "SeriesTime", "AcquisitionDate",
+        "AcquisitionTime",
         "StudyDescription", "SeriesDescription", "ProtocolName",
         "BodyPartExamined", "ViewPosition", "PatientOrientation",
         "KVP", "ExposureTime", "XRayTubeCurrent", "Exposure", "ExposureInuAs",
@@ -75,6 +143,7 @@ def _extract_dicom_meta(ds) -> dict:
                     meta[t] = str(v)
             except Exception:
                 meta[t] = str(v)
+    meta.update(exposure_values(ds))
     return meta
 
 
@@ -89,23 +158,68 @@ def protocol_signature(meta: dict) -> str:
     return f"{model} | {kvp} kV | {spacing[0]} mm/px | {proc_family}"
 
 
+def _invert_monochrome1(values, stored, ds, slope: float, intercept: float):
+    """Turn a MONOCHROME1 image (bigger number = darker) the other way up.
+
+    Flipped about the detector's own range, taken from the bit depth, so the
+    same exposure of the same object always comes out with the same values.
+
+    It used to be flipped about the brightest pixel in the image. That is the
+    same thing only when some pixel happens to reach the detector's maximum —
+    true on every readable field scan so far, because the unblocked beam at the
+    image edge saturates the 10-bit Fuji at 1023. On an exposure where nothing
+    reaches the maximum (collimated inside the phantom, or a lower dose) every
+    value shifted by an amount that depended on the picture, which moved the
+    uniformity signal-to-noise and the wedge ratio from scan to scan for no
+    physical reason.
+
+    Falls back to the old rule — and says so in the returned note — only when
+    the header gives no usable range, because a wrong declared range would be
+    worse than a content-dependent one.
+    """
+    bits = getattr(ds, "BitsStored", None) or getattr(ds, "BitsAllocated", None)
+    signed = int(getattr(ds, "PixelRepresentation", 0) or 0) == 1
+    reason = "the header declares no bit depth"
+    if bits:
+        bits = int(bits)
+        lo, hi = ((-(1 << (bits - 1)), (1 << (bits - 1)) - 1) if signed
+                  else (0, (1 << bits) - 1))
+        smin, smax = float(stored.min()), float(stored.max())
+        if lo <= smin and smax <= hi:
+            # The flip of the stored value, carried through the rescale:
+            # ((lo + hi) - stored) * slope + intercept.
+            pivot = (lo + hi) * slope + 2.0 * intercept
+            return pivot - values, {"method": "bit depth", "bits": bits,
+                                    "range": [lo, hi]}
+        reason = (f"pixel values {smin:.0f}..{smax:.0f} fall outside the "
+                  f"declared {bits}-bit range")
+    log.warning("MONOCHROME1 image inverted about its own maximum: %s", reason)
+    return float(values.max()) - values, {"method": "image maximum",
+                                          "reason": reason}
+
+
 def load_dicom_bytes(data: bytes, source_name: str) -> ScanData:
     import pydicom
 
     ds = pydicom.dcmread(io.BytesIO(data))
-    arr = ds.pixel_array.astype(np.float64)
+    stored = ds.pixel_array.astype(np.float64)
 
     slope = float(getattr(ds, "RescaleSlope", 1) or 1)
     intercept = float(getattr(ds, "RescaleIntercept", 0) or 0)
-    arr = arr * slope + intercept
+    arr = stored * slope + intercept
 
     photometric = str(getattr(ds, "PhotometricInterpretation", "MONOCHROME2"))
+    inversion = None
     if photometric == "MONOCHROME1":
-        arr = float(arr.max()) - arr
+        arr, inversion = _invert_monochrome1(arr, stored, ds, slope, intercept)
 
     meta = _extract_dicom_meta(ds)
     meta["TransferSyntax"] = ds.file_meta.TransferSyntaxUID.name
     meta["_polarity"] = "attenuation-high"
+    if inversion:
+        # Kept with the record, so a value that looks odd later can be traced
+        # to how the image was turned the right way up.
+        meta["_inversion"] = inversion
 
     spacing = {}
     if hasattr(ds, "ImagerPixelSpacing"):

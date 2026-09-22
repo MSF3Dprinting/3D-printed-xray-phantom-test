@@ -51,7 +51,7 @@ cp .env.example .env
 chmod 600 .env
 venv/bin/python -m phantom_qa.manage gen-secret          # PHANTOMQA_SECRET_KEY
 venv/bin/python -m phantom_qa.manage set-password        # user login
-venv/bin/python -m phantom_qa.manage set-admin-password  # delete + validate
+venv/bin/python -m phantom_qa.manage set-admin-password  # delete, re-run, validate
 ```
 
 Minimum `.env`:
@@ -69,8 +69,9 @@ PHANTOMQA_ADMIN_PASSWORD_HASH=<from set-admin-password>
 `PHANTOMQA_ENV=production` makes the application refuse to start without a
 secret key, and refuse a plain-text password.
 
-Leaving `PHANTOMQA_ADMIN_PASSWORD_HASH` empty disables **both** deletion and
-validation sign-off.
+Leaving `PHANTOMQA_ADMIN_PASSWORD_HASH` empty disables deletion of finished
+analyses, re-running finished analyses, and validation sign-off. Operators can
+still discard their own unfinished analyses, which needs no password.
 
 ```bash
 venv/bin/python -m phantom_qa.manage check    # must exit 0
@@ -286,13 +287,15 @@ curl -sI https://something.example.org/<other-app>/ | head -1
 | Path handling | The allow-list is compared against a normalised path, so duplicate slashes, trailing slashes and the mount prefix cannot bypass it |
 | Host header | `PHANTOMQA_ALLOWED_HOSTS` allow-list; anything else receives 400 |
 | Upload size | Rejected with 413 before the body is read |
-| Response headers | CSP, `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`, COOP, `Permissions-Policy`, and HSTS under HTTPS |
-| API caching | All `/api/` responses are `Cache-Control: no-store` |
+| Response headers | CSP (`script-src 'self'`; the comparison report alone also admits its one inline script by that script's SHA-256 hash, never `'unsafe-inline'`), `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`, COOP, `Permissions-Policy`, and HSTS under HTTPS |
+| API caching | `/api/` responses are `Cache-Control: no-store`, except rendered scan pictures (`image.png`, `image.jpg`) and a low-contrast close-up requested under its current key, which are `private, max-age=86400` — immutable per URL, and never stored by a shared proxy |
 | Attack surface | `/docs`, `/redoc` and the OpenAPI schema are disabled |
 | Error handling | Unhandled exceptions return a bare 500 with no traceback. A corrupt or missing stored file returns 422 or 410 with an explanation |
 | Request validation | Malformed request bodies return 422 with the field location and message only — the rejected value is never echoed back |
 | Duplicate uploads | A file whose SHA-256 already exists is refused with 409 unless the operator explicitly confirms a re-analysis |
-| Deletion | Administrator password plus a written reason; throttled; disabled entirely when unconfigured |
+| Deletion | Unfinished analyses: discard with confirmation only. Finalised, signed-off or reference analyses: administrator password plus a written reason; throttled; disabled entirely when unconfigured |
+| Re-run | Free before an analysis is finalised; afterwards administrator password plus a written reason |
+| Image-quality override | An exposure that failed the image-quality check becomes a reference scan, or sets a phantom's stored measuring points, only with the administrator password plus a written reason; audited with the failed checks; throttled; impossible when unconfigured |
 | Validation | Administrator password; records the approver's name and comment |
 | Integrity | SHA-256 per analysis, re-checked in every report |
 | Logging | Rotating application, error and audit logs with secrets redacted |
@@ -304,11 +307,24 @@ user or admin, so the matrix cannot drift.
 ### Deletion
 
 Deleting an analysis also removes its stored source file, its measuring-point
-edit history, and — when it was the last analysis carrying that phantom name —
-that phantom's stored measuring-point layout. It requires all of: the
+edit history, its kept earlier states, its comparison pictures under
+`data/thumbs/`, and — when it was the last analysis carrying that phantom name —
+that phantom's stored measuring-point layout; when it was the analysis that
+stored the phantom's current layout, the previous layout is put back.
+
+**Unfinished** analyses — not finalised, not signed off, not a reference — are
+removed with **Discard**, which asks only for confirmation. That is deliberate:
+the field audit log showed operators deleting and re-uploading the same file
+repeatedly because clearing a mistake needed the administrator. The protection
+check runs inside the same database transaction as the delete, so a record
+finalised meanwhile is refused. Discards are audited as `event=delete` with
+`"mode":"discard"`.
+
+Removing anything that **has** been decided on requires all of: the
 administrator password, a written reason of at least five characters, and
 passing a throttle stricter than sign-in. With no administrator password
-configured, deletion is refused and the interface explains how to enable it.
+configured, such a deletion is refused and the interface explains how to enable
+it.
 
 The reason is mandatory because the audit log is the only surviving record of
 why data was destroyed. It is capped at 500 characters before being logged.
@@ -365,7 +381,10 @@ sudo systemctl restart phantomqa
 ```
 
 The database schema migrates itself on startup; existing analyses are preserved.
-Restarting this unit does not affect other applications.
+The first start after the upgrade that added the exposure columns also reads the
+header of every stored DICOM once to fill them in — milliseconds per record, the
+pixel data is not decoded — and logs how many it filled. Restarting this unit
+does not affect other applications.
 
 Rotating `PHANTOMQA_SECRET_KEY` signs everyone out, which is the fastest way to
 invalidate all sessions.

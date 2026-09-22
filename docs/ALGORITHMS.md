@@ -14,8 +14,17 @@ value means more attenuation, so the phantom is bright and direct exposure dark.
 
 - DICOM pixel data is decoded losslessly (pylibjpeg for JPEG-Lossless), the
   Modality LUT is applied (`RescaleSlope`, `RescaleIntercept`), and MONOCHROME1
-  is inverted so polarity is uniform. The full header and the SHA-256 of the
-  source file are stored.
+  is inverted so polarity is uniform. The inversion is about the detector's own
+  range, from `BitsStored` (else `BitsAllocated`) and `PixelRepresentation`:
+  `(lo + hi)·slope + 2·intercept − value`, so the same exposure of the same
+  object always gives the same values. Only when the header declares no usable
+  bit depth does it fall back to the image's own maximum; the rule used is
+  recorded in the stored header as `_inversion`. The full header and the SHA-256
+  of the source file are stored.
+- The detector's exposure values — `ExposureIndex`, `TargetExposureIndex`,
+  `DeviationIndex`, `Sensitivity` — are stored as numbers (absent when not
+  written, never zero). They are displayed and exported; nothing is judged from
+  them.
 - Zip archives are walked for DICOM images; viewer executables, DICOMDIR and
   HTML are skipped.
 - Plain images are converted to greyscale float and flagged
@@ -170,8 +179,12 @@ not used, because it biases a block rotated ~45° to the sampling grid.
 
 **Identity assignment.** Blocks are ordered along the strip and matched to the
 definition's groups, validated by correlating measured against nominal
-frequency. A block whose frequency contradicts its assigned identity is dropped
-rather than reported.
+frequency. When that correlation is below 0.5 the order is abandoned for a
+greedy nearest-frequency match in definition order, on the coarse frequency
+estimate. A block whose frequency contradicts its assigned identity (by more
+than 0.35 lp/mm) is dropped rather than reported. On the blue prints this
+fallback mislabels G1.1 and G1.2; that is parked, unchanged, pending a physical
+check — see DESIGN.md, *Parked: the line-pair strip on the blue prints*.
 
 **SD metric.** Standard deviation inside the 12.6 × 12.6 mm ROI — the guide's
 constancy metric. The ROI is placed at `roi_angle_offset_deg` (45°) to the strip
@@ -221,7 +234,37 @@ v = +9.4 / −10.2 mm in block coordinates; block 84.5 × 44.5 mm at −45.1°.
 **Labelling.** Circles are L1…L8 in design order, a boustrophedon starting
 top-right, confirmed by measurement: contrast rises monotonically along that
 path, from about 0.33 % to 1.37 % at 77 kV. No nominal contrast values are
-claimed. A sanity check warns if |CNR| does not broadly increase with level.
+claimed.
+
+**Insert orientation.** The two builds in use differ by a half turn of the
+insert, which maps every disc position onto another (the disc designed as
+L(i+4) sits where L(i) is expected), so the ROIs land on real discs either way.
+Which way round it is fitted is decided from the contrast order: Spearman's ρ
+between design level and |CNR| under both labellings, trusted when the better
+one leads by at least 0.6 — on the 33 reference scans every confident scan
+leads by ≥ 1.14 and the single weak exposure by 0.19. With fewer than six
+measured discs, or a smaller lead, the reading is *undetermined* and the discs
+are read as drawn. A value saved for the phantom with its measuring points, or
+set by hand in Stage C, is used instead of this reading; the reading is still
+made and a confident disagreement is flagged (`conflict`). A block turned end
+for end by hand (more than 90° from the drawn angle) relabels every ring by
+itself and is taken out first, so the orientation always describes the insert.
+ROI ids stay tied to block positions; each result row carries the
+`design_level` and `disc` it is read as, sorted by design level.
+
+**Order check.** `ordering_ok` requires at least four measured discs and
+ρ(design level, |CNR|) ≥ 0.6. A rank correlation rather than a count of rising
+neighbours: adjacent discs differ by less than the noise between exposures, so
+counting pairs warned on three reference scans correlating at 0.88–0.93.
+Correctly placed grids sit at ≥ 0.857; the one grid with nothing to hold on to
+at −0.262. A failed order check gives **warn**.
+
+**Close-up for placing** (`block_view`, `view_markers`). The block is sampled at
+4 px/mm in its own frame, flattened by subtracting an 8 mm Gaussian, smoothed at
+1 mm and windowed to the 1st–99th percentile of its interior. Each disc's
+visibility is its matched-filter response relative to the strongest disc of the
+same exposure: ≥ 0.5 clear, ≥ 0.2 faint, otherwise at the limit. The close-up is
+for looking; CNR is always measured on the original pixels.
 
 ## 7. Uniformity — `analysis/uniformity.py`
 
@@ -394,9 +437,19 @@ three happened at once — uniformity reported **pass** on an image with no
 signal while all five of its own rows said fail, and the printed report
 answered 500.
 
-A test that could measure nothing reports status `n/a` with a reason, and
-`overall_status` ranks `n/a` above `pass`, so such a scan can never come out as
-passed.
+A test that could measure nothing reports status `not measured` with a reason,
+and `overall_status` counts `not measured` as a warning, so such a scan can
+never come out as passed. That is kept apart from `not applicable`, which only
+X-ray field alignment reports, when no field edge is in the image: that test
+does not apply, so it is skipped in the overall verdict, and the verdict carries
+a note instead (`pipeline.verdict_notes`, e.g. "X-ray field alignment not
+checked (no field edge found in the image)"). The overall verdict itself stays
+one of `pass`, `warn`, `fail`, `error` — or `n/a` when nothing at all could be
+judged.
+
+Analyses stored before the two words were separated carry `n/a` for both
+meanings. They are not recomputed; `n/a` keeps its old rank between `pass` and
+`warn`, so re-reading one reproduces the verdict it was stored with.
 
 ---
 

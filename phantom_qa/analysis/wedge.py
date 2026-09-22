@@ -175,7 +175,7 @@ def compute(ctx: Ctx, geometry: dict) -> dict:
     if not monotonic or any_sat:
         status = "fail"
     elif r2 is None:
-        status = "n/a"
+        status = "not measured"
     elif r2 < tol_r2:
         status = "warn"
     else:

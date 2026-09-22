@@ -106,11 +106,19 @@ So the block itself is a handle: drag it, set its angle, or click its four
 corners, and the circles are re-derived from the block frame. The four-corner
 path mirrors manual phantom corners in registration, because it solves the same
 problem — position and rotation are both wrong and clicking the corners states
-both at once.
+both at once. It mirrors them in the page too: the same correctable controls,
+and nothing sent until Apply (see *Manual correction is a first-class path*).
 
 Placing the block discards the automatic grid-shift refinement. That refinement
 was fitted to the previous placement; carrying it over would drag the circles
 back off the objects the user just aimed at.
+
+"Turn 180°" is a block placement like any other: it adds 180° to the block
+angle, which moves every ring onto the disc opposite while each ring keeps its
+id. It used to be the way to correct the insert's orientation. It no longer
+names any disc — see *The insert orientation is remembered with the phantom* —
+and the orientation reading subtracts a turned block out, so the button and the
+insert setting cannot cancel or double each other.
 
 ## Edits are serialised, not last-write-wins
 
@@ -163,8 +171,8 @@ the DICOM header is identical between them. The difference is assembly, and it
 does not drift, so re-correcting it on every scan is work the software should be
 doing.
 
-So the measuring points confirmed in Stage C are stored against the phantom
-label and replayed on the next scan of that phantom. Four decisions carry the
+So the measuring points confirmed in Stage C can be stored against the phantom
+label and replayed on the next scan of that phantom. These decisions carry the
 safety:
 
 **Millimetres in the phantom's own frame, never pixels.** Registration resolves
@@ -195,6 +203,144 @@ justified it and be silently inherited by an unrelated phantom that happened to
 be given the same name — which is indistinguishable, from the operator's chair,
 from marks coming back from a deleted scan.
 
+**It is unwound with the analysis that wrote it.** A profile row keeps the
+previous layout beside the current one (`prev_layout_json` and friends). When
+the analysis that stored the current layout is discarded or deleted,
+`Store._unwind_profile` puts the previous one back, or removes the row when
+there was none. The mistake an operator throws away must not survive on
+everyone else's scans as the phantom's default.
+
+**Stored only when the operator says so.** Confirming Stage C used to store the
+layout every time. The field audit log shows what that did: one phantom's layout
+rewritten six times in twelve minutes, three of those from exposures nothing
+could be measured in, each one silently becoming where the next operator
+started. Stage C now asks — *Use these measuring points for future scans of
+phantom …* — and the page always sends the answer as `save_profile`. The box
+starts ticked while the phantom has no stored layout, or when the stored one
+came from this same analysis, because re-confirming after nudging a mark must
+keep updating it; it starts unticked once another analysis has stored one,
+because replacing that is a decision. Where it cannot be offered the step says
+why instead: no phantom named, the record finalised or signed off, or an
+exposure that failed the image-quality check (which an administrator can
+overrule — see the privilege levels below). A request without `save_profile`,
+from a page cached before the question existed, gets the same rule on the
+server (`_layout_save_default`), so an old page can still store a phantom's
+first layout but can no longer replace one somebody else confirmed. That rule
+is applied a second time inside the write transaction
+(`save_phantom_profile(replace_others=False)`): two old pages confirming two
+scans of one phantom at the same moment would otherwise both read "nothing
+stored yet", and the second would quietly replace the first. A declined save
+writes nothing — not the layout, not the `prev_*` slot — so discarding that
+analysis has nothing to unwind.
+
+## The insert orientation is remembered with the phantom
+
+The two builds in use differ by a half turn of the low-contrast insert. The
+eight discs are laid out so that a half turn maps every disc position onto
+another (`FLIP_SHIFT = 4`: the disc designed as L(i+4) sits where L(i) is
+expected), so the rings land on real discs either way and nothing in the
+picture shows which build it is. What changes is the meaning of the numbers.
+
+**Read from the contrast when nothing is kept.** The Spearman correlation
+between design order and |CNR| is computed under both labellings; the better
+one wins when it leads by at least 0.6 (`ORIENTATION_MARGIN`). Over the 33
+reference scans every confident scan separates by at least 1.14 and the one
+weak exposure (no disc above |CNR| 0.6) by 0.19, so the threshold sits in an
+empty gap. Below the margin the reading is `undetermined` and the discs are
+read as drawn (or as the rings were turned by hand).
+
+**Stored as a property of the phantom.** A layout profile may carry
+`lowcontrast_insert: {"flipped": bool}` (`layout_profile.extract_layout`). It is
+written only when Stage C is confirmed and the layout is stored — same gate: the
+operator chose to store it, phantom named, image-quality check passed or
+overruled by an administrator — and it is read afresh from the confirmed
+rings by `lowcontrast.read_orientation` (`_insert_orientation_to_store`), not
+taken from the note made when the patterns were proposed, because the block may
+have moved since. `layout_profile.insert_to_store` records only a decision
+(source `measured`, `stored` or `user`); an `undetermined` reading carries the
+previous layout's value over, or writes nothing, so one weak exposure cannot
+erase what a good one established. An absent key is how every layout saved
+before this behaves: each scan decides for itself.
+
+**Replayed as a kept decision, not copied.** `apply_layout` sets the new scan's
+`geometry.lowcontrast.orientation` to `{flipped, source: "stored", confidence:
+None}`. `KEPT_SOURCES = ("stored", "user")` are used as they stand — that is
+what lets a very weak exposure be read the right way round at all — but the
+contrast order is still measured, and a confident disagreement sets
+`conflict: true` and the message `ORIENTATION_CONFLICT` ("… Check that the
+phantom ID is right") in the close-up, the step E reasons and the printed
+report. The kept value still wins: the likeliest cause is a scan filed under the
+wrong phantom ID, and quietly following the scan would hide exactly that.
+
+**Set by hand as an ordinary edit.** `POST /api/analyses/{aid}/lowcontrast_orientation`
+(`{flipped, expect_seq}`) writes source `user` through `Store.mutate_geometry`,
+so it takes an undo snapshot, honours `expect_seq`, is refused on a finalised or
+signed-off record (`_require_unsigned`) and is audited. Nothing moves; the
+response carries the orientation summary so the page updates the close-up
+without fetching its picture again. It reaches the phantom's stored layout only
+when Stage C is confirmed with the layout stored, and no analysis already
+measured is read again because of it.
+
+**A turned block is taken out first.** Detection only ever places the block
+within ±25° of the drawn angle and four clicked corners land there too, so a
+block more than 90° from the drawing can only come from "Turn 180°" or a layout
+saved after it (`lowcontrast.rings_turned`). That relabels every ring by itself.
+The measured reading corrects for it, so `flipped` always describes the insert;
+the discs are read shifted when exactly one of the two half turns applies
+(`reads_shifted` = `flipped` XOR `rings_turned`). ROI ids stay tied to their
+positions on the block — every stored layout, baseline and trend is keyed on
+them — and each result row carries the `design_level` and `disc` it is read as.
+
+**Evidence is re-read, only the decision is stored.** `propose` stores
+`orientation_state` (decision, source, confidence) so Stage C can show it before
+anything is measured; the evidence is measured again whenever it is needed,
+because the rings it was read under can be moved. "Reset to auto-detected"
+returns to the scan's own reading (snapshot 0 predates the replay); "Reset to
+stored layout" replays the saved value.
+
+**The order check is a rank correlation.** `ordering_ok` needs at least four
+measured discs and ρ ≥ 0.6 (`ORDER_MIN_RHO`). It replaced "five of seven
+neighbouring pairs rise", which is the wrong instrument: two adjacent discs
+differ by less than the noise between exposures, so it warned on three
+reference scans that correlate at 0.88–0.93. Correctly placed grids sit at
+0.857 or above; the one grid with nothing to hold on to sits at −0.262.
+
+## The close-up is named by what it shows
+
+Stage C shows the low-contrast block on its own (`lowcontrast.block_view`):
+sampled at 4 px/mm in the block's frame, an 8 mm Gaussian subtracted to remove
+the illumination gradient, smoothed at 1 mm, windowed to the 1st–99th
+percentile of the block's interior. About 20 kB as PNG, against 0.9 MB for the
+full render. Two routes, so the picture can be cached apart from what changes
+around it:
+
+- `GET …/lowcontrast_view` — JSON: size, one marker per disc with its
+  visibility (matched-filter response against the strongest disc of the same
+  exposure: ≥ 0.5 clear, ≥ 0.2 faint, else at the limit), the orientation
+  summary, and `key`.
+- `GET …/lowcontrast_view.png?key=…` — the picture.
+
+The picture is a function of the stored pixels, the registration and the block
+placement, so `_block_view_key` digests exactly those: the file's SHA-256, the
+registration transform, `ALGO_VERSION`, and the block centre and angle rounded
+to 4 decimals (16 hex characters). The edit counter was tried first and is
+wrong: it steps back on undo and forward again onto a different edit, and it
+restarts at 0 when the phantom is registered again, so one counter value could
+name two placements — and the cache served the old picture under the new rings.
+
+The PNG route always renders the record as it is now, into the per-worker image
+cache under `(aid, "lcview", key)`. When the URL's `key` matches the current
+one the response is `Cache-Control: private, max-age=86400`, so the browser may
+keep it; otherwise it is `no-store`, so bytes are never stored under the name of
+a placement they do not show. The middleware lets that header stand. A `seq`
+parameter from pages loaded before this change is accepted and ignored.
+
+The page fetches the JSON again when the edit counter moves and asks for the
+picture by key, so undoing back to an earlier placement finds it in the browser
+cache, and changing the insert setting — which moves nothing — re-keys the copy
+in hand instead of fetching it. The contrast slider re-maps the downloaded
+picture through a 256-entry table and costs no traffic.
+
 ## Two dates, kept apart
 
 The acquisition time comes from the scanner's clock; the upload time comes from
@@ -215,12 +361,34 @@ with the existing record rather than silently duplicated: a duplicate shows
 twice in History and counts twice in every trend, quietly distorting the
 statistics it feeds.
 
-The refusal offers three choices — open the existing record, deliberately
-analyse again, or cancel — as three buttons rather than a two-way confirm. With
-two buttons, "cancel" would have to mean "create the duplicate", so dismissing
-the dialog would cause the exact outcome the check exists to prevent. Deliberate
-re-analysis remains available because it is legitimate after an algorithm or
-definition change.
+The refusal offers three choices — continue the existing record (the primary
+action), deliberately analyse the file again as a separate record, or cancel —
+as three buttons rather than a two-way confirm. With two buttons, "cancel" would
+have to mean "create the duplicate", so dismissing the dialog would cause the
+exact outcome the check exists to prevent. Deliberate re-analysis remains
+available because it is legitimate after an algorithm or definition change,
+though re-running the existing record is now the better way to get new numbers.
+
+**Asked before sending, not after.** Seven weeks of the field audit log show no
+false positive — every refusal was a byte-identical re-upload — but each one
+cost the operator two minutes of a 512 kbit/s link to learn it. The browser
+therefore hashes the chosen file (`crypto.subtle`) and asks
+`POST /api/upload_check` first. Nothing acts on that hash — it can only reveal
+records the same login can already read, only hashes actually asked about are
+answered, at most 32 — and the real check still runs on the received bytes, so a
+browser that cannot hash (plain http, where `crypto.subtle` does not exist) or a
+zip, whose members are only hashed on the server, falls through to the old
+refusal with the same dialog.
+
+**Both sides shown.** "Already analysed" answered a question nobody asked. The
+dialog shows the chosen file (name, size, modified time — two exports called
+`003_0000.dcm` differ only in that) next to the stored record (a 200 px JPEG
+thumbnail, id, labels, operator, both dates, progress, result), so the operator
+can see whether it is the thing they meant and what became of it.
+
+**Same exposure, different file.** A re-export from the archive has a new hash
+but the same SOP Instance UID. That is only remarked on after the upload,
+never refused: a UID can legitimately repeat on a misconfigured detector.
 
 ## Manual correction is a first-class path
 
@@ -236,6 +404,21 @@ work the user does, not whether the result can be trusted.
 
 Corrections are also **undoable** and **remembered per phantom**, so the cost of
 a mis-detection is paid once rather than on every scan.
+
+**Points put on the image are proposals until applied.** Three things ask for
+clicks on the image: the phantom's corners (Stage A), the low-contrast block's
+corners and a field edge (Stage C). All three go through one table in the page
+(`PICKERS` in `app.js`) and one strip of controls under the image: only a
+left click that does not move places a point; middle-drag, right-drag and
+Space+drag pan and the wheel zooms while picking; a placed point can be dragged
+or nudged with the arrow keys; the last one can be taken back; and nothing is
+sent until Apply (or Enter). A one-point job — the field edge — re-places its
+point on the next click; a four-point job ignores clicks once full. The block
+used to be placed on the fourth click and a field edge on the first, so a
+misclick — the field team's main complaint about clicking — went straight to
+the server and could only be undone afterwards. Leaving the step drops points
+nobody applied. The endpoints did not change: Apply sends exactly what the
+click used to.
 
 Values the operator types belong in fields on the page, not in browser prompts.
 A prompt cannot show the record being acted on, cannot validate before sending,
@@ -257,6 +440,13 @@ value range, not as absolute pixel values. Detectors differ in bit depth — 12
 bits on one unit, 14 on another — so a control calibrated to one blanks out an
 image from the other entirely.
 
+The slider is previewed in the browser: the eight-bit picture on screen is
+re-mapped through a 256-entry table from the window it was rendered with to the
+one asked for, instantly and without traffic. The exact render is fetched once
+the slider has been still for 400 ms and replaces the preview. Every pause used
+to fetch a fresh megabyte — about fifteen seconds at 512 kbit/s — which is most
+of why finding the low-contrast discs was reported as painful.
+
 ## Detectors report failure rather than guessing
 
 Where a feature cannot be found reliably, the software says so and requests
@@ -276,6 +466,58 @@ curve would fail a sound detector for a property of the phantom.
 
 Pass and fail are therefore decided by **monotonicity and saturation**, with R²
 retained as a shape descriptor carrying a soft warning threshold.
+
+## Two words for "no answer", and a verdict that says what it skipped
+
+One word, `n/a`, used to cover two opposite situations: a test that **does not
+apply** to the image (X-ray field alignment when no field edge is in the
+picture, which is how every exposure so far has been taken) and a test that
+**should have been measured and was not** (corners not found, discs unreadable,
+a flat wedge, patterns that could not be placed). And the overall rule ranked
+`n/a` above `pass`, so all six Philips reference scans read `n/a` although every
+test passed — and a baseline was set from such an analysis in the field.
+
+Simply ranking `n/a` below `pass` would have been worse: a scan on which nothing
+could be measured would then read "pass". So the two meanings got two words:
+
+| Per-test status | Written by | In the overall verdict |
+|---|---|---|
+| `not applicable` | only `geometry.field_status`, when no field edge was found on any side | skipped |
+| `not measured` | dimensions without corner marks, low contrast with no measurable disc (or a disc missing), uniformity with a square missing, a wedge with no R², any test with no measuring areas (`pipeline.compute_all`) | counts as `warn` |
+| `error` | a test that raised, or was not reached before the time limit | ranks with `fail` |
+
+`pipeline.overall_status` takes the worst of `status`, `field_status` and
+`dimension_status` across the tests with the rank pass < n/a < warn < fail =
+error. `not applicable` is skipped; `not measured` and any word it does not know
+count as `warn`, because ranking an unrecognised word as a pass is how an
+unmeasured test would slip through. The overall vocabulary therefore does not
+grow — it stays `pass`, `warn`, `fail`, `error`, and `n/a` only when nothing at
+all was judged — so History filters, exports and every stored record keep the
+words they had.
+
+**The verdict names what it skipped.** A "pass" that silently left a test out
+reads as though that test passed too, which on a signed report is a false
+statement. `pipeline.verdict_notes` turns each `not applicable` into a phrase
+("X-ray field alignment not checked (no field edge found in the image)") that
+the results page, the printed report and History print beside the verdict.
+Only `not applicable` produces a note; a `not measured` test already pulls the
+verdict down and is explained wherever the warning is.
+
+History gets the notes without the results travelling: `Store.result_statuses`
+has SQLite pick the `(test, key)` statuses listed in `pipeline.STATUS_FIELDS`
+out of `results_json` with `json_extract`, one parse per row, in chunks of 400
+ids — the results themselves are about 130 kB per analysis. A results blob that
+is not valid JSON, or an SQLite built without its JSON functions, yields no
+notes rather than a failed listing: the note is a courtesy, History is not.
+
+**Stored analyses are not rewritten.** Records measured before the split keep
+`n/a` for both meanings; nothing already finalised or signed changes its wording.
+`n/a` keeps its old rank between `pass` and `warn`, so re-reading one reproduces
+the verdict it was stored with, and a re-run produces the new words. In the page
+a status chip's class is the status with every non-letter removed (`na`,
+`notapplicable`, `notmeasured`); `not measured` is coloured like a warning and
+`not applicable` in the grey of the old `n/a`, the same in the report and the
+comparison report.
 
 ## A reference per phantom, and it can be given up
 
@@ -299,6 +541,11 @@ the decision was scoped to one phantom rather than to everything on the machine.
 
 Finalising an analysis no longer touches the flag. It is pressed more than once,
 and a second press must not undo a decision made deliberately somewhere else.
+The reverse does hold: marking a reference finalises the analysis, because a
+scan every later scan is judged against is a decision, not a draft. An exposure
+that failed the image-quality check cannot become a reference on an ordinary
+user's say-so — only by an administrator's override, with a written reason (see
+the privilege levels below).
 
 ## Detail is one click away, not on the page
 
@@ -328,6 +575,82 @@ A QA record that changed silently under a software update would be worthless,
 especially one that has been signed off. Because the source file is also kept,
 results can be recomputed deliberately with `manage reanalyze` when an
 improvement warrants it.
+
+## Re-running rewrites the record, and keeps what it replaced
+
+A re-analysis stays on the **same record**. The alternative — copying to a new
+one that supersedes the old — was considered and rejected: every consumer that
+selects on "has results" would need a second condition, and any one of them
+missed would double-count a single exposure in a trend. That is precisely what
+the duplicate check exists to prevent, and precisely what re-uploading produced.
+
+Rewriting a finished record is only defensible because the previous state is
+kept. `analysis_revisions` holds one compressed snapshot of the registration,
+geometry and results, plus the ruling, the finalised stamp and the reference
+flag, so an interrupted re-run can be put back exactly — including the
+signature that was given for those numbers. Five are kept per record, and the
+first is pinned: the numbers as originally computed are the ones worth keeping
+longest.
+
+The snapshot and the state change happen in one transaction, so an analysis is
+never found half-reworked. Registration runs **before** that transaction opens:
+it is seconds of CPU, and holding the write lock for it would block every other
+operator's edits.
+
+A re-run reopens the record — finalised stamp cleared, ruling withdrawn —
+rather than carrying them across. A ruling that outlived the numbers it was
+given for would be worse than no ruling at all. The reference flag is the one
+thing kept, because clearing it would leave the phantom comparing against
+nothing until the re-run finished.
+
+`Store.begin_rerun` knows two cases, not three: "registration" replaces the
+transform, drops the geometry and its undo history and reopens at Stage A;
+"points" and "results" keep both and reopen at Stage C. The difference between
+the last two is recorded in the revision and the audit trail but not acted on —
+the operator walks C → D → E either way, and confirming C stores the phantom's
+layout again only if the box is ticked — which it is by default when the stored
+layout came from this analysis, and is not when it came from another. `POST …/rerun/cancel` restores the newest revision only
+while the record has no results; once the re-run has produced new numbers the
+earlier revisions stay in `analysis_revisions` but nothing in the interface
+restores them.
+
+The re-run is offered in two places, Stage F and each History row that has
+results, and both open the same panel and send the same request. The History
+listing carries two extra fields for this, both cheap: `has_results` (whether
+`results_json` is set — not the results, which the listing never reads) and
+`protection` (from `Store.protection`, the same list the opened record carries).
+So a row asks for the administrator password in exactly the cases Stage F does,
+and the server makes the final decision either way. After the re-run the page
+opens the record through the usual rule for choosing the opening step, which
+reads the step `begin_rerun` just wrote — the step the endpoint reports.
+
+## Unfinished work can be thrown away; finished work cannot
+
+"Finalised" is a real state (`finalized_at`, `finalized_by`), set by Finalize,
+by marking a reference, and by recording a ruling — the first time is kept on
+later presses. `Store.protection` is the one definition of "protected":
+finalised, signed off, or the reference. Everything that decides on it — the
+page's Discard button, the discard and delete endpoints, the re-run gate, the
+History row's re-run — asks that one function, so they cannot disagree.
+
+**Discard** (`POST …/discard`, `{confirm: true}`) needs no password: the field
+audit log shows the same file deleted and re-uploaded four times in seventy
+minutes because clearing a mistake needed the administrator, and on an
+installation without an administrator password it could not be cleared at all.
+It is a hard delete through the same `Store.delete` as the administrator path,
+with the protection check **inside** its write transaction, so a colleague
+finalising the record between dialog and confirmation wins. It is audited as
+`event=delete` with `"mode":"discard"`, so one grep still finds everything that
+ever removed data. Once a record is protected, the administrator delete applies
+unchanged.
+
+**Finalised locks the measurements.** `_require_unsigned` refuses every path
+that would change the registration, the geometry or the results — re-register,
+propose, ROI move and rotate, block placement, insert orientation, field edges,
+undo, redo, reset, confirming Stage C, compute — on a finalised record as well
+as on a signed-off one, and its message points at "Re-run analysis", which keeps
+what it replaces. Editing straight through a finalised record used to drop its
+results silently and take it out of every trend. Labels stay editable.
 
 ## An edit declares the state it was made from
 
@@ -391,17 +714,126 @@ Metrics that are themselves percentages, such as pitch deviation and ΔSNR, are
 compared in percentage points, because their median sits near zero and a ratio
 would be meaningless.
 
+## Comparison pictures: drawn once, kept on disk
+
+The field asked to compare the images themselves, not only their numbers.
+`thumbnails.py` makes five pictures per scan — whole phantom, line-pair strip,
+wedge, low-contrast block, uniformity squares — and `comparison_report.py` lays
+them out as a table, one column per scan.
+
+**Sampled in the phantom frame.** Each picture is sampled through the
+registration transform (`thumbnails._sample`) rather than cut out of the image,
+so scans taken at 0°, 90° or 180°, or face down, come out the same way up and one
+region lines up column after column. The scan is block-averaged to roughly the
+target resolution first (`_Source`), which is the cheap anti-aliasing filter
+and keeps noise — the most expensive thing to hold in a JPEG — out of the
+picture. The line-pair corridor runs through the groups' **design** positions,
+so a group mis-placed on one scan shows as exactly that; it shows the strip as
+it is and does not depend on the parked line-pair question below.
+
+**The window travels with the picture.** Each picture is encoded with its own
+generous window (0.2–99.8 percentile) and carries the scan values that 0 and 255
+stand for (`lo`, `hi`). The page re-maps every picture of a row onto one shared
+window with a 256-entry table, so a brighter picture really is brighter without
+a second copy crossing the link. The shared window is per protocol signature —
+the same rule that scopes a baseline (`_window_sources`): the group holding the
+selection's reference scan takes that scan's window, any other group its own
+reference's or its first scan's; a scan alone on its protocol keeps its own
+window, because on another detector's window it comes out black or white. The low-contrast picture is the
+Stage C close-up, normalised to itself (`window: "self"`), and is never re-mapped.
+
+**Budget.** JPEG at quality 75, or PNG where that comes out smaller. All five
+pictures of a reference scan come to 42–54 kB; the 70 kB budget per scan and
+0.8 MB per ten scans are asserted in `tests/test_comparison_pictures.py`.
+
+**Disk cache.** Drawing needs the decoded scan — seconds and tens of megabytes
+— so the pictures are kept under `data/thumbs/<analysis-id>/<key>.json`. The
+key digests everything they depend on (`thumbnails.cache_key`):
+`PICTURE_VERSION`, the algorithm and definition versions, the file's SHA-256,
+`geometry_seq`, the registration transform and the block centre and angle.
+The sequence number alone is not enough: it restarts at 0 when a re-run starts
+from registration and repeats after an undo followed by a new edit. The
+transform and block are what the pictures are drawn from, so they are in the
+key; the sequence rides along so any measuring-point change re-renders.
+
+- Written to a temporary file and renamed into place, so another worker sees
+  the whole file or none of it; after a successful write every older `.json`
+  in that directory is removed. A failure to write costs a re-render next time,
+  never the page.
+- A region that failed to draw is shown as a labelled gap and the set is not
+  written, so the next report tries again.
+- Invalidation is by key: an edit, a re-registration, a re-run, a new algorithm
+  or definition version, or a bumped `PICTURE_VERSION` (bump it whenever the
+  same inputs would now draw a different picture).
+- `Store.delete` — both discard and administrator delete — removes the
+  directory with the record; a comparison that finds its record deleted while it
+  was drawing removes what it just wrote (`thumbnails.forget`). `Store.thumbs_dir`
+  returns None for an id that is not a plain token, because the directory is
+  removed wholesale.
+- Derived data: not backed up, rebuilt on demand (see MAINTENANCE.md).
+
+Scans decoded for pictures are not put in the worker's scan cache
+(`_scan(aid, cache=False)`): a ten-scan comparison would otherwise pin some
+70 MB per scan in every worker that served it, with nothing to release it. And
+whatever goes wrong with one scan becomes labelled empty cells for that scan
+(`thumbnails.unavailable`); the report never fails because of a picture.
+
+## One inline script, admitted by its hash
+
+The comparison report is meant to be saved from the browser and read with no
+server behind it — nothing is e-mailed from the application — so its one script
+(the shared row windows and the click-to-enlarge lightbox) is inline. The
+Content-Security-Policy everywhere else is `script-src 'self'`. For
+`/api/comparison_report.html` alone the middleware adds `'sha256-…'` of that
+exact script text, `COMPARISON_SCRIPT_CSP`, which `comparison_report.py`
+computes from `_PICTURE_SCRIPT` at import — so editing the script can never
+leave a stale hash behind that silently switches it off, and nothing else inline
+can run on the page. `'unsafe-inline'` is never used.
+
+Without the script the page still reads: every picture shows in its own window
+and the row notes say so; the per-row switch stays hidden. A copy opened from
+disk carries no CSP header and the script runs. The enlargement of a re-mapped
+picture is a `data:` URL, which `img-src 'self' data:` already admits.
+
 ## Two privilege levels, with the administrator password per action
 
-A user can run analyses and read everything. Deleting and validating require a
-separate administrator password, entered at the moment of the action rather than
-at sign-in.
+A user can run analyses and read everything, and can throw away their own
+unfinished work. Deleting or re-running a protected analysis, validating, and
+overruling the image-quality check require a separate administrator password,
+entered at the moment of the action rather than at sign-in.
 
 This lets an administrator work as an ordinary user and supply the credential
-only when making a decision that an ordinary user must not make. Deletion
-additionally requires a written reason, which is what the audit log keeps: the
-password establishes the right to destroy data, the reason records why it was
-destroyed.
+only when making a decision that an ordinary user must not make. Deletion — and
+a re-run of a protected analysis — additionally requires a written reason, which
+is what the audit log keeps: the password establishes the right to destroy or
+rewrite data, the reason records why. The password is always checked before
+the reason, so a missing reason cannot be used to learn whether a password was
+right, and every outcome is audited. (`_require_admin` holds that sequence for
+the re-run and the quality override; the delete and validation endpoints still
+carry their own copies of it.)
+
+**The image-quality check can be overruled, by an administrator only.** An
+exposure that fails it (`quality.blocks_reference_use`) is still analysed, but
+it may not become the reference scan or the phantom's stored measuring points
+on an ordinary user's say-so. Almost always that is right; the exception is the
+one exposure a site could make that week, looked at by someone who knows what
+they are looking at. So `POST …/baseline` and the Stage C confirm accept
+`admin_password` and `reason`, and `_quality_override` passes them through
+`_require_admin` — password before reason, throttled, and refused outright where
+no administrator password is configured, the same rule as delete. The check
+runs before anything is written, so a mistyped password leaves Stage C
+unconfirmed and the panel can simply ask again. A password sent for an exposure
+that passed is ignored rather than checked: there is nothing to overrule, and
+it must not count towards the lockout. The baseline refusal is a 409 carrying
+`quality_refused`, the failed checks and `override_available` (false with no
+administrator configured), and the Stage C confirm reports the same through
+`profile_blocked_by_quality`, so the page can show what would be overruled
+instead of parsing a sentence, and does not offer a password field nobody can
+fill in. An override is recorded with the reason and the failed checks, both in
+`logs/audit.log` (`"override":true`) and in the record's own trail; the
+record's quality verdict and its **image** badge stay as they were. It answers
+the quality check and nothing else: a finalised or signed-off record still
+cannot store its layout.
 
 The reason replaced a requirement to type the analysis id back. That guard was
 theatre — a copy-paste satisfied it — and it had a cost: its refusal appeared
@@ -419,8 +851,15 @@ necessary once a geometry edit correctly dropped results computed from geometry
 that no longer exists: on a validated analysis that left the ruling, the name
 and the date intact with the numbers gone, and the record then vanished from
 every trend and export, all of which select on completed results. The reanalyze
-CLI already skipped signed-off analyses; the web path now matches it. Withdrawing
-is one click and is itself audited, so this costs nothing but deliberateness.
+CLI already skipped signed-off analyses; the web path now matches it.
+
+Recording a ruling also finalises the record, and withdrawing a ruling does not
+un-finalise it — someone still declared the numbers done. So withdrawing alone
+no longer unlocks editing; the way to rework a signed-off analysis is a re-run,
+which takes the administrator password and a reason, withdraws the ruling
+itself and keeps the previous state. (The Stage C lock notice and the refusal
+message for a signed-off record still say "withdraw the validation first"; that
+wording predates finalising and is out of step with the behaviour.)
 
 ## Trust the ASGI server for the client address
 
@@ -446,7 +885,102 @@ an attacker `max_attempts × workers` guesses.
 Reports embed their charts and overlays as data URIs, and the frontend has no
 build step and no external dependencies. The application runs without internet
 access, and an exported report remains readable years later with no server
-involved.
+involved. The comparison report embeds its pictures and its one script too, so
+a copy saved from the browser keeps both.
+
+## Pictures for looking are lossy; numbers never come from them
+
+Every byte crosses a field link at about 512 kbit/s, and the two heaviest
+downloads were pictures nobody measures from.
+
+- **The viewer's picture** is `image.jpg` (quality 75, progressive), about
+  0.1 MB for a reference scan at 1600 px against 1.1 MB as PNG. `image.png`
+  stays for anything that wants the exact eight-bit render; both come from one
+  `_render_view`, so they cannot drift apart in window or size — and the size
+  matters, because the page places every outline through the picture's width
+  over the scan's. The low-contrast discs, where a few grey levels decide what
+  an operator sees, are placed on their own lossless close-up.
+- **The printed report** embeds the annotated overview as JPEG (quality 80
+  with full colour resolution — chroma subsampling smeared the magenta disc
+  rings into a blur) and its charts as 64-colour palette PNGs (the max-coverage
+  quantiser keeps white white; JPEG was larger than PNG for every chart and
+  blurs text). A reference report went from 1.7 MB to 0.39 MB with every number
+  and verdict unchanged. `report._photo` re-encodes anything that is not already
+  JPEG, so no caller can put the megabyte back.
+- **Rendered scan images are privately cacheable** (`Cache-Control: private,
+  max-age=86400`): the upload never changes and the URL carries everything that
+  varies the picture, so the same URL is always the same bytes. Private because
+  it is patient-adjacent imagery that must not sit in a shared proxy. Every
+  other `/api/` response stays `no-store`; the close-up decides for itself (see
+  above).
+- **Text is compressed in the application** (`GZipMiddleware`), not in the
+  proxy, because the proxy configuration is deployment, which this work does
+  not change. Images, zips and DICOM are excluded — already packed.
+
+## Exposure values: four columns and a one-time backfill
+
+The detector's own account of the exposure (IEC 62494-1) is what tells an
+operator at once that a scan was under- or over-exposed — the first thing to
+rule out when its numbers look wrong, and the thing that would have explained
+one of the first field test's puzzles. All three detectors in use write the
+exposure index; the Carestream and the field Fuji also write the target, the
+deviation index and a sensitivity.
+
+`ingest.EXPOSURE_TAGS` — `ExposureIndex`, `TargetExposureIndex`,
+`DeviationIndex`, `Sensitivity` — are read as **numbers** from the text the
+detector wrote (`_dicom_number`: an int when it is one, a finite float
+otherwise; blank, malformed or non-finite is absent, never zero). They are kept
+in the stored header and copied into REAL columns `exposure_index`,
+`target_exposure_index`, `deviation_index`, `sensitivity` (NULL = not
+recorded), because History and the CSV exports never read the header blob. The
+listing sends only EI and DI.
+
+They are shown in the identity bar, History, the report's identification block
+and both CSV exports (four trailing columns in the long one, four trailing rows
+in the wide one, so existing spreadsheets keep every column where it was).
+Indices are whole numbers and the deviation index has one decimal and its sign;
+halves round away from zero, with the digits built by hand identically in
+`app.js` (`exposureText`) and `report.exposure_text`, because Python's `round()`
+and the browser's `Math.round()` would disagree on −4.75. **Nothing is judged
+from them.**
+
+**Backfill.** Records stored before the columns existed have the values in their
+own uploaded file. `Store._backfill_exposure` runs once per database, in the
+migration branch that has just added the columns. It commits first, so the file
+reads do not hold the write lock the other starting workers queue on; reads each
+non-image record's `data/uploads/<id>.bin` with `pydicom.dcmread(...,
+stop_before_pixels=True)` — milliseconds a record, where decoding the image
+would take seconds; adds only the keys the stored header lacks, fills the
+columns, and writes with `WHERE meta_json IS <what was read>`, so a concurrent
+change wins. It touches nothing else — no results, status, geometry, validation
+or protection — which is why it may run over finalised and signed records: what
+was signed is the measurements, and this transcribes more of the same file. A
+missing or unreadable file is logged and that record shows "not recorded".
+
+`AcquisitionDate` is now kept in the stored header as well.
+
+## MONOCHROME1 turned about the detector's range
+
+In a MONOCHROME1 image a bigger number is darker, so it is turned the other way
+up on ingest. It used to be flipped about the brightest pixel of the image,
+which made every value depend on the picture: the same object exposed with and
+without some unblocked beam would come out offset, moving the uniformity SNR and
+the wedge ratio for no physical reason.
+
+`ingest._invert_monochrome1` flips about the detector's own range instead,
+taken from `BitsStored` (else `BitsAllocated`) and `PixelRepresentation` —
+0…2^bits−1, or the signed range — carried through the rescale:
+`(lo + hi)·slope + 2·intercept − value`. When the header declares no bit depth,
+or the stored values fall outside the declared range, it falls back to the old
+rule, logs a warning, and records which rule was used in the stored header
+(`_inversion`: `{"method": "bit depth", …}` or `{"method": "image maximum",
+"reason": …}`), so an odd value can be traced later.
+
+On the three readable field (Fuji) scans the image maximum *was* the detector
+maximum — 1023 on 77,000–100,000 pixels of unblocked beam — so they come out
+identical to the last pixel; only the two completely faulty exposures moved (by
+66 and 95). Nothing needed re-running. The change is a guard for future
+exposures with no unblocked beam in the picture.
 
 ---
 
@@ -477,10 +1011,41 @@ SQLite in WAL mode is appropriate at QA-team concurrency. Should that change,
   Supporting several phantom builds in one installation means selecting the
   definition per phantom — recording it on the analysis, and grouping trends by
   it as protocol signature already does.
-- **Identity assignment when a build differs.** Line-pair groups are matched to
-  the definition by order along the strip, falling back to nearest measured
-  frequency. On a build whose strip runs in the opposite frequency order the
-  fallback still identifies the groups, but a tolerant frequency match can
-  mislabel one. Declining to label a block whose frequency or spacing is
-  inconsistent with its neighbours would be truer to the "report failure rather
-  than guess" rule applied elsewhere.
+- **Parked: the line-pair strip on the blue prints.** Nothing changes until
+  it is decided; see below.
+
+### Parked: the line-pair strip on the blue prints
+
+**Symptom.** On all 27 blue-print (Carestream) reference scans the line-pair
+test fails or warns, and so does the overall verdict. The six Philips scans of
+the original phantom and the readable field Fuji scans pass.
+
+**Evidence, from the pixels.** The bar frequency was read at each designed
+group position, independently of the software's detection. On the blue prints
+the finest bars sit at the design's G1.1 end of the strip and the notched frame
+line on the opposite side. On the original phantom (`MSF^PHANTOM001`, folders
+20260727 and 20260730, 6 of 6 scans) and the field Fuji phantom (3 of 3 readable)
+the strip is in design order. Every registration is correct — four of four
+corner markers, not mirrored, the low-contrast block where designed — so this
+is not an orientation error of the software.
+
+**What the software then does.** `linepairs._match_blocks_to_groups` assigns the
+detected blocks to the groups in order along the strip. When the measured
+frequencies do not track the nominal order (correlation below 0.5) it falls
+back to a greedy nearest-frequency match in definition order, on the coarse
+frequency reading. That reading cannot tell 1.1 from 1.2 lp/mm (1.07 read as
+1.13, 1.23 as 1.27), and G1.2 is given the wrong block by a margin of
+0.004 lp/mm. The result is the G1.1 / G1.2 swap and the ±10–12 % pitch
+deviations on those scans — the software's error, not the detector's.
+
+**Why nothing was changed.** The fix depends on a fact about the physical
+object: whether the blue phantoms were really built with the strip end for end.
+If they were, the strip direction belongs to the phantom and should be detected
+and saved per phantom ID, as the low-contrast insert orientation now is;
+changing the matching before that is known would move line-pair numbers on
+27 reference scans on an assumption. The question waiting to be answered is a
+look at a physical blue phantom next to `MSF^PHANTOM001`, same way up: are the
+finest lines at the same end? (It is on the second field test checklist.) Until
+then no line-pair code changes, and the benchmark pins today's numbers.
+
+Also parked, not investigated: group 1.6 fails on 8 of the blue-print scans.

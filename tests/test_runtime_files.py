@@ -152,7 +152,7 @@ def _gitignore() -> str:
 
 @pytest.mark.parametrize("pattern", [
     "/data/*.sqlite3", "/data/*.sqlite3-wal", "/data/*.sqlite3-shm",
-    "/data/uploads/", "/data/backup/", "logs/", ".env",
+    "/data/uploads/", "/data/backup/", "/data/thumbs/", "logs/", ".env",
 ])
 def test_runtime_paths_are_git_ignored(pattern):
     assert pattern in _gitignore(), f"{pattern} must be git-ignored"

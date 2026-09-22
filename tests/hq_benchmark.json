@@ -185,7 +185,7 @@
    "sha256": "bd7216d1e0137a0bd44fd954aafcc884302ee3d922990a2e0ed3374e0dda0c36",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "fail",
     "lowcontrast": "pass",
     "overall": "fail",
@@ -370,7 +370,7 @@
    "sha256": "d9f383727e515a4162eb28128f76e2137c4e10cf119864c602c93f535c5c042d",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "fail",
     "lowcontrast": "pass",
     "overall": "fail",
@@ -555,7 +555,7 @@
    "sha256": "2764a1bbb305b00c7f4b5daa2d6920aa0178ec94a7ee7b772a982156f73ef12e",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "fail",
     "lowcontrast": "pass",
     "overall": "fail",
@@ -601,7 +601,7 @@
      "L8": -0.735739
     },
     "lowcontrast_detected": true,
-    "lowcontrast_ordering_ok": false,
+    "lowcontrast_ordering_ok": true,
     "mean_side_mm": 301.348785,
     "uniformity_dsnr_pct": {
      "BL": -1.084025,
@@ -740,9 +740,9 @@
    "sha256": "1d4260cfc753096583993c5211a1816e8239fa37a609ab0a790796e605e1a95b",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "fail",
-    "lowcontrast": "warn",
+    "lowcontrast": "pass",
     "overall": "fail",
     "uniformity": "pass",
     "wedge": "pass"
@@ -925,7 +925,7 @@
    "sha256": "d4a7ebc215d4670cc7b3ded0fe3b9b4665249d56489ca9483650ebca8717dbaa",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "fail",
     "lowcontrast": "pass",
     "overall": "fail",
@@ -971,7 +971,7 @@
      "L8": -0.888473
     },
     "lowcontrast_detected": true,
-    "lowcontrast_ordering_ok": false,
+    "lowcontrast_ordering_ok": true,
     "mean_side_mm": 302.2592,
     "uniformity_dsnr_pct": {
      "BL": -1.572725,
@@ -1110,9 +1110,9 @@
    "sha256": "0a558091f148e01bfdb354dccc1a9984bbdf5c03156c4c34208e3ebcc7396cd2",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "fail",
-    "lowcontrast": "warn",
+    "lowcontrast": "pass",
     "overall": "fail",
     "uniformity": "pass",
     "wedge": "pass"
@@ -1295,7 +1295,7 @@
    "sha256": "3bf7c76473323100271551e21eb9b5aac89a72ff7f7d28a3d1b5fa192307ab74",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "fail",
     "lowcontrast": "pass",
     "overall": "fail",
@@ -1341,7 +1341,7 @@
      "L8": -1.30965
     },
     "lowcontrast_detected": true,
-    "lowcontrast_ordering_ok": false,
+    "lowcontrast_ordering_ok": true,
     "mean_side_mm": 302.253766,
     "uniformity_dsnr_pct": {
      "BL": -5.378468,
@@ -1480,9 +1480,9 @@
    "sha256": "ada5d95fb1129fdb6ef4853a50d4ee85cf87c7848506adf9116af190903ffedf",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "fail",
-    "lowcontrast": "warn",
+    "lowcontrast": "pass",
     "overall": "fail",
     "uniformity": "pass",
     "wedge": "pass"
@@ -1665,7 +1665,7 @@
    "sha256": "dc93bb11333433d877678ce76c98f5308b92d8cda744df828f4a03e21a3f91d2",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "warn",
     "lowcontrast": "pass",
     "overall": "warn",
@@ -1711,7 +1711,7 @@
      "L8": -1.901248
     },
     "lowcontrast_detected": true,
-    "lowcontrast_ordering_ok": false,
+    "lowcontrast_ordering_ok": true,
     "mean_side_mm": 302.135941,
     "uniformity_dsnr_pct": {
      "BL": -9.469613,
@@ -1850,9 +1850,9 @@
    "sha256": "db9f0b7447ca1e245b9207110e9b22a7df1c05beb4303924a573d9ca93fed5ce",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "warn",
-    "lowcontrast": "warn",
+    "lowcontrast": "pass",
     "overall": "warn",
     "uniformity": "pass",
     "wedge": "pass"
@@ -2035,7 +2035,7 @@
    "sha256": "eb89c7fea651698a7adba3bc171af969d177337d99c49839aef785ddfa19159a",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "fail",
     "lowcontrast": "pass",
     "overall": "fail",
@@ -2220,7 +2220,7 @@
    "sha256": "0308e03590e4d09d3d2b58b5a64943a182b3977dddf7f0753e9f5f5faac08d8b",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "warn",
     "lowcontrast": "pass",
     "overall": "warn",
@@ -2266,7 +2266,7 @@
      "L8": -1.191084
     },
     "lowcontrast_detected": true,
-    "lowcontrast_ordering_ok": false,
+    "lowcontrast_ordering_ok": true,
     "mean_side_mm": 302.283378,
     "uniformity_dsnr_pct": {
      "BL": -5.450426,
@@ -2405,9 +2405,9 @@
    "sha256": "d06be1a3ebe69c96cc95cd3b3a791ba253d2b6315f8fe08a3d94725ca33d58b0",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "fail",
-    "lowcontrast": "warn",
+    "lowcontrast": "pass",
     "overall": "fail",
     "uniformity": "pass",
     "wedge": "pass"
@@ -2451,7 +2451,7 @@
      "L8": -1.323471
     },
     "lowcontrast_detected": true,
-    "lowcontrast_ordering_ok": false,
+    "lowcontrast_ordering_ok": true,
     "mean_side_mm": 302.346797,
     "uniformity_dsnr_pct": {
      "BL": -5.935683,
@@ -2590,9 +2590,9 @@
    "sha256": "d27347b7b8291b3acf60ce49f1d5cfa51cede3100fbced10a44acf5dec411134",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "fail",
-    "lowcontrast": "warn",
+    "lowcontrast": "pass",
     "overall": "fail",
     "uniformity": "pass",
     "wedge": "pass"
@@ -2775,7 +2775,7 @@
    "sha256": "d11fd0170b00e4730313cc25ee879a938d00195b260bcd0f3cdd3d21a4a248c4",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "fail",
     "lowcontrast": "pass",
     "overall": "fail",
@@ -2821,7 +2821,7 @@
      "L8": -1.289933
     },
     "lowcontrast_detected": true,
-    "lowcontrast_ordering_ok": false,
+    "lowcontrast_ordering_ok": true,
     "mean_side_mm": 302.702608,
     "uniformity_dsnr_pct": {
      "BL": -6.101424,
@@ -2960,9 +2960,9 @@
    "sha256": "323e6e825cdacdea6b1412aba9efd0ca838815a30a2263e4848160e2b0cda08e",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "warn",
-    "lowcontrast": "warn",
+    "lowcontrast": "pass",
     "overall": "warn",
     "uniformity": "pass",
     "wedge": "pass"
@@ -3145,7 +3145,7 @@
    "sha256": "0503404f042b078c26da72cc50efffa3a616a44ebf995dc556681f71df10f1a9",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "fail",
     "lowcontrast": "pass",
     "overall": "fail",
@@ -3330,7 +3330,7 @@
    "sha256": "876e36d722733e9dd7fb4d2f1573ff57232f0f7fd2c9d8bc00f3aca76719be68",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "fail",
     "lowcontrast": "pass",
     "overall": "fail",
@@ -3515,7 +3515,7 @@
    "sha256": "f63e0d9eb315b3f986121f098d3d5934ca55678b024096b24e8bb93b35fa21ed",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "fail",
     "lowcontrast": "pass",
     "overall": "fail",
@@ -3700,7 +3700,7 @@
    "sha256": "ebb47acc77b6e6d663081d2f49053df0a74d1a34300b56efd2bf3400e94351f8",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "fail",
     "lowcontrast": "warn",
     "overall": "fail",
@@ -3885,7 +3885,7 @@
    "sha256": "36ad20cae76c3e330e39dd0e862c6477c129905c6c1eb27390b73106cf357759",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "fail",
     "lowcontrast": "pass",
     "overall": "fail",
@@ -4070,7 +4070,7 @@
    "sha256": "d2612221fbe42c58fb679fc80df548efa23955a38fa3c795dd087db063794fa5",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "fail",
     "lowcontrast": "pass",
     "overall": "fail",
@@ -4255,7 +4255,7 @@
    "sha256": "6f7f2fdabb27615ed35db230834511aafccb69e1b85f3fe7c67661c24ed6fcad",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "fail",
     "lowcontrast": "pass",
     "overall": "fail",
@@ -4440,7 +4440,7 @@
    "sha256": "90122fb703309be38ed7c031712dab463c884648825c4b190ff09697cdf6d584",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "fail",
     "lowcontrast": "pass",
     "overall": "fail",
@@ -4625,7 +4625,7 @@
    "sha256": "35dd91394cb22a14dc793d7cf807bb60d5f79fd893c66d002eee6f02c91f2773",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "warn",
     "lowcontrast": "pass",
     "overall": "warn",
@@ -4810,7 +4810,7 @@
    "sha256": "3014fec8e2455f33039a15f7e63b4736f07efdf45281002c88ee4512a4f5a3b2",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "fail",
     "lowcontrast": "pass",
     "overall": "fail",
@@ -4856,7 +4856,7 @@
      "L8": -1.576537
     },
     "lowcontrast_detected": true,
-    "lowcontrast_ordering_ok": false,
+    "lowcontrast_ordering_ok": true,
     "mean_side_mm": 300.216292,
     "uniformity_dsnr_pct": {
      "BL": -10.7515,
@@ -4995,9 +4995,9 @@
    "sha256": "c19321ee54cd55e22b29416b9830c294583b9ca9838dcfc78abc37ce599cb0fe",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "fail",
-    "lowcontrast": "warn",
+    "lowcontrast": "pass",
     "overall": "fail",
     "uniformity": "pass",
     "wedge": "pass"
@@ -5180,10 +5180,10 @@
    "sha256": "8765724f487691e0b4b6d494355caa5f571d4cbd3f1ee7ada53eff81471352ac",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "pass",
     "lowcontrast": "pass",
-    "overall": "n/a",
+    "overall": "pass",
     "uniformity": "pass",
     "wedge": "pass"
    },
@@ -5365,10 +5365,10 @@
    "sha256": "ecb89167f145bd9ab298ba24fd0d687facc732964403768afe2c097b70fba3e7",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "pass",
     "lowcontrast": "pass",
-    "overall": "n/a",
+    "overall": "pass",
     "uniformity": "pass",
     "wedge": "pass"
    },
@@ -5550,10 +5550,10 @@
    "sha256": "09a846d530ee78f3cc9484875c89e22ea9335bef3a470243a3e2b1e69b82be7c",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "pass",
     "lowcontrast": "pass",
-    "overall": "n/a",
+    "overall": "pass",
     "uniformity": "pass",
     "wedge": "pass"
    },
@@ -5735,10 +5735,10 @@
    "sha256": "cba031877c78ad5c415ad1127235ef605f13af9bf4fdd7b669cdfc2df06026da",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "pass",
     "lowcontrast": "pass",
-    "overall": "n/a",
+    "overall": "pass",
     "uniformity": "pass",
     "wedge": "pass"
    },
@@ -5920,10 +5920,10 @@
    "sha256": "803ff3dbe473af32fb2fe7cb21aa45ed327eafe6d3b63f16d8eb9b0f8a99dd94",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "pass",
     "lowcontrast": "pass",
-    "overall": "n/a",
+    "overall": "pass",
     "uniformity": "pass",
     "wedge": "pass"
    },
@@ -6105,10 +6105,10 @@
    "sha256": "95ca282b558805630fdb83c6e1542fe1759f975475180c5f2aaddd18ddfee0bf",
    "status": {
     "geometry_dimension": "pass",
-    "geometry_field": "n/a",
+    "geometry_field": "not applicable",
     "linepairs": "pass",
     "lowcontrast": "pass",
-    "overall": "n/a",
+    "overall": "pass",
     "uniformity": "pass",
     "wedge": "pass"
    },

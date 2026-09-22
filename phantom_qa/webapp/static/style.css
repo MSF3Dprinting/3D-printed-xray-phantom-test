@@ -80,6 +80,10 @@ button:disabled { opacity: 0.45; cursor: default; }
 .chip.pass { background: var(--pass); } .chip.warn { background: var(--warn); }
 .chip.fail, .chip.error { background: var(--fail); }
 .chip.na { background: #667; }
+/* "not applicable" is the neutral grey of the old "n/a"; "not measured" counts
+   as a warning in the verdict and is coloured like one. */
+.chip.notapplicable { background: #667; }
+.chip.notmeasured { background: var(--warn); }
 
 .drop-zone {
   border: 2px dashed var(--border); border-radius: 10px; padding: 40px 20px;
@@ -247,13 +251,14 @@ a.danger { color: var(--fail); }
 #logout-btn { margin-left: 10px; }
 
 /* ---- why a test passed / failed ---- */
-.reasons-why, .reasons-pass {
+.reasons-why, .reasons-pass, .reasons-na {
   border-radius: 6px; padding: 7px 10px; margin: 6px 0 10px; font-size: 11.5px;
 }
 .reasons-why { background: rgba(217,160,33,0.13); border-left: 3px solid var(--warn); }
 .reasons-pass { background: rgba(53,180,92,0.10); border-left: 3px solid var(--pass); }
-.reasons-why ul, .reasons-pass ul { margin: 4px 0 0; padding-left: 18px; }
-.reasons-why li, .reasons-pass li { margin: 2px 0; }
+.reasons-na { background: rgba(139,151,166,0.10); border-left: 3px solid var(--muted); }
+.reasons-why ul, .reasons-pass ul, .reasons-na ul { margin: 4px 0 0; padding-left: 18px; }
+.reasons-why li, .reasons-pass li, .reasons-na li { margin: 2px 0; }
 tr.reason-row td {
   background: rgba(217,160,33,0.10); font-size: 11px; color: var(--muted);
   font-style: italic;
@@ -287,16 +292,19 @@ details.advanced .card { background: none; border: none; padding: 0; margin: 8px
    is visible while the operator types, a wrong password shows an error in
    place instead of a status line that fades after six seconds, and nothing
    can be dismissed into an ambiguous state. */
+#confirm-backdrop,
 #del-backdrop {
   position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 65;
   display: flex; align-items: center; justify-content: center;
 }
-#del-backdrop.hidden { display: none; }
+#confirm-backdrop.hidden, #del-backdrop.hidden { display: none; }
+#confirm-card,
 #del-card {
   background: var(--panel); border: 1px solid var(--fail); border-radius: 12px;
   padding: 20px 22px; width: 480px; max-width: 94vw;
   max-height: 92vh; overflow-y: auto;
 }
+#confirm-card h3,
 #del-card h3 { margin: 0 0 6px; font-size: 15px; color: var(--fail); }
 button.danger {
   background: var(--fail); color: #fff; border: none; padding: 8px 16px;
@@ -327,10 +335,32 @@ button.danger:disabled { opacity: 0.45; cursor: default; }
 #dup-backdrop.hidden { display: none; }
 #dup-card {
   background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
-  padding: 20px 22px; width: 460px; max-width: 94vw;
+  padding: 20px 22px; width: 680px; max-width: 94vw;
 }
 #dup-card h3 { margin: 0 0 8px; font-size: 15px; }
 #dup-card .modal-actions { flex-wrap: wrap; }
+
+/* Both sides of the comparison, so the operator can answer the question they
+   actually have: is the thing already stored the thing I meant to send. */
+.dup-sides { display: flex; gap: 14px; margin: 10px 0 4px; }
+.dup-side {
+  flex: 1 1 0; min-width: 0;
+  border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+}
+.dup-side h4 { margin: 0 0 8px; font-size: 12px; color: var(--muted); }
+.dup-side .kv { grid-template-columns: auto 1fr; gap: 3px 10px; font-size: 12px; }
+.dup-side .kv > div:nth-child(odd) { color: var(--muted); }
+.dup-side .kv > div { overflow-wrap: anywhere; }
+.dup-thumb {
+  display: block; width: 100%; height: 132px; object-fit: contain;
+  background: #000; border-radius: 6px; margin-bottom: 8px;
+}
+.dup-thumb-empty {
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg); border: 1px dashed var(--border);
+  color: var(--muted); font-size: 12px;
+}
+@media (max-width: 620px) { .dup-sides { flex-direction: column; } }
 
 /* ---- manual corner picking ----
    A strip under the image while corners are being placed. Deliberately not a
@@ -342,3 +372,119 @@ button.danger:disabled { opacity: 0.45; cursor: default; }
 }
 #corner-controls p.hint { margin: 4px 0 8px; }
 #corner-controls button { margin-right: 6px; }
+
+/* ---- re-run panel ---- */
+#rerun-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 65;
+  display: flex; align-items: center; justify-content: center;
+}
+#rerun-backdrop.hidden { display: none; }
+#rerun-card {
+  background: var(--panel); border: 1px solid var(--accent); border-radius: 12px;
+  padding: 20px 22px; width: 520px; max-width: 94vw;
+  max-height: 92vh; overflow-y: auto;
+}
+#rerun-card h3 { margin: 0 0 6px; font-size: 15px; color: var(--accent); }
+#rerun-card label.vfield { display: block; margin: 8px 0; }
+
+/* ---- the administrator's override of the image-quality check ----
+   Framed as a warning, like the delete panel: it lets an exposure that failed
+   the check become something every later scan of the phantom relies on. */
+#override-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 65;
+  display: flex; align-items: center; justify-content: center;
+}
+#override-backdrop.hidden { display: none; }
+#override-card {
+  background: var(--panel); border: 1px solid var(--warn); border-radius: 12px;
+  padding: 20px 22px; width: 520px; max-width: 94vw;
+  max-height: 92vh; overflow-y: auto;
+}
+#override-card h3 { margin: 0 0 6px; font-size: 15px; color: var(--warn); }
+#override-body ul { margin: 6px 0; padding-left: 20px; font-size: 12px; }
+
+/* ---- Stage C: keep these measuring points for the phantom? ----
+   Right above the confirm button, because it is part of what confirming
+   does; amber when it cannot be offered, so the reason is not missed. */
+.layout-save {
+  background: var(--panel2); border: 1px solid var(--border);
+  border-left: 3px solid var(--accent); border-radius: 6px;
+  padding: 8px 10px; margin: 12px 0 4px; font-size: 12px;
+}
+.layout-save.unavailable { border-left-color: var(--warn); }
+.layout-save label {
+  display: flex; gap: 8px; align-items: flex-start; font-weight: 600;
+  cursor: pointer;
+}
+.layout-save label input { margin-top: 2px; }
+.layout-save p.hint { margin: 4px 0 0; }
+.layout-save ul { margin: 4px 0 6px; padding-left: 20px; }
+
+/* ---- the low-contrast block, close up ----
+   Sits inside step C next to the controls that move the block, because it is
+   what the operator is judging while they use them. */
+.lc-view-panel {
+  margin: 10px 0 14px; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--bg);
+}
+.lc-view-head {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  margin-bottom: 8px; font-size: 13px;
+}
+.lc-view-head label { display: flex; align-items: center; gap: 6px;
+                      font-size: 12px; color: var(--muted); }
+.lc-view-head input[type="range"] { width: 140px; }
+/* Black behind it: the picture is a flattened greyscale and the surrounding
+   panel colour would otherwise shift how its mid-tones read. */
+.lc-view-stage {
+  background: #000; border-radius: 6px; padding: 6px; overflow-x: auto;
+}
+#lc-view { display: block; width: 100%; height: auto; image-rendering: auto; }
+.lc-view-legend { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.lc-chip {
+  font-size: 11px; padding: 2px 8px; border-radius: 10px;
+  border: 1px solid var(--border);
+}
+.lc-chip-clear { background: rgba(90, 200, 120, 0.18); }
+.lc-chip-faint { background: rgba(230, 180, 60, 0.20); }
+.lc-chip-at-the-limit { background: rgba(230, 110, 90, 0.20); }
+/* Which way round the insert is read: a two-way choice, on one line. */
+.lc-insert { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+             margin-top: 10px; font-size: 13px; }
+.lc-insert label { display: flex; align-items: center; gap: 4px; }
+.lc-insert-warn { color: var(--warn); }
+
+/* ---- upload progress ----
+   Stays put until the upload ends. The status line clears itself after six
+   seconds, which during a two-minute transfer on a field link is
+   indistinguishable from a screen that has died. */
+.upload-progress { margin-top: 12px; }
+.upload-track {
+  height: 8px; border-radius: 4px; background: var(--panel2);
+  border: 1px solid var(--border); overflow: hidden;
+}
+#upload-bar {
+  height: 100%; width: 0%; background: var(--accent);
+  transition: width 0.2s linear;
+}
+/* The bytes are all sent and the server is working: a still bar at 100% reads
+   as stuck, so it moves while nothing else can be reported. */
+#upload-bar.working {
+  background: repeating-linear-gradient(
+    90deg, var(--accent) 0 10px, var(--panel2) 10px 20px);
+  animation: upload-working 0.8s linear infinite;
+}
+@keyframes upload-working { to { background-position: 20px 0; } }
+.upload-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-top: 6px; font-size: 12px; color: var(--muted);
+}
+.upload-row .secondary-sm {
+  padding: 3px 10px; font-size: 11px; margin: 0;
+  background: none; color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
+}
+@media (prefers-reduced-motion: reduce) {
+  #upload-bar { transition: none; }
+  #upload-bar.working { animation: none; }
+}

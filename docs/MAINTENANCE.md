@@ -12,6 +12,7 @@ Backups, integrity checks, re-analysis and logs.
 | `data/phantom_qa.sqlite3` | All analyses: labels, geometry, results, validation, audit trail; the per-phantom measuring-point layouts; the Stage C undo history | no | **yes** |
 | `data/phantom_qa.sqlite3-wal`, `-shm` | SQLite runtime companions | no | no |
 | `data/uploads/*.bin` | The original scan of every analysis | no | **yes** |
+| `data/thumbs/<analysis-id>/` | Small pictures of each test area, kept for the comparison report; removed with their analysis | no | no — redrawn from the scan when next needed |
 | `logs/*` | Application, error and audit logs | no | per retention policy |
 
 `data/` and `logs/` are excluded by `.gitignore`, so `git pull` and branch
@@ -149,9 +150,17 @@ re-uploading.
 
 - `data/` is excluded from version control, so `git pull` cannot alter it.
 - The database schema migrates in place on startup: columns are added, existing
-  rows are untouched.
-- The application deletes an analysis only through the administrator-gated
-  delete action.
+  rows are untouched — with one deliberate exception. The upgrade that added the
+  exposure columns (`exposure_index`, `target_exposure_index`,
+  `deviation_index`, `sensitivity`) fills them in once, on the first start, from
+  the header of each record's own stored scan, and adds those four values to its
+  stored header where they were missing. Nothing else in the record is touched —
+  not results, status, geometry or validation — so it runs over finalised and
+  signed records too. A record whose stored file is missing or unreadable is
+  logged and shows "not recorded". See DESIGN.md, *Exposure values*.
+- The application removes an analysis only when an operator asks: an
+  unfinished one through **Discard** (confirmation only), a finalised, signed-off
+  or reference one through the administrator-gated delete action.
 
 What can become **stale** is the numbers. Stored results are those produced by
 the algorithm and phantom definition current on the day they were computed. This
@@ -262,10 +271,11 @@ from them, and guard tests in the same file enforce it: application code may not
 name the field drop, no other test may reach for it, and no field exposure's
 SHA-256 may appear among the reference benchmark's golden values.
 
-A few tests there are marked `xfail(strict=True)`. Each names a defect found in
-the field review that is scheduled for repair; because the mark is strict, the
-suite fails as soon as one starts passing, which is the signal to delete the
-mark along with the fix.
+The defects that file first recorded as `xfail(strict=True)` have been fixed
+and their marks removed; they are ordinary tests now. (The file's opening
+docstring still mentions two strict marks.) Use the same pattern for the next
+defect found in the field: a strict `xfail` fails the suite as soon as the fix
+lands, which is the signal to delete the mark along with it.
 
 ---
 
@@ -308,9 +318,19 @@ phantom turned differently on the detector replays correctly; and a layout that
 disagrees with the new scan's own detection about where the patterns are — the
 signature of a mis-registered scan — is refused rather than applied.
 
-A stored layout is bound to the phantom name and dies with it: deleting or
-renaming the last analysis carrying that name deletes the layout. An
-administrator can also discard one deliberately (`POST
+The layout also records which way round the low-contrast insert is fitted
+(`lowcontrast_insert`), when a scan could decide it or an operator set it. Later
+scans of that phantom are read that way, and a scan whose contrast clearly
+disagrees is flagged "check that the phantom ID is right" rather than followed.
+For a build whose insert is fitted a half turn from the drawing this is all that
+is needed — no separate definition. Layouts stored before this carry no value,
+and each scan then decides from its own contrast as before.
+
+A stored layout is bound to the phantom name and dies with it: deleting,
+discarding or renaming the last analysis carrying that name deletes the layout,
+and discarding or deleting the analysis that stored the current layout brings
+back the one stored before it. An administrator can also discard one
+deliberately (`POST
 /api/phantom_profiles/forget`, admin password required — the request body
 names the layout under the key `phantom`, and the listing below carries the
 same value as both `phantom` and `phantom_key`); `GET
@@ -359,7 +379,7 @@ Three files under `PHANTOMQA_LOG_DIR` (default `logs/`), all size-rotated:
 |---|---|---|
 | `phantomqa.log` | Every request — method, path, status, duration, client, user — and application activity | 10 × 10 MB |
 | `errors.log` | Warnings and errors only, with tracebacks | 10 × 10 MB |
-| `audit.log` | Sign-ins, uploads, computes, label edits, validation rulings, integrity checks, deletions | 30 × 10 MB |
+| `audit.log` | Sign-ins, uploads, duplicate checks, computes, label edits, validation rulings, integrity checks, re-runs, discards and deletions | 30 × 10 MB |
 
 `audit.log` is written at INFO regardless of `PHANTOMQA_LOG_LEVEL` and kept
 longer. Lines carry fixed fields and a JSON tail:
@@ -370,7 +390,9 @@ longer. Lines carry fixed fields and a JSON tail:
 ```
 
 ```bash
-grep 'event=delete'          logs/audit.log   # deletion attempts
+grep 'event=delete'          logs/audit.log   # deletion attempts, discards included
+grep '"mode":"discard"'      logs/audit.log   # discards of unfinished analyses only
+grep 'event=rerun'           logs/audit.log   # re-runs and undone re-runs
 grep 'event=validation'      logs/audit.log   # sign-offs and reversals
 grep 'outcome=denied'        logs/audit.log   # failed sign-ins and admin attempts
 grep 'event=verify.*FAILED'  logs/audit.log   # integrity problems
