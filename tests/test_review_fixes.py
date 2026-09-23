@@ -238,7 +238,10 @@ def test_finalising_tells_the_page_so_the_discard_button_goes():
 def test_the_close_up_follows_the_block():
     """After a drag, a typed angle or Turn 180° it kept showing the old
     placement until Refresh was pressed."""
-    assert "loadBlockView(true)" in _fn(_app_js(), "placeBlock")
+    # By way of refreshBlockView, which runs one load at a time so a run of
+    # nudges does not fetch a close-up for every step on the way.
+    assert "refreshBlockView()" in _fn(_app_js(), "placeBlock")
+    assert "loadBlockView(true)" in _fn(_app_js(), "refreshBlockView")
 
 
 def test_an_out_of_date_close_up_is_never_passed_off_as_current():

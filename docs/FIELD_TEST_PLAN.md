@@ -24,7 +24,7 @@ original scans; no measured number moved.
 | 3 · Comparison with pictures | Done. 42–54 kB per scan; one shared window per detector/protocol group (a single window across detectors turned the other detector's pictures black); pictures embedded in the page; capped at 12 columns — the reference plus the most recent — with a note. |
 | 4a · Lighter reports | Done. 1.72 MB → 0.39 MB on the original scans. |
 | 4b · Lighter viewer picture | Done. 0.9 MB PNG → 93–113 kB JPEG. |
-| 4c · Compressing uploads in the browser | **Not started — waiting for your decision.** |
+| 4c · Compressing uploads in the browser | Done (approved 2026-09-22). The browser packs the file losslessly, and only when it clearly helps: the first 1 MB is tried first, and the file is sent as it is unless that and then the whole file come out at 90 % or less. Measured on all 38 real scans, every one unpacked byte-identical: Fuji 7.5 → 2.9 MB (1.1 MB over-exposed), about 2 minutes → 45 s at 512 kbit/s; Carestream 15.1 → 7.1 MB on average, 236 → 111 s; Philips already compressed inside the file, so sent as it is — the 1 MB test decides that in a fraction of a second. In a real browser the Fuji packs in 0.16 s, the Carestream in 0.5 s. The server unpacks and checks gzip's CRC32, the size and the SHA-256 taken in the browser before storing the original; any disagreement stores nothing and says "The file was damaged on the way — nothing was stored. Please send it again." Without https or with an older browser the upload is exactly as before. |
 | 5 · Exposure index and date | Done. Identity bar, report, History and CSV; older records filled in from their stored files at start-up. |
 | 6 · User guide and design notes | Done. |
 | 7 · Second field-test checklist | Done: docs/FIELD_TEST_CHECKLIST.md. |
@@ -96,7 +96,7 @@ tests — **a manual pass in a browser is advised before the field test**.
 ### Step 4 — The rest of the slow-connection work *(your low-speed instruction)*
 - **4a · Reports:** one report is 1.7 MB, 1.33 MB of it a single embedded overlay picture → about 0.4 MB. No number changes.
 - **4b · Viewer picture:** the background image when an analysis opens, 0.9 MB PNG → about 0.1 MB JPEG. Measurements always run on the original scan on the server; the picture is only for looking, and disc placement uses the separate lossless close-up.
-- **4c · Optional, last:** compress the scan in the browser before uploading — 7.5 → 2.9 MB measured, about 2 minutes → 45 s at 512 kbit/s. It touches the upload path, so only if you want it once 4a and 4b are in.
+- **4c · Compress the scan in the browser before uploading** — 7.5 → 2.9 MB measured on a usable Fuji scan, about 2 minutes → 45 s at 512 kbit/s. Approved 2026-09-22 and done; see the status table above.
 
 ### Step 5 — Exposure index and acquisition date shown *(from my review; helps with your item 6)*
 - All three detectors write the standard exposure index; the Carestream and Fuji also write the target exposure index and the deviation index; all write the acquisition date and time. None of it is shown today.
@@ -115,12 +115,13 @@ Full suite, benchmark, and a one-page checklist of what to try in the field.
 ## Dropped
 
 - **Widening the disc search (±2.5 mm):** measured to make the dark print worse — faint discs drift to the edge of any larger search area. Placement was already on all 8 discs on all 33 reference scans. Agreed 2026-09-21.
+- **Separate users / per-user history (2026-09-23):** kept as it is — one shared login and one archive every signed-in browser sees, including the "Unfinished analyses" list, which is deliberately everyone's so a colleague can continue a scan someone else uploaded. Nothing identifies a computer; the "unfinished on this computer" banner is only a note in that browser's own storage. Accounts would buy identity (named audit entries, real approver names, roles), not separation, and splitting history per person would break trends per phantom, baselines, the duplicate check and sign-off. To be reconsidered on feedback from the field users; if separation is ever wanted the natural line is the site label, which every analysis already carries.
 
-## Decisions needed
+## Decisions taken
 
-1. **Approve this plan and its order.**
-2. **Step 1, existing records:** recompute the overall verdict on analyses already stored, or apply the new wording only to new and re-run analyses? *Recommended: new and re-run only* — nothing already finalised or signed changes wording under anyone's feet.
-3. **Step 4c** (compressing uploads in the browser): decide when steps 4a and 4b are done.
+1. **The plan and its order:** approved 2026-09-21, with parallel agents allowed.
+2. **Step 1, existing records:** the new wording applies to new and re-run analyses only; nothing already finalised or signed changes wording.
+3. **Step 4c, compressing uploads in the browser:** approved 2026-09-22 after measuring it on the real scans and confirming it is lossless; built so that an unknown detector is never worse off than before.
 
 ---
 

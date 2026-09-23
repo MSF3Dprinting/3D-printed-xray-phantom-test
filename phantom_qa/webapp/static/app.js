@@ -34,6 +34,19 @@ const S = {
      waits a little longer than the server does, so a bounded analysis reports
      its own failure rather than being cut off by the page. */
   analysisTimeoutS: 120,
+  /* Set once a packed upload is refused as damaged on the way, and kept until
+     the page is reloaded: every later file is then sent as it is (see
+     uploadFile), so a fault in this browser's packing cannot refuse the same
+     file on every attempt. */
+  sendUnpacked: false,
+  /* True only once /api/auth has answered that this server has no sign-in,
+     as run_app.py runs on the operator's own computer. Until then, and on
+     any server with sign-in, uploads are packed (see servedFromThisMachine). */
+  signInOff: false,
+  /* The low-contrast close-up on screen, and the loads that fetch it: the
+     number of the newest load, whether a refresh is running, and whether
+     another is wanted when it ends (see loadBlockView, refreshBlockView). */
+  blockView: null, blockViewGen: 0, blockViewBusy: false, blockViewAgain: false,
 };
 
 /* Milliseconds before the page stops waiting for a measuring call. The margin
@@ -253,6 +266,9 @@ function uploadWithProgress(path, formData, onProgress) {
                             || `upload failed (${xhr.status})`);
       err.status = xhr.status;
       if (body && body.duplicate_of) err.duplicateOf = body.duplicate_of;
+      // A packed file that did not unpack to the file chosen; uploadFile
+      // answers it by sending files as they are from then on.
+      if (body && body.damaged_transfer) err.damagedTransfer = true;
       reject(err);
     };
     xhr.onerror = () => {
@@ -1659,8 +1675,10 @@ async function placeBlock(payload) {
     // angle or Turn 180° it went on showing the old placement until Refresh
     // was pressed — the one view meant for judging the placement, showing a
     // different one. Named by its content, so returning to an earlier
-    // placement costs no transfer.
-    loadBlockView(true);
+    // placement costs no transfer. Asked for through refreshBlockView, so a
+    // run of quick nudges fetches the close-up of where the block ended up,
+    // not one for every step on the way.
+    refreshBlockView();
   } catch (e) {
     if (handleStaleGeometry(e)) return;
     status("Could not place block: " + e.message, true);
@@ -2522,12 +2540,40 @@ async function stageU(c) {
   refresh();
 }
 
+/* The first phase of a packed upload: the browser is packing the file and
+   nothing has been sent yet.
+
+   Named, and given the bar, because the packing takes a few seconds on an old
+   laptop, and a few seconds of an unexplained still screen before a transfer
+   is how the old silent upload came to be reloaded and sent twice. Cancel is
+   offered here too — stopping now costs nothing at all. */
+function showPreparing(done, total) {
+  const box = $("#upload-progress");
+  if (!box) return;
+  box.classList.remove("hidden");
+  const bar = $("#upload-bar"), text = $("#upload-text");
+  const pct = total > 0 ? Math.min(100, (done / total) * 100) : 0;
+  bar.style.width = pct.toFixed(1) + "%";
+  bar.classList.remove("working");
+  text.textContent = "Preparing the file…"
+                   + (done > 0 ? ` (${pct.toFixed(0)}%)` : "")
+                   + " — nothing is sent yet";
+  const cancel = $("#upload-cancel");
+  if (cancel) cancel.disabled = false;
+}
+
 /* The upload's own progress, which the six-second status line could not be.
 
    Deliberately not the status line: that clears itself, and a message that
    evaporates during a two-minute transfer is exactly what made an upload in
-   progress look like a dead screen. This stays until the upload ends. */
-function showUploadProgress(loaded, total, startedAt) {
+   progress look like a dead screen. This stays until the upload ends.
+
+   `packedFrom` is the original size when the file travels packed. The
+   numbers, the percentage and the time left are all counted on the bytes
+   actually crossing the link, because those decide how long it takes; the
+   original size is said beside them so that "2.2 MB" for a 7.5 MB scan does
+   not look like the wrong file being sent. */
+function showUploadProgress(loaded, total, startedAt, packedFrom) {
   const box = $("#upload-progress");
   if (!box) return;
   box.classList.remove("hidden");
@@ -2548,8 +2594,9 @@ function showUploadProgress(loaded, total, startedAt) {
   bar.style.width = pct.toFixed(1) + "%";
   bar.classList.remove("working");
   const left = timeRemaining(loaded, total, startedAt);
+  const packed = packedFrom ? `, packed from ${fileSize(packedFrom)}` : "";
   text.textContent = `Sending ${fileSize(loaded)} of ${fileSize(total)} `
-                   + `(${pct.toFixed(0)}%)${left ? " · " + left : ""}`;
+                   + `(${pct.toFixed(0)}%${packed})${left ? " · " + left : ""}`;
 }
 
 function hideUploadProgress() {
@@ -2558,9 +2605,18 @@ function hideUploadProgress() {
   const cancel = $("#upload-cancel");
   if (cancel) cancel.disabled = false;
   S.uploadXhr = null;
+  S.packJob = null;
 }
 
 function cancelUpload() {
+  // While the file is still being packed nothing has been sent, so stopping
+  // the packing is the whole of the cancellation: uploadFile sees the flag
+  // before it builds the request and sends nothing at all.
+  const job = S.packJob;
+  if (job) {
+    job.cancelled = true;
+    if (job.reader) job.reader.cancel().catch(() => {});
+  }
   if (S.uploadXhr) S.uploadXhr.abort();
 }
 
@@ -2570,7 +2626,8 @@ function cancelUpload() {
    network — which is how this is deployed in some places — there is no digest
    to be had. Returning null then is deliberate: the pre-flight check is an
    optimisation, and the server still checks the bytes it receives, so losing
-   it costs a transfer and nothing else. */
+   it costs a transfer and nothing else. Packing needs the digest too, so
+   without one the file also travels as it is — exactly as it always has. */
 async function fileSha256(file) {
   try {
     if (!window.crypto || !crypto.subtle || !file.arrayBuffer) return null;
@@ -2588,12 +2645,15 @@ async function fileSha256(file) {
    This is the whole point of the change: the answer costs a hundred bytes and
    arrives at once, where the refusal it replaces cost two minutes of a
    512 kbit/s link to say the same thing. Any failure here falls through to
-   the upload, which checks properly. */
-async function findExistingCopy(file) {
+   the upload, which checks properly.
+
+   `sha` is the digest uploadFile has already taken, so the file is not read
+   and hashed a second time; left out, it is computed here. */
+async function findExistingCopy(file, sha) {
   // A zip is checked member by member on the server; the container's hash
   // fingerprints nothing, so asking about it would always answer "no".
   if (/\.zip$/i.test(file.name || "")) return null;
-  const sha = await fileSha256(file);
+  if (sha === undefined) sha = await fileSha256(file);
   if (!sha) return null;
   try {
     const r = await postJSON("api/upload_check", { sha256: [sha] });
@@ -2601,6 +2661,135 @@ async function findExistingCopy(file) {
     return (hit && hit.duplicate_of && hit.duplicate_of[0]) || null;
   } catch (e) {
     return null;
+  }
+}
+
+/* ---- Packing a scan before it is sent
+
+   Most detectors write their pixels uncompressed, and on a 512 kbit/s link
+   the transfer is nearly all of an operator's waiting. Measured on the real
+   scans with the same gzip the browser uses: the field Fuji's 7.5 MB pack to
+   2.9 MB (1.1 MB for an over-exposed one), two minutes becoming under fifty
+   seconds; the Carestream's 15 MB pack to about 7. The Philips compresses
+   inside the file already and gains nothing. Field projects meet a different
+   detector every time, so the page decides per file, from the file itself,
+   and never sends more than it would have sent unpacked.
+
+   Packing is lossless. The server unpacks it back to the exact original and
+   proves it with the SHA-256 taken here from the file on disk before
+   packing; what is stored, fingerprinted and measured is the original, byte
+   for byte. */
+
+//: The probe: packed first, a fraction of a second even on an old laptop.
+const PACK_PROBE_BYTES = 1048576;          // 1 MiB
+//: Pack only when it saves at least a tenth. Below that the few seconds of
+//: packing buy almost nothing, and a detector that compresses inside the file
+//: (the Philips: 99 %) is recognised and sent as it is.
+const PACK_WORTH_IT = 0.9;
+
+/* Whether this browser can pack at all. CompressionStream is built in —
+   no library to download over the link — but older browsers lack it, and
+   they simply send the file as it is, as they always have. */
+function canPack() {
+  return typeof CompressionStream === "function"
+      && typeof TransformStream === "function"
+      && typeof Blob === "function"
+      && typeof Blob.prototype.stream === "function";
+}
+
+/* The names of this computer itself: localhost, 127.x.x.x and ::1, which the
+   browser writes in brackets. Nothing else — a LAN address or a server name
+   is a network, however fast, and keeps packing. */
+const LOOPBACK_HOST = /^(localhost|127(\.\d{1,3}){3}|\[::1\]|::1)$/;
+
+/* Whether the page comes from a server on this same computer, which is how
+   run_app.py is used. There is then no link to spare: packing a 15 MB scan
+   was measured at half a second of pure waiting, most of it with the page
+   frozen, to save nothing.
+
+   The name alone cannot tell. An SSH tunnel or a port forward to a real
+   server is opened at localhost too, and every scan would then cross the
+   slow link unpacked. So the server must also have said that it has no
+   sign-in: that is run_app.py's default, a server without sign-in must never
+   be reachable from a network at all (both starters say so), and production
+   turns sign-in on. A tunnel to a deployed server therefore keeps packing. */
+function servedFromThisMachine() {
+  return S.signInOff === true
+      && LOOPBACK_HOST.test((location.hostname || "").toLowerCase());
+}
+
+/* One blob gzipped, or null when the operator cancelled first.
+
+   Read chunk by chunk through a reader rather than handed to
+   new Response(stream).blob(), because a reader can be stopped: it is left
+   on the job for cancelUpload, and cancelling it stops the file being read
+   as well. The counting step in front reports how much of the file has been
+   packed, which is what the bar shows while preparing. */
+async function gzipBlob(blob, job, onProgress) {
+  let fed = 0;
+  const counted = new TransformStream({
+    transform(chunk, ctl) {
+      fed += chunk.byteLength;
+      if (onProgress) onProgress(fed, blob.size);
+      ctl.enqueue(chunk);
+    },
+  });
+  const reader = blob.stream().pipeThrough(counted)
+    .pipeThrough(new CompressionStream("gzip")).getReader();
+  job.reader = reader;
+  const parts = [];
+  try {
+    for (;;) {
+      const step = await reader.read();
+      if (step.done || job.cancelled) break;
+      parts.push(step.value);
+    }
+  } finally {
+    job.reader = null;
+    if (job.cancelled) reader.cancel().catch(() => {});
+  }
+  return job.cancelled ? null : new Blob(parts, { type: "application/gzip" });
+}
+
+/* What to send: { blob, packed }. The file as it is whenever packing cannot
+   run or would not clearly pay; packed only when it saves at least a tenth.
+
+   Every "no" is cheap. A zip is not even looked at — a CD export is
+   compressed already. Otherwise only the first megabyte is packed as a probe,
+   and a file whose start does not shrink is sent at once instead of spending
+   seconds packing all of it to save nothing. Only then is the whole file
+   packed, and the result is checked against the same rule. */
+async function packForUpload(file, sha, job, onProgress) {
+  const asIs = { blob: file, packed: false };
+  if (/\.zip$/i.test(file.name || "")) return asIs;
+  // No fingerprint, no packing. Without it the server could check only
+  // gzip's own CRC32 and the length, which catch a damaged transfer but not
+  // a wrong file; sending the file as it is keeps exactly today's guarantee
+  // instead. This is the plain-http case, where crypto.subtle is missing.
+  if (!sha || !canPack()) return asIs;
+  // A packed upload from this page has already been refused as damaged. The
+  // file as it is is the upload that always worked, so that is what is sent
+  // until the page is reloaded.
+  if (S.sendUnpacked) return asIs;
+  // Page and server on the same computer: nothing travels over a link, so
+  // packing would only be waited for. The fingerprint and the check before
+  // sending have already run, exactly as for any other upload.
+  if (servedFromThisMachine()) return asIs;
+  try {
+    if (onProgress) onProgress(0, file.size);
+    const probe = file.slice(0, PACK_PROBE_BYTES);
+    const probePacked = await gzipBlob(probe, job, null);
+    if (!probePacked || probePacked.size > PACK_WORTH_IT * probe.size)
+      return asIs;
+    // A file no bigger than the probe has already been packed whole.
+    const whole = file.size <= PACK_PROBE_BYTES ? probePacked
+                : await gzipBlob(file, job, onProgress);
+    if (!whole || whole.size > PACK_WORTH_IT * file.size) return asIs;
+    return { blob: whole, packed: true };
+  } catch (e) {
+    // Out of memory, or a browser that has the pieces but not the whole:
+    // packing is a saving, never a reason not to upload.
+    return asIs;
   }
 }
 
@@ -2615,9 +2804,17 @@ async function uploadFile(file, opts = {}) {
     k => sessionStorage.setItem("lbl_" + k, labels[k]));
   $("#btn-upload").disabled = true;
 
-  if (!opts.allowDuplicate) {
+  // Hashed once and used twice: the pre-check below asks the server about
+  // this digest, and a packed upload carries it so the server can prove it
+  // unpacked exactly this file. A zip is neither pre-checked nor packed, so
+  // it is not read for nothing.
+  if (!opts.allowDuplicate)
     status("Checking whether this scan is already here…");
-    const existing = await findExistingCopy(file);
+  const sha = /\.zip$/i.test(file.name || "") ? null
+            : opts.sha !== undefined ? opts.sha : await fileSha256(file);
+
+  if (!opts.allowDuplicate) {
+    const existing = await findExistingCopy(file, sha);
     if (existing) {
       const choice = await duplicateDialog(existing, file);
       if (choice === "open") {
@@ -2634,17 +2831,47 @@ async function uploadFile(file, opts = {}) {
     }
   }
 
-  const fd = new FormData();
-  fd.append("file", file);
-  Object.entries(labels).forEach(([k, v]) => fd.append(k, v));
-  if (opts.allowDuplicate) fd.append("allow_duplicate", "true");
-
-  const startedAt = Date.now();
-  showUploadProgress(0, file.size, startedAt);
+  // The packing job is where Cancel reaches the preparing phase: a flag it
+  // sets, and the reader it can stop.
+  const job = { cancelled: false, reader: null };
+  S.packJob = job;
   try {
+    const sending = await packForUpload(
+      file, sha, job, (done, total) => showPreparing(done, total));
+    if (job.cancelled) {
+      // Called off while packing, so nothing has been sent. Thrown in the
+      // same shape as an aborted transfer, so the one branch below answers
+      // both the same way.
+      const err = new Error("Upload cancelled.");
+      err.status = 0;
+      err.cancelled = true;
+      throw err;
+    }
+    S.packJob = null;
+
+    const fd = new FormData();
+    if (sending.packed) {
+      // The part is named for what it is. The original's name, size and
+      // fingerprint travel beside it; the server unpacks, checks all three
+      // and stores the original.
+      fd.append("file", sending.blob, file.name + ".gz");
+      fd.append("encoding", "gzip");
+      fd.append("original_sha256", sha);
+      fd.append("original_size", String(file.size));
+      fd.append("original_name", file.name);
+    } else {
+      fd.append("file", file);
+    }
+    Object.entries(labels).forEach(([k, v]) => fd.append(k, v));
+    if (opts.allowDuplicate) fd.append("allow_duplicate", "true");
+
+    const packedFrom = sending.packed ? file.size : 0;
+    const startedAt = Date.now();
+    showUploadProgress(0, sending.blob.size, startedAt, packedFrom);
     const r = await uploadWithProgress(
       "api/analyses", fd,
-      (loaded, total) => showUploadProgress(loaded, total, startedAt));
+      (loaded, total) => showUploadProgress(loaded, total, startedAt,
+                                            packedFrom));
     hideUploadProgress();
     const ok = r.analyses.filter(a => a.registered);
     if (!r.analyses.length) throw new Error("no images found");
@@ -2688,10 +2915,26 @@ async function uploadFile(file, opts = {}) {
         return;
       }
       if (choice === "again") {
-        await uploadFile(file, { allowDuplicate: true });
+        await uploadFile(file, { allowDuplicate: true, sha });
         return;
       }
       status("Upload cancelled — the scan is already here.");
+      if ($("#btn-upload")) $("#btn-upload").disabled = false;
+      return;
+    }
+    // The packed file did not unpack to the file chosen. The link is the
+    // likely cause, but the server cannot tell that from this browser's own
+    // packing going wrong — and packing that goes wrong once goes wrong the
+    // same way on every attempt, which would leave the operator unable to
+    // upload from a browser that uploaded fine before packing existed. So the
+    // next attempt, and every one after it until the page is reloaded, sends
+    // the file as it is: slower, never refused for this reason again. Not
+    // retried automatically — on a slow link sending the whole file again is
+    // the operator's call, and the message already asks for it.
+    if (e.damagedTransfer) {
+      S.sendUnpacked = true;
+      status("Upload failed: " + e.message + " The next try sends it "
+             + "unpacked, which takes longer.", true);
       if ($("#btn-upload")) $("#btn-upload").disabled = false;
       return;
     }
@@ -2782,7 +3025,12 @@ function stageA(c) {
     phantom edge; rotation/mirroring must be plausible. If detection failed, use
     manual corners.</p>
     <button class="primary" id="btn-confirm-a">Confirm registration ✓</button>
-    <button class="secondary" id="btn-manual-corners">Manual corners…</button>`;
+    <button class="secondary" id="btn-manual-corners">Manual corners…</button>
+    <button class="secondary" id="btn-back-u">Back to upload</button>`;
+  // Every other step has a way back to the one before it; this is the first
+  // step's, and the step before it is the upload page. The scan stays on the
+  // server and in the unfinished list there, so this costs nothing.
+  $("#btn-back-u").addEventListener("click", goToUpload);
   $("#btn-confirm-a").addEventListener("click", async () => {
     status("Detecting patterns…");
     try {
@@ -3234,30 +3482,58 @@ async function overrideLayoutSave() {
 async function loadBlockView(force = false) {
   const panel = $("#lc-view-panel");
   if (!panel || !S.aid) return;
+  const aid = S.aid;
   const seq = (S.history && S.history.seq) || 0;
-  if (!force && S.blockView && S.blockView.aid === S.aid
+  if (!force && S.blockView && S.blockView.aid === aid
       && S.blockView.seq === seq) {
     panel.classList.remove("hidden");
     drawBlockView();
     renderInsertOrientation(S.blockView.meta.orientation);
     return;
   }
+  // Only the newest load may draw. An older one answering late would put the
+  // previous placement back on screen — or, with another analysis opened in
+  // the meantime, this one's close-up under that one's name, where the next
+  // visit to step C would find it and show it as current.
+  const gen = ++S.blockViewGen;
+  const current = () => gen === S.blockViewGen && S.aid === aid;
   try {
-    const meta = await api(`api/analyses/${S.aid}/lowcontrast_view`);
+    const meta = await api(`api/analyses/${aid}/lowcontrast_view`);
+    if (!current()) return;
     const img = new Image();
     // Named by what the picture shows — pixels, registration, block placement
     // — so nudging the block fetches a new one, leaving it alone never
     // re-fetches it, and undoing back to an earlier placement finds it kept.
-    img.src = `api/analyses/${S.aid}/lowcontrast_view.png?key=${meta.key}`;
+    img.src = `api/analyses/${aid}/lowcontrast_view.png?key=${meta.key}`;
     await new Promise((ok, fail) => { img.onload = ok; img.onerror = fail; });
-    S.blockView = { aid: S.aid, seq, meta, img, canvas: null };
+    if (!current()) return;
+    S.blockView = { aid, seq, meta, img, canvas: null };
     panel.classList.remove("hidden");
     drawBlockView();
     renderBlockLegend(meta);
     renderInsertOrientation(meta.orientation);
   } catch (e) {
     // A close-up that cannot be drawn must never block the step it sits in.
-    panel.classList.add("hidden");
+    if (current()) panel.classList.add("hidden");
+  }
+}
+
+/* A fresh close-up after the block moved, one load at a time. Each load is
+   two requests and a render on the server, and a nudge takes a fraction of
+   that, so five quick nudges used to start five loads and draw four
+   placements that were already gone. A nudge during a load now only notes
+   that one more is wanted, made when the load in flight ends — and that one
+   shows wherever the block is by then. */
+async function refreshBlockView() {
+  if (S.blockViewBusy) { S.blockViewAgain = true; return; }
+  S.blockViewBusy = true;
+  try {
+    do {
+      S.blockViewAgain = false;
+      await loadBlockView(true);
+    } while (S.blockViewAgain);
+  } finally {
+    S.blockViewBusy = false;
   }
 }
 
@@ -4183,11 +4459,8 @@ function stageF(c) {
     }));
   $("#btn-verify").addEventListener("click", () => verifyAnalysis(S.aid));
   $("#btn-rerun").addEventListener("click", () => rerunAnalysis(S.aid));
-  $("#btn-new").addEventListener("click", () => {
-    clearAnalysisState();
-    setStage("U");
-    draw();
-  });
+  // One road to the upload step, so both entrances behave the same.
+  $("#btn-new").addEventListener("click", goToUpload);
 }
 
 /* ================= mini charts ================= */
@@ -4291,8 +4564,44 @@ function showTab(which) {
   if (which === "history") loadHistory();
   if (which === "analyze") resizeCanvas();
 }
+/* The first entry of the step bar is a way back, not just a label.
+
+   Once an analysis was open there was no route to the upload step except
+   reloading the page: the tabs only switch between the analysis and History,
+   and "New analysis" appears on the last step alone. An operator who decided
+   half way through to work on a different scan — or to upload another file —
+   had nowhere to click, and said so.
+
+   Leaving is not abandoning. The scan is on the server; it stays in History
+   and in the unfinished list on the very page this opens, so it can be picked
+   up again by this operator or a colleague. Only the first entry is
+   clickable: the later steps are a record of where the work has got to, and
+   step E starts a measurement the moment it is drawn. */
+function goToUpload() {
+  // clearAnalysisState also drops this browser's "continue" note, because it
+  // is the same call used when a record is deleted. Here the record is very
+  // much alive, so an unfinished one keeps its note and stays offered.
+  const note = rememberedAnalysis();
+  const unfinished = !!(S.record && !S.record.results
+                        && !((S.record.validation_status || "").trim()));
+  const keep = (note && S.aid && note.aid === S.aid && unfinished) ? note : null;
+  clearAnalysisState();
+  if (keep) {
+    try { localStorage.setItem(OPEN_KEY, JSON.stringify(keep)); }
+    catch (e) { /* private mode: the unfinished list still has it */ }
+  }
+  showTab("analyze");
+  setStage("U");
+  draw();
+}
+
 $("#tab-analyze").addEventListener("click", () => showTab("analyze"));
 $("#tab-history").addEventListener("click", () => showTab("history"));
+$("#nav-upload").addEventListener("click", goToUpload);
+$("#nav-upload").addEventListener("keydown", (e) => {
+  // It answers the keyboard like the button it says it is.
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goToUpload(); }
+});
 
 /* current filter + selection state */
 const H = { filter: { site: "", phantom: "", signature: "", validation: "" },
@@ -4921,6 +5230,8 @@ async function initAuth() {
   try {
     const a = await api("api/auth");
     if (a.analysis_timeout_s) S.analysisTimeoutS = a.analysis_timeout_s;
+    // Only an explicit "no sign-in" counts; anything else keeps packing.
+    S.signInOff = a.auth_enabled === false;
     if (a.auth_enabled) {
       if (!a.authenticated) { window.location = "login"; return; }
       const btn = el("button", { id: "logout-btn", class: "tab" },

@@ -17,6 +17,17 @@ sys.path.insert(0, ROOT)
 # not harmless on a server, where the checkout holds the live database. Pointing
 # the data root at a throwaway directory for the whole session closes that off
 # no matter which test imports the app first.
+#: What the checkout already held before any test ran. Running the app from the
+#: checkout — the ordinary way to try it out locally — puts a database, uploads
+#: and logs there, legitimately. The guard in test_runtime_files has to tell
+#: "the tests created it" from "it was already there", or trying the app once
+#: makes the whole suite fail. Taken here, before anything imports the app.
+CHECKOUT_RUNTIME_AT_START = {
+    rel: os.path.exists(os.path.join(ROOT, rel))
+    for rel in (os.path.join("data", "phantom_qa.sqlite3"),
+                os.path.join("data", "uploads"), "logs")
+}
+
 _DATA_ROOT = tempfile.mkdtemp(prefix="phantomqa-tests-")
 os.environ["PHANTOMQA_DATA_ROOT"] = _DATA_ROOT
 # The log directory is opened at import time too, so a bare `import

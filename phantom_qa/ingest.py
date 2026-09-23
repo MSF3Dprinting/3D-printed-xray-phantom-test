@@ -12,7 +12,9 @@ import io
 import logging
 import math
 import os
+import time
 import zipfile
+import zlib
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -316,6 +318,138 @@ def load_any_bytes(data: bytes, source_name: str) -> list[ScanData]:
         return [load_dicom_bytes(data, source_name)]
     except Exception:
         return [load_image_bytes(data, source_name)]
+
+
+# ------------------------------------------------------------- packed uploads
+#
+# The browser may pack a scan with gzip before sending it, because most of an
+# upload's time on a field link is spent on bytes a detector left uncompressed:
+# the Fuji's 7.5 MB travel as 2.9 MB, the Carestream's 15 MB as about 7. What
+# is stored, fingerprinted and measured is still the ORIGINAL file, so the
+# packing has to be undone here exactly — and proven to have been undone
+# exactly — before anything else sees the bytes.
+
+class TransferRefused(ValueError):
+    """A packed upload that must not be stored. ``status`` is the HTTP answer.
+
+    The message is the reason, for the audit log; what the operator reads is
+    decided by the endpoint, because "incorrect data check" means nothing to
+    someone standing at an X-ray unit."""
+    status = 400
+
+
+class DamagedTransfer(TransferRefused):
+    """The packed file does not unpack to the file the browser described."""
+
+
+class OversizedTransfer(TransferRefused):
+    """Unpacking would pass the upload cap, or would take longer than any scan.
+
+    A decompression bomb is a few kilobytes that inflate to gigabytes. The
+    body-size cap cannot see one, because the body really is small; only the
+    unpacked output can be measured, so that is what is capped."""
+    status = 413
+
+
+#: Input is fed and output taken in bounded steps, so a bomb is caught after
+#: at most one step past the limit instead of after it has filled the memory.
+_UNPACK_IN_CHUNK = 256 * 1024
+_UNPACK_OUT_CHUNK = 1024 * 1024
+
+#: A backstop, not a working limit. Unpacking and fingerprinting a 15 MB
+#: Carestream scan takes about a tenth of a second, and deflate's work grows
+#: only with what goes in and what comes out — both of which are capped — so a
+#: stream still going after this long is not a scan, or the worker is so
+#: overloaded that failing fast is kinder than holding the request.
+UNPACK_TIME_BUDGET_S = 30.0
+
+
+def unpack_gzip(packed: bytes, *, original_size: int, original_sha256: str,
+                max_bytes: int,
+                time_budget_s: float = UNPACK_TIME_BUDGET_S) -> bytes:
+    """The original file back from a gzip-packed upload, proven identical.
+
+    Four independent agreements are required, and any one failing refuses the
+    whole upload:
+
+    * gzip's own CRC32 and length trailer, which zlib checks when it reaches
+      the end of the stream — so a stream that never reaches its end
+      (truncated) is refused too, not accepted as a shorter file;
+    * exactly one gzip member and nothing after it. Python's gzip module would
+      happily concatenate a second member, which would turn "the file" into
+      "the file plus whatever someone appended";
+    * the unpacked length equals the size the browser measured on the
+      original;
+    * the SHA-256 of the unpacked bytes equals the fingerprint the browser
+      computed on the original before packing it.
+
+    The last one is what makes the rest trustworthy end to end: it was taken
+    from the file on the operator's disk, before any of our code touched it,
+    so an agreement means the server holds exactly what the operator chose.
+
+    The output is limited to the smaller of the declared size and the upload
+    cap while it is being produced, never after, so a bomb costs at most one
+    step of work past that limit. A declared size above the cap is refused
+    before any work at all.
+    """
+    if original_size < 0:
+        raise DamagedTransfer(f"declared size {original_size} is not a size")
+    if original_size > max_bytes:
+        raise OversizedTransfer(
+            f"declared original size {original_size} exceeds the cap "
+            f"{max_bytes}")
+    expected = str(original_sha256 or "").strip().lower()
+    started = time.monotonic()
+    # 16 + MAX_WBITS: a gzip wrapper and nothing else. 32 + MAX_WBITS would
+    # also accept a bare zlib stream, and a sender that means something other
+    # than what it says should be refused, not accommodated.
+    d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    view = memoryview(packed)
+    pos, total = 0, 0
+    chunks, digest = [], hashlib.sha256()
+    while not d.eof:
+        if d.unconsumed_tail:
+            src = d.unconsumed_tail
+        elif pos < len(view):
+            src = view[pos:pos + _UNPACK_IN_CHUNK]
+            pos += len(src)
+        else:
+            # Everything has been fed; zlib may still hold output it had no
+            # room to return, so ask once more with nothing new.
+            src = b""
+        try:
+            out = d.decompress(src, _UNPACK_OUT_CHUNK)
+        except zlib.error as e:
+            # Covers a damaged stream and a CRC32 or length trailer that does
+            # not match what was unpacked.
+            raise DamagedTransfer(f"not a valid gzip stream: {e}") from None
+        if not out and not src:
+            break                      # nothing left to give, and no end seen
+        total += len(out)
+        if total > max_bytes:
+            raise OversizedTransfer(
+                f"unpacks to more than the cap of {max_bytes} bytes")
+        if total > original_size:
+            raise DamagedTransfer(
+                f"unpacks to more than the declared {original_size} bytes")
+        digest.update(out)
+        chunks.append(out)
+        if time.monotonic() - started > time_budget_s:
+            raise OversizedTransfer(
+                f"still unpacking after {time_budget_s:.0f} s")
+    if not d.eof:
+        raise DamagedTransfer("the gzip stream ends before its trailer "
+                              "(truncated)")
+    if d.unused_data or d.unconsumed_tail or pos < len(view):
+        raise DamagedTransfer("data after the end of the gzip stream "
+                              "(trailing bytes or a second member)")
+    if total != original_size:
+        raise DamagedTransfer(
+            f"unpacked {total} bytes, the original had {original_size}")
+    if digest.hexdigest() != expected:
+        raise DamagedTransfer("the unpacked file's SHA-256 does not match the "
+                              "original's")
+    return b"".join(chunks)
 
 
 def load_path(path: str) -> list[ScanData]:

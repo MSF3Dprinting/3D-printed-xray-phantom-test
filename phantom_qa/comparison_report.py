@@ -16,9 +16,13 @@ side, so the images themselves can be compared and not only their numbers.
 from __future__ import annotations
 
 import base64
+import contextvars
 import hashlib
 import html
 import io
+import re
+import secrets
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
@@ -72,17 +76,80 @@ def _b64(fig) -> str:
     the bytes — which matters more here, where the charts repeat for every
     test and the page now also carries the pictures. Max-coverage keeps the
     colours the chart actually uses (the faster octree greyed the white page).
+
+    The chart is drawn here, on the calling thread: matplotlib is not safe to
+    use from several threads. While build_comparison_report is running, the
+    palette step is handed to that report's helper threads instead of being
+    waited for, and a placeholder stands in the page until it is done.
     """
     import matplotlib.pyplot as plt
-    from PIL import Image
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=115, bbox_inches="tight")
     plt.close(fig)
-    chart = Image.open(io.BytesIO(buf.getvalue())).convert("RGB")
+    batch = _CHART_BATCH.get()
+    if batch is None:
+        return _palette_b64(buf.getvalue())
+    return batch.submit(buf.getvalue())
+
+
+def _palette_b64(png: bytes) -> str:
+    """The palette step of _b64, on PIL alone, so it may run on any thread."""
+    from PIL import Image
+    chart = Image.open(io.BytesIO(png)).convert("RGB")
     out = io.BytesIO()
     chart.quantize(colors=64, method=Image.Quantize.MAXCOVERAGE).save(
         out, format="png", optimize=True)
     return base64.b64encode(out.getvalue()).decode()
+
+
+#: Helper threads per report for the palette step. It takes about 25 ms a
+#: chart and PIL does most of it without holding the interpreter lock, so it
+#: overlaps the drawing of the next chart: 5.2 s became 4.6 s for two
+#: reference scans. The drawing is the larger part and cannot be spread, so
+#: two threads already keep up with it.
+_CHART_THREADS = 2
+
+#: The report being built in this context, if any — set only for the duration
+#: of build_comparison_report, so a chart drawn anywhere else is encoded where
+#: it stands, exactly as before.
+_CHART_BATCH: contextvars.ContextVar = contextvars.ContextVar(
+    "comparison_chart_batch", default=None)
+
+
+class _ChartBatch:
+    """The charts of one report, palette-encoded while the next is drawn.
+
+    Each chart takes a placeholder in the page, numbered in the order the
+    charts were drawn, and the placeholders are replaced by the finished
+    pictures once the page is composed. The placeholder carries a random
+    string drawn afresh for every report, so nothing written on the page — a
+    site or phantom label, anything an operator typed — can pass for one: it
+    would have to guess a string that did not exist when it was written."""
+
+    def __init__(self, pool: ThreadPoolExecutor):
+        self._pool = pool
+        self._jobs: list = []
+        self._nonce = secrets.token_hex(8)
+        self._placeholder = re.compile(rf"@@chart-{self._nonce}-(\d+)@@")
+
+    def submit(self, png: bytes) -> str:
+        self._jobs.append(self._pool.submit(_palette_b64, png))
+        return f"@@chart-{self._nonce}-{len(self._jobs) - 1}@@"
+
+    def raise_first_failure(self) -> None:
+        """Wait for every chart, and fail as encoding them in turn would have.
+
+        In turn, the first chart that failed would have stopped the report
+        right there, so its error — not a later one, and not whatever the
+        rest of the page ran into after it — is the one to raise."""
+        for job in self._jobs:
+            failure = job.exception()
+            if failure is not None:
+                raise failure
+
+    def fill(self, page: str) -> str:
+        return self._placeholder.sub(
+            lambda m: self._jobs[int(m.group(1))].result(), page)
 
 
 def _img(b64, cls="") -> str:
@@ -957,7 +1024,39 @@ def build_comparison_report(records: list[dict], title_suffix: str = "",
     ``pictures`` maps an analysis id to its pictures from
     ``thumbnails.pictures_for``. Given, the page leads with a table of them;
     an analysis missing from it gets labelled empty cells. Left out, the page
-    is charts only, as it was before the pictures existed."""
+    is charts only, as it was before the pictures existed.
+
+    The charts are drawn one after another on this thread while their palette
+    step runs on helper threads of this report's own (see _b64). The page is
+    byte for byte the one drawing and encoding each chart in turn gives, and
+    a chart that fails fails the report with the same error; the helper
+    threads end with the report, however it ends."""
+    with ThreadPoolExecutor(max_workers=_CHART_THREADS,
+                            thread_name_prefix="comparison-chart") as pool:
+        batch = _ChartBatch(pool)
+        active = _CHART_BATCH.set(batch)
+        composing = None
+        try:
+            page = _compose_comparison_report(records, title_suffix, filters,
+                                              pictures)
+        except Exception as e:
+            composing = e
+        finally:
+            _CHART_BATCH.reset(active)
+        # A failed chart first, and outside any handler, so it surfaces
+        # exactly as it would have from the chart itself: in turn it stopped
+        # the page before anything drawn after it could fail.
+        batch.raise_first_failure()
+        if composing is not None:
+            raise composing
+        return batch.fill(page)
+
+
+def _compose_comparison_report(records: list[dict], title_suffix: str = "",
+                               filters: dict | None = None,
+                               pictures: dict | None = None) -> str:
+    """The page itself; each chart in it is encoded in turn unless
+    build_comparison_report has a batch running for it."""
     ordered, keys, maps = _collect(records)
     if not ordered:
         return ("<!doctype html><html><body style='font-family:sans-serif;"

@@ -488,3 +488,24 @@ button.danger:disabled { opacity: 0.45; cursor: default; }
   #upload-bar { transition: none; }
   #upload-bar.working { animation: none; }
 }
+
+/* The step bar's Upload entry is a control: an operator who changes their mind
+   half way through an analysis needs a way back that is not a page reload. The
+   later steps stay plain text — they record where the work has got to.
+
+   It has to LOOK different from them without being pressed or pointed at: the
+   first version only changed on hover, and an operator reading the bar had no
+   way to know the entry could be clicked at all. So it carries the app's link
+   colour and a dashed outline, against plain muted text and no border on the
+   steps, plus a back arrow in the label. */
+#stage-nav li.nav-go {
+  cursor: pointer; color: var(--accent);
+  border: 1px dashed var(--accent);
+}
+#stage-nav li.nav-go:hover,
+#stage-nav li.nav-go:focus-visible {
+  background: var(--panel2); color: var(--text); border-style: solid;
+  outline: none;
+}
+/* Standing on the upload step, it is the current step like any other. */
+#stage-nav li.nav-go.active { border-style: solid; color: var(--text); }

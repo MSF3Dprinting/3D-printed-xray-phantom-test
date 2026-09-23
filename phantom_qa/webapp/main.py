@@ -638,21 +638,150 @@ def upload_check(body: UploadCheckBody, request: Request):
     return pipeline.to_jsonable({"duplicates": out})
 
 
+#: How an upload may arrive: the file as it is (empty, or "identity"), or
+#: packed with gzip by the browser. Anything else is refused rather than
+#: guessed at — storing bytes the server did not know how to read back would
+#: store something other than the scan, under the scan's name.
+_UPLOAD_ENCODINGS = ("", "identity", "gzip")
+
+#: What the operator reads when a packed upload does not unpack to the file
+#: they chose. Plain on purpose: the cause is the link or the machine, the
+#: remedy is the same either way, and the reason in detail is in the audit log.
+DAMAGED_UPLOAD_MESSAGE = ("The file was damaged on the way — nothing was "
+                          "stored. Please send it again.")
+
+_HEX = frozenset("0123456789abcdef")
+
+
+class DamagedUpload(Exception):
+    """A packed upload that did not unpack to the file the browser described.
+
+    Its own exception rather than a plain 400, for the same reason as
+    QualityRefusal: the page has to tell this refusal from every other one
+    without parsing an English sentence. The server cannot tell damage on the
+    link from the browser's own packing going wrong, and the second would go
+    wrong the same way on every attempt — so on this answer, and only this
+    one, the page stops packing and sends the file as it is."""
+
+
+@app.exception_handler(DamagedUpload)
+async def _damaged_upload(request: Request, exc: DamagedUpload):
+    return JSONResponse(status_code=400, content={
+        "detail": DAMAGED_UPLOAD_MESSAGE,
+        "damaged_transfer": True,
+    })
+
+
+def _is_byte_count(text: str) -> bool:
+    """Whether a form field holds a size the way the page writes one.
+
+    ASCII digits, and not too many of them. str.isdigit() alone also passes
+    characters such as "²" that int() cannot read, and digit strings past
+    int()'s 4300-digit limit; either would escape as a 500 with no audit line,
+    where a malformed size deserves the same audited refusal as a missing one.
+    Fifteen digits is a petabyte, far past any upload cap, so nothing a browser
+    actually measured is turned away here."""
+    return text.isascii() and text.isdigit() and len(text) <= 15
+
+
+async def _unpack_upload(received: bytes, *, user: str, client: str,
+                         filename: str, original_sha256: str,
+                         original_size: str) -> bytes:
+    """The original file from a gzip-packed upload, or an HTTP refusal.
+
+    A packed upload must say what it packs: the browser's SHA-256 of the
+    original and its size. Without the fingerprint the server could check
+    only gzip's own CRC32 and the length — which catch a damaged transfer but
+    not a wrong file — and the page is written never to pack without one, so
+    a packed body arriving without it did not come from the page and is
+    refused rather than half-verified."""
+    sha = str(original_sha256 or "").strip().lower()
+    size_text = str(original_size or "").strip()
+    trail = {"filename": filename, "encoding": "gzip",
+             "sent_bytes": len(received)}
+    if len(sha) != 64 or not set(sha) <= _HEX or not _is_byte_count(size_text):
+        audit("upload", user=user, client=client, outcome="rejected",
+              error="packed upload without the original's fingerprint "
+                    "and size", **trail)
+        raise HTTPException(
+            400, "A packed upload must carry the SHA-256 and the size of "
+                 "the original file.")
+    size = int(size_text)
+    trail.update(original_bytes=size, original_sha256=sha)
+    cap = cfg.max_upload_mb * 1024 * 1024
+    try:
+        # Unpacking and fingerprinting are CPU work like the decode below,
+        # and this endpoint is async; same reasoning, same threadpool.
+        return await run_in_threadpool(
+            ingest.unpack_gzip, received, original_size=size,
+            original_sha256=sha, max_bytes=cap)
+    except ingest.TransferRefused as e:
+        damaged = isinstance(e, ingest.DamagedTransfer)
+        log.warning("packed upload refused (%s) name=%r sent=%d declared=%d "
+                    "user=%s", e, filename, len(received), size, user)
+        audit("upload", user=user, client=client,
+              outcome="damaged" if damaged else "rejected",
+              error=str(e), **trail)
+        if damaged:
+            raise DamagedUpload() from None
+        raise HTTPException(
+            e.status, f"Upload exceeds {cfg.max_upload_mb} MB once unpacked "
+                      f"— nothing was stored.")
+
+
 @app.post("/api/analyses")
 async def upload(request: Request, file: UploadFile = File(...),
                  site: str = Form(""), phantom: str = Form(""),
                  operator: str = Form(""), notes: str = Form(""),
-                 allow_duplicate: bool = Form(False)):
+                 allow_duplicate: bool = Form(False),
+                 encoding: str = Form(""), original_sha256: str = Form(""),
+                 original_size: str = Form(""),
+                 original_name: str = Form("")):
     user, client = _current_user(request), _client_key(request)
-    data = await file.read()
+    received = await file.read()
     # The middleware caps the DECLARED size, but a chunked upload carries no
     # Content-Length and a hostile client can lie in the header. Measuring the
     # bytes actually received closes both holes; starlette has already spooled
     # them to disk by now, so this costs nothing extra in memory.
-    if len(data) > cfg.max_upload_mb * 1024 * 1024:
+    if len(received) > cfg.max_upload_mb * 1024 * 1024:
         audit("upload", user=user, client=client, outcome="rejected",
               filename=file.filename, error="body larger than declared cap")
         raise HTTPException(413, f"Upload exceeds {cfg.max_upload_mb} MB")
+
+    # A packed upload is unpacked and proven identical to the original before
+    # anything else sees it. From here on `data` is the original file whichever
+    # way it travelled, so the stored bytes, the recorded sha256, the
+    # duplicate check and the analysis are all exactly what they would have
+    # been had it been sent as it is — and the same file sent both ways is
+    # recognised as the same file.
+    enc = (encoding or "").strip().lower()
+    if enc not in _UPLOAD_ENCODINGS:
+        audit("upload", user=user, client=client, outcome="rejected",
+              filename=file.filename, encoding=str(encoding)[:40],
+              error="unknown encoding")
+        raise HTTPException(
+            400, f"Unknown upload encoding {str(encoding)[:40]!r} — send the "
+                 f"file as it is, or packed with gzip.")
+    if enc == "gzip":
+        # The name decides how the bytes are read (a .png is an image, a
+        # .zip a CD export), so it has to be the original's, not the name of
+        # the packed part.
+        packed_name = file.filename or "upload"
+        name = (original_name or "").strip() or (
+            packed_name[:-3] if packed_name.lower().endswith(".gz")
+            else packed_name)
+        data = await _unpack_upload(
+            received, user=user, client=client, filename=name,
+            original_sha256=original_sha256, original_size=original_size)
+    else:
+        enc, name, data = "identity", file.filename, received
+    # What the link actually carried, next to the file it carried: the audit
+    # line is where a slow upload is explained after the fact. Only its size
+    # is kept — the decode and registration below take seconds, and a worker
+    # has no reason to hold the packed copy beside the original meanwhile.
+    sent = len(received)
+    del received
+    transfer = {"encoding": enc, "sent_bytes": sent}
     try:
         # Decoding a DICOM is seconds of CPU. This is the one endpoint declared
         # `async` — because the upload body has to be awaited — so doing that
@@ -661,12 +790,12 @@ async def upload(request: Request, file: UploadFile = File(...),
         # The threadpool is where every other (synchronous) endpoint already
         # runs, so this only puts the upload back on an equal footing.
         scans = await run_in_threadpool(
-            ingest.load_any_bytes, data, file.filename or "upload")
+            ingest.load_any_bytes, data, name or "upload")
     except Exception as e:
         log.warning("upload rejected (%s) name=%r user=%s",
-                    e, file.filename, user)
+                    e, name, user)
         audit("upload", user=user, client=client, outcome="rejected",
-              filename=file.filename, error=str(e))
+              filename=name, error=str(e), **transfer)
         raise HTTPException(400, f"Could not read file: {e}")
     labels = {"site": site, "phantom": phantom,
               "operator": operator, "notes": notes}
@@ -680,7 +809,8 @@ async def upload(request: Request, file: UploadFile = File(...),
             dupes.extend(store.find_by_sha256(scan.sha256))
         if dupes:
             audit("upload", user=user, client=client, outcome="duplicate",
-                  filename=file.filename, existing=[d["id"] for d in dupes])
+                  filename=name, existing=[d["id"] for d in dupes],
+                  **transfer)
             log.info("upload rejected as duplicate of %s",
                      [d["id"] for d in dupes])
             return JSONResponse(status_code=409, content=pipeline.to_jsonable({
@@ -710,11 +840,12 @@ async def upload(request: Request, file: UploadFile = File(...),
                      **{k: v for k, v in labels.items() if v}})
         audit("upload", user=user, client=client, analysis=aid,
               filename=scan.source_name, kind=scan.kind,
-              sha256=scan.sha256, bytes=len(data),
+              sha256=scan.sha256, bytes=len(data), **transfer,
               **{k: v for k, v in labels.items() if v})
-        log.info("uploaded analysis=%s source=%r site=%r phantom=%r sha=%s",
+        log.info("uploaded analysis=%s source=%r site=%r phantom=%r sha=%s "
+                 "sent=%d of %d bytes (%s)",
                  aid, scan.source_name, labels["site"], labels["phantom"],
-                 scan.sha256[:16])
+                 scan.sha256[:16], sent, len(data), enc)
         # Different file, same exposure: re-exported from the archive with the
         # header rewritten. The hash cannot see it, and the second record would
         # count again in every trend. Said, not refused — and only once the
@@ -779,6 +910,10 @@ def list_analyses(site: str = "", phantom: str = "", signature: str = "",
     # history — a listing is one of the few things an operator on a slow link
     # waits for repeatedly.
     limit = max(0, min(int(limit or 0), 200))
+    # History prints its verdict with the same note the results page and the
+    # report print ("pass — X-ray field alignment not checked"), built from the
+    # per-test statuses alone so the results themselves never travel here.
+    # They are read with the listing, in the same pass over the table.
     rows = store.list_all(site=site or None,
                           phantom=phantom or None,
                           signature=signature or None,
@@ -786,14 +921,12 @@ def list_analyses(site: str = "", phantom: str = "", signature: str = "",
                           completed_only=completed_only,
                           unfinished_only=unfinished_only,
                           limit=limit or None,
-                          order_by=order)
-    # History prints its verdict with the same note the results page and the
-    # report print ("pass — X-ray field alignment not checked"), built from the
-    # per-test statuses alone so the results themselves never travel here.
-    fields = [(test, key) for test, key, _ in pipeline.STATUS_FIELDS]
-    statuses = store.result_statuses([a["id"] for a in rows], fields)
+                          order_by=order,
+                          status_fields=[(test, key) for test, key, _
+                                         in pipeline.STATUS_FIELDS])
     for a in rows:
-        a["verdict_notes"] = pipeline.verdict_notes(statuses.get(a["id"]))
+        # The statuses only make the note; the note is what travels.
+        a["verdict_notes"] = pipeline.verdict_notes(a.pop("statuses"))
         # History's "re-run" asks for the administrator password exactly when
         # step F would. Both read the one definition of protection, so a row
         # and the opened record cannot disagree about the same analysis.
@@ -1067,6 +1200,28 @@ def _block_view_key(rec: dict, centre, angle: float) -> str:
     return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
 
 
+def _keep_block_png(aid: str, key: str, view: dict) -> bytes:
+    """The close-up as PNG, kept in this worker under the key it shows.
+
+    The one place it is encoded, whichever request gets there first. Keyed by
+    what the picture shows, so whatever is kept under a key is by
+    construction that key's picture and never has to be checked again."""
+    cache_key = (aid, "lcview", key)
+    # Held here rather than read back from the cache: another request's
+    # eviction may drop the entry between storing it and answering.
+    png = _img_cache.get(cache_key)
+    if png is None:
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.fromarray((view["image"] * 255).astype(np.uint8)).save(
+            buf, format="png")
+        png = buf.getvalue()
+        while len(_img_cache) > 24:
+            _img_cache.pop(next(iter(_img_cache)), None)
+        _img_cache[cache_key] = png
+    return png
+
+
 @app.get("/api/analyses/{aid}/lowcontrast_view")
 def lowcontrast_view(aid: str):
     """Where each disc is in the block view, and how plainly it shows.
@@ -1081,12 +1236,20 @@ def lowcontrast_view(aid: str):
     geom, centre, angle = _block_placement(rec)
     ctx = _ctx(aid, rec)
     view = lowcontrast.block_view(ctx, centre, angle)
+    key = _block_view_key(rec, centre, angle)
+    # The page asks for exactly this picture next, by this key. Encoding it
+    # now, from the view just computed, makes that request a lookup: the
+    # close-up used to be computed twice for every placement, once here for
+    # its size and once more for its pixels. Only when this process answers
+    # that request too — always under run_app.py; under gunicorn another
+    # worker may take it and render as before, and this encode is then spent.
+    _keep_block_png(aid, key, view)
     return pipeline.to_jsonable({
         "size_px": view["size_px"],
         "px_per_mm": view["px_per_mm"],
         "flat": view["flat"],
         "seq": rec.get("geometry_seq") or 0,
-        "key": _block_view_key(rec, centre, angle),
+        "key": key,
         "markers": lowcontrast.view_markers(ctx, geom, centre, angle),
         # Read afresh from the rings as they now sit, the same way compute()
         # will read them, so the close-up can show which way round the
@@ -1108,32 +1271,41 @@ def lowcontrast_view_png(aid: str, key: str = "", seq: int = 0):
     whole image to hunt for objects a fraction of a percent in contrast cost a
     transfer every attempt.
 
-    The picture is always rendered from the record as it is now; ``key`` is
-    what the page believes that is. When they agree, the URL names exactly
-    these bytes and the browser may keep them. When they do not — a page
-    asking about a placement that has since moved — the current picture is
-    still sent, but marked not to be kept, so it can never be stored under the
-    name of a placement it does not show. ``seq`` is accepted from pages
-    loaded before this changed and otherwise ignored.
+    ``key`` names the picture the page wants. One this worker already holds
+    under that name is sent straight away, and may be kept: the name is a
+    digest of what the picture shows, so the bytes kept under it are that
+    picture, and reading the whole record again to decide so would only
+    repeat what the name already says. That is the ordinary case when one
+    process answers both requests, because the markers the page just asked
+    for kept it here. Under gunicorn another worker may have answered the
+    markers, and this one then renders the picture below as it always did.
+
+    Otherwise the picture is rendered from the record as it is now. When
+    ``key`` names that, the URL names exactly these bytes and the browser may
+    keep them. When it does not — a page asking about a placement that has
+    since moved — the current picture is still sent, but marked not to be
+    kept, so it can never be stored under the name of a placement it does not
+    show. ``seq`` is accepted from pages loaded before this changed and
+    otherwise ignored.
     """
+    # Before any lookup: a record deleted through another worker must stop
+    # being served from this one's memory, whatever name it is asked by.
     if not store.exists(aid):
         _drop_cached_image(aid)
         raise HTTPException(404, "not found")
+    kept = _img_cache.get((aid, "lcview", key)) if key else None
+    if kept is not None:
+        return Response(kept, media_type="image/png",
+                        headers={"Cache-Control": "private, max-age=86400"})
     rec = store.get(aid)
     _, centre, angle = _block_placement(rec)
     current = _block_view_key(rec, centre, angle)
-    cache_key = (aid, "lcview", current)
-    if cache_key not in _img_cache:
-        from PIL import Image
-        view = lowcontrast.block_view(_ctx(aid, rec), centre, angle)
-        buf = io.BytesIO()
-        Image.fromarray((view["image"] * 255).astype(np.uint8)).save(
-            buf, format="png")
-        while len(_img_cache) > 24:
-            _img_cache.pop(next(iter(_img_cache)), None)
-        _img_cache[cache_key] = buf.getvalue()
+    png = _img_cache.get((aid, "lcview", current))
+    if png is None:
+        png = _keep_block_png(aid, current, lowcontrast.block_view(
+            _ctx(aid, rec), centre, angle))
     keep = "private, max-age=86400" if key == current else "no-store"
-    return Response(_img_cache[cache_key], media_type="image/png",
+    return Response(png, media_type="image/png",
                     headers={"Cache-Control": keep})
 
 

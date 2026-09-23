@@ -413,7 +413,11 @@ _MAY_USE_FIELD_SCANS = {"field_scans.py", "test_unusable_exposures.py",
                         # checks that turning MONOCHROME1 images the right way
                         # up leaves the readable field scans identical to the
                         # last pixel; an equality check, it sets nothing
-                        "test_monochrome1.py"}
+                        "test_monochrome1.py",
+                        # checks that a packed upload of the field Fuji scans
+                        # unpacks byte-identical; an equality check, it sets
+                        # nothing
+                        "test_upload_compression.py"}
 
 
 def test_no_analysis_code_reads_the_field_scans():

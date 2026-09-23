@@ -14,6 +14,7 @@ take anyway. Type the phantom name the same way every time.
 **Upload**
 - [ ] Choose a file: the box shows its size and modified time. Can you tell two `003_0000.dcm` apart?
 - [ ] Upload: the bar shows how much is sent and the time left. Press **Cancel** once — the file should stay selected.
+- [ ] Before sending, the bar briefly says *Preparing the file…*, then *Sending … (…%, packed from … MB)*. For two or three scans, write down the size it sends, the size of the file itself, and how long the whole upload took.
 - [ ] Choose a file that is already uploaded: **This scan is already here** should appear *before* anything is sent, showing both files. Try **Continue this analysis**.
 
 **Step A**

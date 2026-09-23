@@ -1290,7 +1290,39 @@ class Store:
                  signature: str | None = None, validation: str | None = None,
                  completed_only: bool = False, unfinished_only: bool = False,
                  limit: int | None = None,
-                 order_by: str = "acquired") -> list[dict]:
+                 order_by: str = "acquired",
+                 status_fields: list[tuple[str, str]] | None = None
+                 ) -> list[dict]:
+        """The analyses, newest first, without their results.
+
+        ``status_fields`` asks for a few per-test statuses as well, as
+        ``(test, key)`` pairs. History names what its verdict left out ("X-ray
+        field alignment not checked"), and that is written in the per-test
+        statuses inside the results — about 130 kB per analysis, which the
+        listing otherwise never ships. SQLite picks the requested statuses out
+        itself, one parse per row, in the same pass that reads the row: most
+        of the columns listed here are stored after the results, so reaching
+        them already walks through every page the results take, and a second
+        query for the statuses walked every row's results a second time. Each
+        row then carries ``statuses`` — ``{test: {key: status}}``, or None for
+        a row with no results to read them from.
+
+        A results blob that is not valid JSON reads as having no statuses
+        rather than failing the listing, and so does an SQLite built without
+        its JSON functions: the note is a courtesy, History is not.
+
+        With a ``limit`` SQLite may parse more rows than it returns, because
+        it sorts before cutting. The only limited listing the page asks for is
+        of unfinished analyses, which have no results to parse."""
+        statuses_sql, args = "", []
+        if status_fields:
+            # The paths go in as parameters, never as SQL text; they come
+            # first in args because the column list comes before the filters.
+            statuses_sql = (", json_extract(CASE WHEN json_valid(results_json)"
+                            " THEN results_json END, "
+                            + ", ".join("?" for _ in status_fields)
+                            + ") AS result_statuses")
+            args = [f"$.{test}.{key}" for test, key in status_fields]
         sql = ("SELECT id, created_at, acquired_at, source_name, signature,"
                " stage, status, is_baseline, sha256, reduced_precision, sid_mm,"
                " site, phantom, operator, notes,"
@@ -1302,8 +1334,8 @@ class Store:
                # Whether there are results, not the results: History offers
                # "re-run" only on a row that has something to re-run.
                " results_json IS NOT NULL AS has_results"
+               + statuses_sql +
                " FROM analyses WHERE 1=1")
-        args: list = []
         for col, val in (("site", site), ("phantom", phantom),
                          ("signature", signature)):
             if val:
@@ -1331,68 +1363,56 @@ class Store:
             sql += " LIMIT ?"
             args.append(int(limit))
         with self._conn() as c:
-            rows = c.execute(sql, args).fetchall()
+            try:
+                rows = c.execute(sql, args).fetchall()
+            except sqlite3.OperationalError as e:
+                if not status_fields:
+                    raise
+                log.warning("per-test statuses not read for the listing: %s", e)
+                rows = None
+        if rows is None:
+            # The listing as it is without the statuses; if that fails too,
+            # it fails exactly as it always would have.
+            out = self.list_all(site=site, phantom=phantom, signature=signature,
+                                validation=validation,
+                                completed_only=completed_only,
+                                unfinished_only=unfinished_only, limit=limit,
+                                order_by=order_by)
+            for d in out:
+                d["statuses"] = None
+            return out
         out = []
         for r in rows:
             d = dict(r)
             d["acquired_flag"] = acquisition_flag(d)
             d["has_results"] = bool(d["has_results"])
+            if status_fields:
+                raw = d.pop("result_statuses")
+                d["statuses"] = (self._read_statuses(raw, status_fields)
+                                 if d["has_results"] else None)
             out.append(d)
         return out
 
-    def result_statuses(self, ids: list[str],
-                        fields: list[tuple[str, str]]) -> dict[str, dict]:
-        """A few per-test statuses of many analyses, without their results.
-
-        History names what its verdict left out ("X-ray field alignment not
-        checked"), and that is written in the per-test statuses inside the
-        results — about 130 kB per analysis, which the listing otherwise never
-        reads. SQLite picks the requested ``(test, key)`` statuses out itself,
-        one parse per row, and only those few words reach Python, as
-        ``{id: {test: {key: status}}}``.
-
-        A results blob that is not valid JSON reads as having no statuses
-        rather than failing the listing, and so does an SQLite built without
-        its JSON functions: the note is a courtesy, History is not."""
-        out: dict[str, dict] = {}
-        if not ids or not fields:
-            return out
-        paths = ", ".join("?" for _ in fields)
-        path_args = [f"$.{test}.{key}" for test, key in fields]
-        with self._conn() as c:
-            CHUNK = 400                     # stay far below SQLite's 999 limit
-            for i in range(0, len(ids), CHUNK):
-                chunk = ids[i:i + CHUNK]
-                marks = ",".join("?" for _ in chunk)
-                try:
-                    rows = c.execute(
-                        f"SELECT id, json_extract(CASE WHEN json_valid("
-                        f"results_json) THEN results_json END, {paths}) AS s"
-                        f" FROM analyses WHERE id IN ({marks})"
-                        f" AND results_json IS NOT NULL",
-                        [*path_args, *chunk]).fetchall()
-                except sqlite3.OperationalError as e:
-                    log.warning("per-test statuses not read for the listing: "
-                                "%s", e)
-                    return {}
-                for row in rows:
-                    # One requested path comes back as the bare value, several
-                    # as a JSON array in the order they were asked for.
-                    if len(fields) == 1:
-                        found = [row["s"]]
-                    else:
-                        try:
-                            found = json.loads(row["s"]) if row["s"] else None
-                        except (json.JSONDecodeError, TypeError):
-                            found = None
-                    if not isinstance(found, list):
-                        continue
-                    d: dict[str, dict] = {}
-                    for (test, key), status in zip(fields, found):
-                        if isinstance(status, str):
-                            d.setdefault(test, {})[key] = status
-                    out[row["id"]] = d
-        return out
+    @staticmethod
+    def _read_statuses(raw, fields: list[tuple[str, str]]) -> dict | None:
+        """One row's statuses as json_extract gave them, as
+        ``{test: {key: status}}``; None when there is nothing to read."""
+        # One requested path comes back as the bare value, several as a JSON
+        # array in the order they were asked for.
+        if len(fields) == 1:
+            found = [raw]
+        else:
+            try:
+                found = json.loads(raw) if raw else None
+            except (json.JSONDecodeError, TypeError):
+                found = None
+        if not isinstance(found, list):
+            return None
+        d: dict[str, dict] = {}
+        for (test, key), status in zip(fields, found):
+            if isinstance(status, str):
+                d.setdefault(test, {})[key] = status
+        return d
 
     def labels(self) -> dict:
         """Distinct site / phantom values with counts, for the filter menus."""

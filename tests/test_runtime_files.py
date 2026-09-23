@@ -179,17 +179,37 @@ def test_the_test_session_does_not_write_into_the_checkout():
     assert os.path.abspath(os.environ["PHANTOMQA_DATA_ROOT"]) != os.path.abspath(REPO)
 
     import phantom_qa.webapp.main as main           # the import under suspicion
+    from conftest import CHECKOUT_RUNTIME_AT_START
     data = os.path.join(REPO, "data")
     assert os.path.dirname(main.store.db_path) != data, \
         f"the app store is inside the checkout: {main.store.db_path}"
-    assert not os.path.exists(os.path.join(data, "phantom_qa.sqlite3")), \
-        "importing the app created a database inside the checkout"
-    assert not os.path.exists(os.path.join(data, "uploads")), \
-        "importing the app created data/uploads inside the checkout"
-    assert not os.path.exists(os.path.join(REPO, "logs")), \
-        "importing the app created a logs/ tree inside the checkout"
+    # Judged against what was there before the session, not against an empty
+    # tree: someone who has run the app from this checkout has a database and
+    # uploads here that belong to them, and the question is only whether the
+    # tests added any.
+    for rel, what in ((os.path.join("data", "phantom_qa.sqlite3"), "a database"),
+                      (os.path.join("data", "uploads"), "data/uploads"),
+                      ("logs", "a logs/ tree")):
+        if not CHECKOUT_RUNTIME_AT_START[rel]:
+            assert not os.path.exists(os.path.join(REPO, rel)), \
+                f"importing the app created {what} inside the checkout"
     assert os.path.isdir(os.path.join(data, "phantom_definitions")), \
         "the tracked phantom definition must still be there"
+
+
+def test_the_guard_still_catches_what_the_tests_would_create(tmp_path,
+                                                             monkeypatch):
+    """The snapshot must not become a blanket excuse: with nothing there at
+    the start, anything that appears is still reported."""
+    import conftest
+    monkeypatch.setattr(conftest, "CHECKOUT_RUNTIME_AT_START",
+                        {k: False for k in conftest.CHECKOUT_RUNTIME_AT_START})
+    fake_repo = tmp_path
+    (fake_repo / "data").mkdir()
+    (fake_repo / "data" / "phantom_qa.sqlite3").write_bytes(b"")
+    created = [rel for rel, existed in conftest.CHECKOUT_RUNTIME_AT_START.items()
+               if not existed and os.path.exists(os.path.join(fake_repo, rel))]
+    assert created == [os.path.join("data", "phantom_qa.sqlite3")]
 
 
 def test_resolve_root_defaults_to_the_application_directory(monkeypatch):

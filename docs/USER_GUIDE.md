@@ -105,9 +105,53 @@ Re-uploading a file whose record was deleted or discarded is allowed and creates
 a new one — with no geometry, no edit history and no stored layout carried over
 from the old record.
 
+#### Preparing the file
+
+Before sending, the browser tries to **pack** the file so that less has to
+travel over the connection. Packing is lossless, like putting the file in a zip:
+the server unpacks it back into exactly the file you chose, and checks that it
+is exactly that file before keeping it. Nothing in the scan changes, and every
+number is measured on the original file.
+
+While the browser packs the file, the bar reads:
+
+> Preparing the file… (40%) — nothing is sent yet
+
+This takes a second or two, a few seconds on an old laptop. Some X-ray units
+already compress their files, and packing them again would save nothing: the
+browser sees that from the first megabyte and sends such a file straight away,
+as it is. A zipped CD export is never packed again.
+
+How much it saves depends on the X-ray unit. Measured on our scans:
+
+| X-ray unit | The file | What travels | At 512 kbit/s |
+|---|---|---|---|
+| Fuji (field site) | 7.5 MB | about 2.9 MB (1.1 MB for an over-exposed scan) | about 45 s instead of 2 minutes |
+| Carestream | 15 MB | about 7 MB | about 2 minutes instead of 4 |
+| Philips | 7.4 MB | 7.4 MB — already compressed, sent as it is | unchanged |
+
+Packing needs the same secure (https) connection as the check before sending,
+and a recent browser. Without either, the file is sent as it is, exactly as
+before.
+
+When the application runs on the same computer as the browser — started with
+`python run_app.py` as it comes, without sign-in, and opened at
+`http://127.0.0.1:8777` or `http://localhost:8777` — nothing travels over a
+connection, so the file is never packed: there is no "Preparing the file" phase
+and the upload starts at once. The check whether the scan is already here still
+runs first. A server that asks you to sign in always packs, even when it is
+reached through a tunnel at `localhost`, because the file then still crosses
+the network.
+
 #### While the file is sending
 
 A progress bar stays on screen until the upload ends:
+
+> Sending 1.2 MB of 2.9 MB (41%, packed from 7.5 MB) · about 25 s left
+
+The sizes, the percentage and the time left count what actually travels over
+the connection; *packed from 7.5 MB* is the size of your file. A file sent as it
+is shows only its own size:
 
 > Sending 3.1 MB of 7.5 MB (41%) · about 1 minute left
 
@@ -116,12 +160,20 @@ about when a field link stalls for a moment. When every byte has gone the bar
 reads **Sent — the server is reading the scan…**; decoding and locating the
 phantom take a few seconds more.
 
-- **To stop an upload**, press **Cancel** beside the bar. Nothing is stored and
+- **To stop an upload**, press **Cancel** beside the bar — also while it says
+  *Preparing the file…*, when nothing has been sent yet. Nothing is stored and
   the file stays selected, so trying again costs nothing but the press. Cancel is
   greyed out once the file has been sent, because stopping would no longer save
   anything.
 - **If the connection drops**, the page says so: nothing was stored, and the scan
   can be sent again.
+- **"The file was damaged on the way — nothing was stored. Please send it
+  again."** The server unpacked the file and it was not exactly the file you
+  chose: something was lost or changed on the way. Nothing was kept, so sending
+  it again is safe and does not make a second record. The next try sends the
+  file unpacked, as it is, so it takes longer; files stay unpacked until you
+  reload the page. If it happens again with the same file, write down the file
+  name and the time.
 
 A zipped CD export can hold several images. Each becomes its own analysis; the
 first opens, and the others are in History.
@@ -389,8 +441,10 @@ about 20 kB, so it arrives quickly even on a slow link.
 - **The summary line** under the picture counts them, e.g. *6 clearly visible ·
   1 faint · 1 at the limit of visibility*. On an exposure with no signal in the
   block at all it says *this exposure carries no signal in the block*.
-- **Refresh** draws the close-up again. Press it after moving, turning or
-  re-cornering the block, so the close-up shows the new placement.
+- **The close-up follows the block** when you move, turn or re-corner it. After
+  several quick nudges it shows where the block ended up, without stopping at
+  every step on the way. **Refresh** draws it again whenever you want to be
+  sure it shows the placement as it now is.
 
 The close-up is for placing and judging; the numbers in step E are always
 measured on the original scan.
@@ -1180,7 +1234,7 @@ what does not:
 
 | Action | Traffic |
 |---|---|
-| Uploading a scan | The whole file — a 7.5 MB scan takes about two minutes at 512 kbit/s. The progress bar shows how far it has got |
+| Uploading a scan | The whole file, packed first when that makes it smaller — a 7.5 MB Fuji scan travels as about 2.9 MB, about 45 s at 512 kbit/s instead of two minutes. The progress bar shows how far it has got |
 | Checking whether a file is already here | A few hundred bytes, before anything is sent |
 | Opening an analysis | A picture of about 0.1 MB. The browser keeps it for a day, so opening the analysis again costs nothing |
 | Moving the W / C sliders | Nothing while you move them; one sharper picture after you stop |
@@ -1193,6 +1247,26 @@ The two things that used to cost the most on a field link — sending a file onl
 to be told it was already there, and deleting and re-uploading a scan to correct
 a mistake — are now a few hundred bytes and a **Discard** or **Re-run**
 respectively.
+
+---
+
+## Running it on your own computer
+
+Started with `python run_app.py` and opened in the browser on the same computer,
+the application behaves as on the server, with two differences you may notice:
+
+- **Windows power saving no longer slows it down.** Windows runs a program
+  whose window is in the background on its slowest settings, and the window
+  running the application is in the background the whole time you work in the
+  browser — moving from registration to the patterns took over two seconds
+  instead of under one. The application now asks Windows not to do that, for
+  itself only. The window says at start whether Windows agreed: *Windows power
+  saving: turned off for this server*, or, on an older Windows, that it could
+  not be turned off, in which case it simply runs as before.
+- **Uploads are not packed**, because nothing travels over a connection (see
+  [Preparing the file](#preparing-the-file)). That holds while it runs without
+  sign-in, as it starts unless your `.env` turns sign-in on; with sign-in on,
+  uploads are packed as on the server.
 
 ---
 

@@ -328,18 +328,43 @@ wrong: it steps back on undo and forward again onto a different edit, and it
 restarts at 0 when the phantom is registered again, so one counter value could
 name two placements — and the cache served the old picture under the new rings.
 
-The PNG route always renders the record as it is now, into the per-worker image
-cache under `(aid, "lcview", key)`. When the URL's `key` matches the current
-one the response is `Cache-Control: private, max-age=86400`, so the browser may
-keep it; otherwise it is `no-store`, so bytes are never stored under the name of
-a placement they do not show. The middleware lets that header stand. A `seq`
+**Computed once per placement.** The page always asks for the JSON and then for
+the picture it names, and both routes used to run `block_view` — about 30 ms
+each time the block moved. The JSON route now encodes the PNG from the view it
+has just computed and keeps it in the per-worker image cache under
+`(aid, "lcview", key)` (`_keep_block_png`, the one place it is encoded), so the
+picture request that follows is a lookup: measured B→C 130 → 100 ms, and each
+block nudge 154 → 123 ms. Those figures are from `run_app.py`, one process
+answering both requests. Under gunicorn the lookup happens only when the same
+worker answers both: each worker has its own cache, and nginx opens a new
+connection to gunicorn for every request, so any worker may take the picture
+request. One that does not hold the picture renders it exactly as before this
+change, and the markers worker has then paid one extra PNG encode (a few
+milliseconds at most) and one slot of its cache for nothing.
+
+The PNG route first checks that the record still exists (one indexed `SELECT`;
+a delete served by another worker drops this worker's copies and answers 404).
+A picture this worker holds under the requested `key` is then sent as it is,
+with `Cache-Control: private, max-age=86400`, without reading the record: the
+key digests everything the picture depends on, so the bytes kept under it are
+that picture, and re-deriving the key would only repeat what the name says. A
+key it does not hold — evicted, kept by another worker, or never issued — gets
+the picture rendered from the record as it is now: `private` when the key names
+that placement, otherwise `no-store`, so bytes are never stored under the name
+of a placement they do not show. The middleware lets that header stand. A `seq`
 parameter from pages loaded before this change is accepted and ignored.
 
 The page fetches the JSON again when the edit counter moves and asks for the
 picture by key, so undoing back to an earlier placement finds it in the browser
 cache, and changing the insert setting — which moves nothing — re-keys the copy
-in hand instead of fetching it. The contrast slider re-maps the downloaded
-picture through a 256-entry table and costs no traffic.
+in hand instead of fetching it. After the block is moved the page reloads the
+close-up through `refreshBlockView`, one load at a time: a nudge during a load
+only notes that one more is wanted, so a run of quick nudges fetches the
+close-up of where the block ended up rather than one for every step, and only
+the newest load may draw (`S.blockViewGen`), so a late answer can never put an
+older placement — or another analysis's close-up — back on screen. The contrast
+slider re-maps the downloaded picture through a 256-entry table and costs no
+traffic.
 
 ## Two dates, kept apart
 
@@ -503,12 +528,23 @@ the results page, the printed report and History print beside the verdict.
 Only `not applicable` produces a note; a `not measured` test already pulls the
 verdict down and is explained wherever the warning is.
 
-History gets the notes without the results travelling: `Store.result_statuses`
-has SQLite pick the `(test, key)` statuses listed in `pipeline.STATUS_FIELDS`
-out of `results_json` with `json_extract`, one parse per row, in chunks of 400
-ids — the results themselves are about 130 kB per analysis. A results blob that
-is not valid JSON, or an SQLite built without its JSON functions, yields no
-notes rather than a failed listing: the note is a courtesy, History is not.
+History gets the notes without the results travelling: `Store.list_all`, given
+`status_fields`, has SQLite pick the `(test, key)` statuses listed in
+`pipeline.STATUS_FIELDS` out of `results_json` with `json_extract`, one parse
+per row, in the listing's own `SELECT` — the results themselves are about
+130 kB per analysis, and only the note travels. It used to be a second query
+(`Store.result_statuses`, by id). But most columns the listing reads (status,
+labels, validation, exposure values) are stored after `results_json`, so
+reaching them already makes SQLite walk every overflow page of each row's
+results, and the second query walked them all a second time. Reading the
+statuses in the same pass saves about 25 ms at 200 analyses, with no change to
+the schema. A results blob that is not valid JSON yields no statuses for its
+row. On an SQLite built without its JSON functions the combined query fails
+and is run again without the statuses, so History lists everything with no
+notes rather than failing: the note is a courtesy, History is not. The notes
+are exactly the ones the two queries gave; a test keeps the old query as the
+reference, over legacy `n/a` rows, damaged blobs and the missing JSON
+functions.
 
 **Stored analyses are not rewritten.** Records measured before the split keep
 `n/a` for both meanings; nothing already finalised or signed changes its wording.
@@ -778,6 +814,29 @@ Scans decoded for pictures are not put in the worker's scan cache
 whatever goes wrong with one scan becomes labelled empty cells for that scan
 (`thumbnails.unavailable`); the report never fails because of a picture.
 
+## Comparison charts are encoded while the next is drawn
+
+Each chart of the comparison report is drawn with matplotlib and then reduced to
+a 64-colour palette PNG (`_b64`), about 25 ms of PIL work per chart that the
+next chart used to wait for. During `build_comparison_report` that palette step
+(`_palette_b64`) runs on two helper threads of the report's own, while the
+calling thread draws the next chart; each chart holds a placeholder in the page
+until the page is composed, and the placeholders are then replaced by the
+finished pictures. Two reference scans went from 5.2 s to 4.6 s; the drawing is
+the larger part and stays on one thread, because matplotlib is not safe to use
+from several.
+
+The page is byte for byte the one encoding each chart in turn gives — the same
+encoding, only earlier — and a test builds it both ways and compares. A chart
+whose palette step fails fails the report with that chart's error, the first in
+drawing order, exactly as in turn, even when the page went on to fail somewhere
+else afterwards. The helper threads end with the report however it ends (the
+pool is a `with` block per request), and the batch is found through a context
+variable set only for the duration of the call, so a chart drawn anywhere else
+is encoded where it stands. A placeholder carries a random string drawn afresh
+for every report, so nothing typed onto the page — a site or phantom label — can
+pass for one.
+
 ## One inline script, admitted by its hash
 
 The comparison report is meant to be saved from the browser and read with no
@@ -917,6 +976,131 @@ downloads were pictures nobody measures from.
   proxy, because the proxy configuration is deployment, which this work does
   not change. Images, zips and DICOM are excluded — already packed.
 
+## Uploads are packed in the browser and proven identical on arrival
+
+At 512 kbit/s the transfer is nearly all of an upload's time, and most
+detectors write their pixels uncompressed. The browser therefore packs the
+chosen file with gzip — `CompressionStream("gzip")` on `file.stream()`, built
+into the browser, so there is no library to download — and sends the packed
+copy on the same `POST /api/analyses` with three more form fields: the
+original's SHA-256 (`original_sha256`, the digest the duplicate pre-check
+already took, reused rather than hashed twice), its size (`original_size`) and
+its name (`original_name`), plus `encoding=gzip`. No new route, no new service,
+nothing in the proxy. Any other `encoding` than empty, `identity` or `gzip` is a
+400: guessing would mean storing bytes the server did not know how to read
+back.
+
+**Decided per file, never worse than before.** Field projects meet a different
+detector every time, so nothing is assumed about the detector. The first 1 MiB
+is packed as a probe; unless it comes out at 90 % of its size or less, the file
+is sent as it is at once. Otherwise the whole file is packed and kept only if it
+too is at 90 % or less. A `.zip` (CD export) is never probed. Measured with gzip
+level 6 on all 38 real scans, every one unpacking byte-identical:
+
+| Detector | Transfer syntax | As it is | Packed | At 512 kbit/s |
+|---|---|---|---|---|
+| Fuji (field) | Explicit VR Little Endian, 10-bit | 7.5 MB | 2.9 MB (1.1 MB over-exposed; 2.2 MB average) | 118 s → 45 s |
+| Carestream | Explicit VR Little Endian | 15.1 MB | 5.8–8.4 MB, 7.1 MB average | 236 s → 111 s |
+| Philips | JPEG Lossless (compressed inside the file) | 7.4 MB | not packed: the probe reads 99 % | unchanged |
+
+The probe predicts the whole file on every one of them (a test holds that with
+the page's own thresholds). In a real browser (Edge 153) the Fuji packed in
+0.16 s, the Carestream in 0.53 s, and the Philips was recognised in 34 ms. The
+worst case for an unknown detector is no gain.
+
+**Proven identical before anything else sees it.** `ingest.unpack_gzip` streams
+the decompression (`zlib.decompressobj` in gzip-only mode, output taken in
+1 MiB steps) and requires four independent agreements:
+
+1. gzip's own CRC32 and length trailer, which zlib checks at the end of the
+   stream — so a stream that never reaches its end is refused, not accepted as
+   a shorter file;
+2. exactly one gzip member and nothing after it (Python's `gzip` module would
+   concatenate a second member: "the file plus whatever was appended");
+3. the unpacked length equals `original_size`;
+4. the SHA-256 of the unpacked bytes equals `original_sha256`, which was taken
+   from the file on the operator's disk before any of our code touched it.
+
+Only if all four agree does the upload continue, exactly as for a file sent as
+it is: the stored file is the original, the recorded sha256 is the original's,
+and the duplicate check and the analysis read the original — so the same file
+sent packed or unpacked is recognised as the same file. Anything else is a 400
+reading "The file was damaged on the way — nothing was stored. Please send it
+again.", an audit line with `outcome=damaged` and the reason, and nothing
+stored. Each check is guarded by a test that fails when the check is removed.
+Unpacking and verifying takes at most 0.15 s for a Carestream scan and runs in
+the threadpool, like the decode, because the endpoint is async.
+
+**After a damaged refusal the page stops packing.** The server cannot tell
+damage on the link from the browser's own packing going wrong, and packing
+that goes wrong once would go wrong on every attempt — an operator could then
+never upload from a browser that worked before packing existed. So this
+refusal, and only this one, carries `damaged_transfer: true`, which the page
+reads (like `quality_refused`) instead of parsing the English. On it the page
+stops packing until it is reloaded, and the next attempt is exactly the
+unpacked upload of before. Nothing is re-sent automatically: the whole file
+again on a slow link is the operator's decision. A refusal that packing had
+nothing to do with — a file that is not a scan, a size past the cap — carries
+no flag and leaves packing on.
+
+A malformed `original_size` gets the same audited 400 as a missing one: only
+ASCII digits, at most fifteen of them (a petabyte), count as a size.
+`str.isdigit()` alone also passes "²" and digit strings past `int()`'s limit,
+either of which would otherwise escape as a 500 with no audit line.
+
+**No fingerprint, no packing.** Over plain http `crypto.subtle` does not
+exist, so there is no SHA-256. Without it the server could check only CRC32
+and the length, which catch a damaged transfer but not a wrong file. The page
+therefore does not pack without the digest, and the server refuses a packed
+body that lacks it (400) instead of half-verifying it. Such a site keeps
+exactly the upload it had; so does a browser without `CompressionStream`, and
+any failure while packing falls back to the file as it is.
+
+**Not packed when page and server share a computer.** Served by `run_app.py`
+on the operator's own machine there is no link to spare, and packing a 15 MB
+scan was measured at half a second of pure waiting, most of it with the page
+frozen (upload 2.0 s → 1.4 s without it). So `packForUpload` sends the file as
+it is when `location.hostname` is a loopback name — `localhost`, `127.x.x.x`,
+`::1` (written `[::1]`) — *and* the server has said, in the `/api/auth` answer
+the page already fetches at start, that it has no sign-in (`S.signInOff`, set
+only from an explicit `auth_enabled: false`), and only then
+(`servedFromThisMachine`, checked before the probe, so no "Preparing" phase
+either). A LAN address or a server name is a network, however fast, and keeps
+packing. The name alone is not enough: an SSH tunnel or a port forward to a
+deployed server is opened at `localhost` too, and would send every scan
+unpacked over the slow link. No sign-in is `run_app.py`'s default, a server
+without sign-in must never be exposed to a network at all (`run_app.py` and
+gunicorn both say so at start), and production turns sign-in on — so a tunnel
+to a deployment keeps packing, and so does a page whose `/api/auth` has not
+answered or failed. The one gap left is a server deliberately run with sign-in
+off *and* reached through a tunnel, a setup gunicorn already reports as an
+error at start. A local `run_app.py` with sign-in
+turned on packs as before: slower on the same computer, never wrong. The
+SHA-256, the `upload_check` pre-flight before sending, and the server's gzip
+path are all unchanged: the upload is simply the unpacked one every browser
+without `CompressionStream` has always made.
+
+**Decompression bombs.** A few kilobytes can inflate to gigabytes, and the
+body-size cap cannot see it because the body really is small. The output is
+therefore bounded while it is produced, never afterwards: a declared size above
+the upload cap (`max_upload_mb`) is a 413 before any work; output past the cap
+is a 413; output past the declared size is refused as damaged — one step
+(1 MiB) past the limit at most. A 30 s time budget is a backstop only: deflate's
+work grows with what goes in and what comes out, both capped. The existing
+declared-size check in the middleware and the measured body cap still apply to
+what is sent.
+
+**Progress and Cancel.** The bar gains a first phase, "Preparing the file… —
+nothing is sent yet", during which Cancel stops the packing (the stream reader
+is cancelled) and nothing is sent; the cancellation reaches the same branch as
+an aborted transfer. Sending then reads "Sending 1.2 MB of 2.9 MB (41%, packed
+from 7.5 MB)": the percentage and the time left are counted on the bytes that
+actually cross the link.
+
+**Audit.** Every upload line now carries `encoding` (`gzip` or `identity`),
+`sent_bytes` (what crossed the link) and `bytes` (the original's size, as
+before), so a slow upload can be explained afterwards.
+
 ## Exposure values: four columns and a one-time backfill
 
 The detector's own account of the exposure (IEC 62494-1) is what tells an
@@ -981,6 +1165,28 @@ maximum — 1023 on 77,000–100,000 pixels of unblocked beam — so they come o
 identical to the last pixel; only the two completely faulty exposures moved (by
 66 and 95). Nothing needed re-running. The change is a guard for future
 exposures with no unblocked beam in the picture.
+
+## The local starter is not slowed by Windows power saving
+
+Windows runs a process whose window is in the background on its power-saving
+settings (EcoQoS: efficiency cores, low clock). The terminal running
+`run_app.py` is in the background the whole time the operator works in the
+browser, so every step ran throttled — registration to patterns took 2.3 s
+instead of 0.94 s. At start `run_app._run_at_full_speed` therefore opts its own
+process out: `SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling,
+…)` with `PROCESS_POWER_THROTTLING_STATE{Version=1,
+ControlMask=EXECUTION_SPEED, StateMask=0}` — execution speed is the setting
+controlled, and its state is off. Nothing else on the machine changes, and the
+setting ends with the process.
+
+It is Windows only (`os.name == "nt"`) and never stops the server starting: on
+a Windows too old to know the call (before Windows 8 kernel32 has no
+`SetProcessInformation`), when Windows declines, or on any error, the server
+simply runs as it always did. The starter says once, at start, which of the two
+happened, so a slow session can be told apart from a throttled one. A server
+deployment runs gunicorn, which never runs `run_app.py`, and nothing in
+`phantom_qa` or `gunicorn.conf.py` reaches the call: a server's power policy is
+its administrator's business.
 
 ---
 

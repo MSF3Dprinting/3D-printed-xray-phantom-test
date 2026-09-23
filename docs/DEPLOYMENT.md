@@ -198,6 +198,12 @@ application is installed in. `ProtectSystem=strict` with an explicit
 `MemoryMax=4G` caps this service alone, so a large analysis cannot starve other
 applications. Adjust to suit the machine.
 
+`run_app.py`, the local starter, asks Windows at start not to throttle its own
+process for power saving (see "The local starter is not slowed by Windows power
+saving" in DESIGN.md). That applies to `run_app.py` only: gunicorn never runs
+that file and nothing it loads makes the call, so a server deployment keeps
+exactly the CPU and power policy its administrator set.
+
 ### Isolation from other applications
 
 A gunicorn configuration is per-invocation: `gunicorn -c gunicorn.conf.py …`
