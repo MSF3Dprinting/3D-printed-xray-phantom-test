@@ -28,7 +28,7 @@ from starlette.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, conlist, field_validator
 
 from .. import ALGO_VERSION
-from .. import ingest, layout_profile, pipeline, quality
+from .. import imaging, ingest, layout_profile, pipeline, quality
 from ..analysis import linepairs, lowcontrast
 from ..analysis.common import roi_center_from_px
 from ..comparison_report import COMPARISON_SCRIPT_CSP, build_comparison_report
@@ -37,7 +37,7 @@ from ..config import get_config
 from ..logging_setup import audit, get_logger, setup_logging
 from ..phantom_def import load_default
 from ..registration import Registration, Transform
-from ..report import build_report
+from ..report import REPORT_SCRIPT_CSP, build_report
 from ..security import (CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, SharedThrottle,
                         csrf_ok, issue_session, new_csrf_token, read_session,
                         verify_password)
@@ -106,11 +106,19 @@ admin_throttle = SharedThrottle(store.db_path, "admin",
 _scans: dict[str, ingest.ScanData] = {}       # id -> ScanData cache
 _regs: dict[tuple, Registration] = {}         # (id, reg fingerprint) -> Registration
 _img_cache: dict[tuple, bytes] = {}
+# The zoom levels of the few scans looked at last, and each scan's automatic
+# window. A level is a copy of the scan at 1/2 or 1/4 size, a quarter or a
+# sixteenth of its memory, so only the last few are kept.
+_levels: dict[str, list] = {}
+_auto_window: dict[str, tuple] = {}
+_LEVELS_KEPT = 4
 
 
 def _forget(aid: str):
     """Drop every cached artefact of one analysis in THIS worker."""
     _scans.pop(aid, None)
+    _levels.pop(aid, None)
+    _auto_window.pop(aid, None)
     for key in [k for k in _regs if k[0] == aid]:
         _regs.pop(key, None)
     for key in [k for k in _img_cache if k[0] == aid]:
@@ -228,6 +236,9 @@ async def security_middleware(request: Request, call_next):
     script_src = "'self'"
     if path == "/api/comparison_report.html":
         script_src += " " + COMPARISON_SCRIPT_CSP
+    elif path.startswith("/api/analyses/") and path.endswith("/report.html"):
+        # The printed report's Export to PDF button, admitted the same way.
+        script_src += " " + REPORT_SCRIPT_CSP
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
         f"script-src {script_src}; connect-src 'self'; frame-ancestors 'none'; "
@@ -237,24 +248,18 @@ async def security_middleware(request: Request, call_next):
             "max-age=31536000; includeSubDomains"
     if path.startswith("/api/"):
         # Records, listings and verdicts change, so they are never cached.
-        # A rendered scan image is the exception: the uploaded pixels are
-        # immutable and the URL already carries everything that varies the
-        # picture (id, window, scale), so the same URL can only ever mean the
-        # same bytes. Re-fetching ~1 MB on every open and every window change
-        # was the single heaviest habit on a field link — about fifteen
-        # seconds each time at 512 kbit/s. Private: it is patient-adjacent
-        # imagery and must not sit in a shared proxy. The JPEG the viewer now
-        # draws is the same render, so the same reasoning holds for it.
-        if path.endswith(("/image.png", "/image.jpg")) \
-                and response.status_code == 200:
-            response.headers["Cache-Control"] = "private, max-age=86400"
-        elif path.endswith("/lowcontrast_view.png") \
+        # A picture of a scan is the exception: the uploaded pixels are
+        # immutable and the URL carries everything that varies the picture,
+        # so the same URL can only ever mean the same bytes. Re-fetching one
+        # on every open and every window change was the single heaviest habit
+        # on a field link. Each picture route decides for itself — it is
+        # keepable only when its URL names what it actually shows (the
+        # picture version; the close-up's placement) — so its own header
+        # stands. Every picture address ends in its format: the overview, the
+        # zoom pieces, the close-up.
+        if path.endswith((".png", ".webp")) \
                 and response.status_code == 200 \
-                and response.headers.get("Cache-Control", "").startswith(
-                    "private"):
-            # The close-up decides for itself: it is keepable only when its
-            # URL names the placement it actually shows, so its own header
-            # stands.
+                and "Cache-Control" in response.headers:
             pass
         else:
             response.headers["Cache-Control"] = "no-store"
@@ -341,9 +346,14 @@ class LoginBody(BaseModel):
 def auth_state(request: Request):
     # analysis_timeout_s rides along on a request the page already makes at
     # boot, so the browser can give up a little after the server would rather
-    # than guessing, and without another round trip on a slow link.
+    # than guessing, and without another round trip on a slow link. The
+    # picture version rides along for the same reason: the page puts it in
+    # every picture address so the browser may keep those pictures. So does
+    # how long the viewer waits, still, before fetching full detail.
     common = {"csrf": request.cookies.get(CSRF_COOKIE),
-              "analysis_timeout_s": cfg.analysis_timeout_s}
+              "analysis_timeout_s": cfg.analysis_timeout_s,
+              "picture_version": PICTURE_VERSION,
+              "detail_delay_s": cfg.detail_delay_s}
     if not cfg.auth_enabled:
         return {"auth_enabled": False, "authenticated": True, **common}
     s = read_session(cfg.secret_key, request.cookies.get(SESSION_COOKIE))
@@ -1067,14 +1077,79 @@ def get_analysis(aid: str):
         "is_last_for_phantom": bool(n_same == 1),
         "layout_would_be_deleted": bool(prof and n_same <= 1),
     }
+    payload["detail_regions"] = []
     try:
-        payload["registration"] = _reg_payload(aid, _reg(aid, rec))
+        reg = _reg(aid, rec)
+        payload["registration"] = _reg_payload(aid, reg)
     except HTTPException:
         payload["registration"] = None
     except Exception as e:                     # corrupted reg or missing file
         log.error("registration payload failed for analysis=%s: %s", aid, e)
         payload["registration"] = None
+    else:
+        # Only a convenience — the background preload — so a fault here
+        # must never cost the operator the registration above.
+        try:
+            payload["detail_regions"] = _detail_regions(rec, reg,
+                                                        _scan(aid).shape)
+        except Exception as e:
+            log.error("preload regions failed for analysis=%s: %s", aid, e)
     return pipeline.to_jsonable(payload)
+
+
+#: Scan around each line-pair group and each disc that the preload covers,
+#: in mm: enough for a zoom on one of them to show it whole with its edges.
+DETAIL_MARGIN_MM = 4.0
+
+
+def _detail_regions(rec: dict, reg: Registration, shape) -> list[dict]:
+    """Where an inspector zooms in, as boxes in scan pixels [x0, y0, x1, y1]:
+    every line-pair group and every low-contrast disc. The page downloads
+    full detail of these in the background once an analysis is open (the
+    user's decision), so zooming there shows the scan's own pixels at once.
+
+    From the measuring points once they are placed; before that from the
+    phantom definition through the registration, which puts them within a
+    few mm — the margin covers it. Small boxes, not one box round the strip:
+    the strip runs diagonally, and its bounding box would be mostly other
+    parts of the phantom. A box halfway between each two neighbouring groups
+    closes the gaps, so the whole strip is covered as a band: on the blue
+    prints the strip is mounted the other way round, and measured on
+    CS000018 two of its groups sat up to 7.2 mm outside boxes at the
+    definition's group positions alone."""
+    T = reg.transform
+    per_mm = float(T.px_per_mm)
+    lp, lc = pdef.linepairs, pdef.lowcontrast
+    geom = rec.get("geometry") or {}
+    rows, cols = int(shape[0]), int(shape[1])
+
+    def box(name, centre_px, half_mm):
+        half = (half_mm + DETAIL_MARGIN_MM) * per_mm
+        x, y = float(centre_px[0]), float(centre_px[1])
+        x0, y0 = max(0, int(x - half)), max(0, int(y - half))
+        x1, y1 = min(cols, int(math.ceil(x + half))), min(rows, int(math.ceil(y + half)))
+        return {"name": name, "px": [x0, y0, x1, y1]} if x1 > x0 and y1 > y0 else None
+
+    placed = {g.get("id"): (g.get("roi") or {}).get("center_px")
+              for g in (geom.get("linepairs") or {}).get("groups") or []}
+    out, strip = [], []
+    for g in lp["groups"]:
+        centre = placed.get(g["id"]) or T.mm_to_px(g["center_mm"])
+        strip.append((float(centre[0]), float(centre[1])))
+        out.append(box(f"line pairs {g['id']}", centre, lp["roi_size_mm"] / 2))
+    for (xa, ya), (xb, yb) in zip(strip, strip[1:]):
+        out.append(box("line-pair strip", ((xa + xb) / 2, (ya + yb) / 2),
+                       lp["roi_size_mm"] / 2))
+    block = (geom.get("lowcontrast") or {}).get("block") or {}
+    centre_mm = block.get("center_mm") or lc["center_mm"]
+    a = math.radians(float(block.get("angle_deg", lc["angle_deg"])))
+    u, v = (math.cos(a), math.sin(a)), (-math.sin(a), math.cos(a))
+    for c in lc["circles"]:
+        mm = (centre_mm[0] + c["u_mm"] * u[0] + c["v_mm"] * v[0],
+              centre_mm[1] + c["u_mm"] * u[1] + c["v_mm"] * v[1])
+        out.append(box(f"low contrast {c['id']}", T.mm_to_px(mm),
+                       lc.get("bg_outer_dia_mm", 16.0) / 2))
+    return [b for b in out if b]
 
 
 def _drop_cached_image(aid: str):
@@ -1087,34 +1162,73 @@ def _drop_cached_image(aid: str):
     for cached in [k for k in _img_cache if k[0] == aid]:
         _img_cache.pop(cached, None)
     _scans.pop(aid, None)
+    _levels.pop(aid, None)
+    _auto_window.pop(aid, None)
 
 
-#: How the viewer's picture is encoded as JPEG. Quality 75 puts a reference
-#: scan at 1600 px near a hundred kilobytes, against about 1.1 MB as PNG —
-#: two seconds at 512 kbit/s instead of seventeen, on every analysis opened.
-#: The picture is single-channel, so there is no colour to subsample, and
-#: optimised, progressive coding is lossless and a few per cent smaller.
-_VIEW_JPEG = {"quality": 75, "optimize": True, "progressive": True}
+#: Part of every picture address. A picture asked for under the current
+#: number is kept by the browser for 30 days without asking again, so the
+#: number goes up whenever anything changes what a picture of a scan looks
+#: like — how scans are read, windowed, averaged or encoded. Copies made the
+#: old way are then simply never asked for again.
+PICTURE_VERSION = "2"
+
+#: A picture asked for under the current version can never change, so the
+#: browser may keep it and need not even check back. Private, because it is
+#: patient-adjacent imagery that must not rest in a shared proxy; and
+#: no-transform, so nothing between server and browser — a proxy on a
+#: plain-http link — may recompress it and lose what the inspection is for.
+_PICTURE_KEEP = "private, max-age=2592000, immutable, no-transform"
+_PICTURE_NO_KEEP = "no-store, no-transform"
+
+
+def _picture_cache(v: str) -> str:
+    """Keep a picture only when its address names the current version.
+
+    An address without it — a page loaded before this rule — may be answered
+    by a different picture once the rendering changes, so it is never kept."""
+    return _PICTURE_KEEP if v == PICTURE_VERSION else _PICTURE_NO_KEEP
+
+
+def _finite(v: float | None) -> float | None:
+    """A window value from a query, or None. NaN passes FastAPI's float
+    parsing and poisons the window arithmetic."""
+    return v if v is not None and math.isfinite(v) else None
+
+
+def _limits(aid: str, wc: float | None, ww: float | None) -> tuple[float, float]:
+    """The window a picture is made with: the one asked for, or the scan's
+    1st-99th percentile. The same rule for the overview and every zoom piece,
+    so the detail fills in on exactly the grey levels around it. The
+    percentile is worked out once per scan in this worker."""
+    if wc is not None and ww is not None:
+        return wc - ww / 2, wc + ww / 2
+    if aid not in _auto_window:
+        lo, hi = np.percentile(_scan(aid).pixels, [1, 99])
+        _auto_window[aid] = (float(lo), float(hi))
+    return _auto_window[aid]
 
 
 def _render_view(aid: str, wc: float | None, ww: float | None, scale: int,
-                 fmt: str) -> bytes:
-    """The scan windowed to eight bits for looking at, encoded as ``fmt``.
+                 fmt: str) -> tuple[bytes, str]:
+    """The scan windowed to eight bits for looking at -> (bytes, media type).
 
-    One function behind both the PNG and the JPEG route, so the two cannot
-    drift apart in the window they apply, the size they come out at, or the
-    checks around them. The size matters most: the viewer places every
-    outline through the picture's width over the scan's, so a picture one
-    pixel narrower would put every ROI in the wrong place.
+    One function behind both formats, so the two cannot drift apart in the
+    window they apply, the size they come out at, or the checks around them.
+    The size matters most: the viewer places every outline through the
+    picture's width over the scan's, so a picture one pixel narrower would
+    put every ROI in the wrong place.
+
+    The picture is the inspection, so it is made on the one road in
+    imaging.py: nearest grey level, averaging where the picture is smaller
+    than the scan, lossless encoding. The viewer's JPEG erased the finest
+    line-pair group on the Philips scans entirely.
     """
     # Query values are viewer state, not trusted input: a zero or negative
     # scale crashes PIL's thumbnail, a huge one asks for a gigapixel resample,
     # and NaN passes FastAPI's float parsing and poisons the window arithmetic.
     scale = min(max(scale, 64), 4096)
-    if wc is not None and not math.isfinite(wc):
-        wc = None
-    if ww is not None and not math.isfinite(ww):
-        ww = None
+    wc, ww = _finite(wc), _finite(ww)
     # Every other route reads the record first and answers 404 when it is gone;
     # this one could answer from its own memory instead. The caches are
     # per-worker, so a delete served by one worker left the others still
@@ -1125,52 +1239,99 @@ def _render_view(aid: str, wc: float | None, ww: float | None, scale: int,
         raise HTTPException(404, "not found")
     key = (aid, wc, ww, scale, fmt)
     if key not in _img_cache:
-        from PIL import Image
         img = _scan(aid).pixels
-        if wc is None or ww is None:
-            lo, hi = np.percentile(img, [1, 99])
-        else:
-            lo, hi = wc - ww / 2, wc + ww / 2
-        a = np.clip((img - lo) / max(hi - lo, 1e-9), 0, 1)
-        pil = Image.fromarray((a * 255).astype(np.uint8))
-        if max(pil.size) > scale:
-            pil.thumbnail((scale, scale), Image.LANCZOS)
-        buf = io.BytesIO()
-        if fmt == "jpeg":
-            pil.save(buf, format="jpeg", **_VIEW_JPEG)
-        else:
-            pil.save(buf, format="png")
+        lo, hi = _limits(aid, wc, ww)
+        # The longest side comes out at `scale`, the proportions kept, as
+        # PIL's thumbnail() made them; never larger than the scan itself.
+        h, w = img.shape
+        k = scale / max(w, h)
+        size = (None if k >= 1
+                else (max(1, round(w * k)), max(1, round(h * k))))
+        rendered = imaging.render(img, lo, hi, size, fmt)
         # FIFO eviction: clearing the whole cache meant one operator paging
         # through History threw away every other operator's rendered view.
         while len(_img_cache) > 24:
             _img_cache.pop(next(iter(_img_cache)), None)
-        _img_cache[key] = buf.getvalue()
+        _img_cache[key] = rendered
     return _img_cache[key]
+
+
+@app.get("/api/analyses/{aid}/image.webp")
+def image_webp(aid: str, wc: float | None = None, ww: float | None = None,
+               scale: int = 1600, v: str = ""):
+    """What the viewer draws: lossless WebP, 8-15 % smaller than PNG at a
+    viewer's size and decoding to exactly the same grey levels. On a server
+    whose image library cannot write WebP the same picture comes back as PNG,
+    labelled as such."""
+    data, media = _render_view(aid, wc, ww, scale, "webp")
+    return Response(data, media_type=media,
+                    headers={"Cache-Control": _picture_cache(v)})
 
 
 @app.get("/api/analyses/{aid}/image.png")
 def image_png(aid: str, wc: float | None = None, ww: float | None = None,
-              scale: int = 1600):
-    """The lossless render. The viewer takes the JPEG below; this stays for
-    anything that wants the exact eight-bit picture."""
-    return Response(_render_view(aid, wc, ww, scale, "png"),
-                    media_type="image/png")
+              scale: int = 1600, v: str = ""):
+    """The same picture as PNG, for a browser that cannot show lossless WebP."""
+    data, media = _render_view(aid, wc, ww, scale, "png")
+    return Response(data, media_type=media,
+                    headers={"Cache-Control": _picture_cache(v)})
 
 
-@app.get("/api/analyses/{aid}/image.jpg")
-def image_jpg(aid: str, wc: float | None = None, ww: float | None = None,
-              scale: int = 1600):
-    """The same render as JPEG: what the viewer draws, about a tenth the bytes.
+def _scan_levels(aid: str) -> list:
+    """The scan at its own size, 1/2 and 1/4, each smaller level the average
+    of the scan pixels it covers. Made once per scan in this worker; only the
+    last few scans are kept."""
+    if aid not in _levels:
+        pixels = _scan(aid).pixels
+        levels = [pixels] + [imaging.block_average(pixels, 2 ** level)
+                             for level in range(1, imaging.LEVELS)]
+        while len(_levels) >= _LEVELS_KEPT:
+            _levels.pop(next(iter(_levels)), None)
+        _levels[aid] = levels
+    return _levels[aid]
 
-    Safe to be lossy because nothing is measured from it. Every number comes
-    from the original scan on the server, and the low-contrast discs — the
-    one place where a few grey levels decide what an operator can see — are
-    placed on their own lossless close-up, lowcontrast_view.png. The
-    browser's window preview re-maps whatever picture it was given, so it
-    works on the decoded JPEG exactly as it did on the PNG.
-    """
-    return Response(_render_view(aid, wc, ww, scale, "jpeg"),
-                    media_type="image/jpeg")
+
+def _tile(aid: str, level: int, tx: int, ty: int, wc: float | None,
+          ww: float | None, fmt: str) -> tuple[bytes, str]:
+    """One piece of full detail: 256 px of the scan at zoom level `level`,
+    windowed, lossless. Zooming in on the overview only enlarges its pixels;
+    these are the scan's own (level 0), or its exact block averages.
+
+    Not kept on the server: 15-25 ms to make, and the browser keeps it."""
+    if not 0 <= level < imaging.LEVELS:
+        raise HTTPException(404, "no such zoom level")
+    if not store.exists(aid):                  # see _render_view
+        _drop_cached_image(aid)
+        raise HTTPException(404, "not found")
+    wc, ww = _finite(wc), _finite(ww)
+    pixels = _scan_levels(aid)[level]
+    bounds = imaging.tile_bounds(pixels.shape, tx, ty)
+    if bounds is None:
+        raise HTTPException(404, "no such tile")
+    y0, y1, x0, x1 = bounds
+    lo, hi = _limits(aid, wc, ww)
+    return imaging.encode_lossless(
+        imaging.window_to_grey(pixels[y0:y1, x0:x1], lo, hi), fmt)
+
+
+@app.get("/api/analyses/{aid}/tile/{level}/{tx}/{ty}.webp")
+def tile_webp(aid: str, level: int, tx: int, ty: int,
+              wc: float | None = None, ww: float | None = None, v: str = ""):
+    """Full detail on zoom, as lossless WebP. Tile (tx, ty) covers level
+    pixels tx*256 .. tx*256+255 across and ty*256 .. down; at level L one
+    level pixel is 2**L scan pixels on a side."""
+    data, media = _tile(aid, level, tx, ty, wc, ww, "webp")
+    return Response(data, media_type=media,
+                    headers={"Cache-Control": _picture_cache(v)})
+
+
+@app.get("/api/analyses/{aid}/tile/{level}/{tx}/{ty}.png")
+def tile_png(aid: str, level: int, tx: int, ty: int,
+             wc: float | None = None, ww: float | None = None, v: str = ""):
+    """The same piece as PNG, for a browser that cannot show lossless WebP."""
+    data, media = _tile(aid, level, tx, ty, wc, ww, "png")
+    return Response(data, media_type=media,
+                    headers={"Cache-Control": _picture_cache(v)})
 
 
 def _block_placement(rec: dict):
@@ -1191,44 +1352,71 @@ def _block_view_key(rec: dict, centre, angle: float) -> str:
     phantom is registered again, so the same counter value can name two
     different placements — and a cache keyed on it served the old picture
     under the new rings. The picture is a function of the stored pixels, the
-    registration and where the block sits, so those are what it is keyed on.
+    registration and where the block sits, so those are what it is keyed on
+    — and of how pictures are made, hence the picture version.
     """
     reg = (rec.get("reg") or {}).get("transform")
     basis = json.dumps([rec.get("sha256") or "", reg, ALGO_VERSION,
+                        PICTURE_VERSION,
                         [round(float(c), 4) for c in centre],
                         round(float(angle), 4)], sort_keys=True, default=str)
     return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
 
 
-def _keep_block_png(aid: str, key: str, view: dict) -> bytes:
-    """The close-up as PNG, kept in this worker under the key it shows.
+def _block_gain(gain: int) -> int:
+    """The contrast the page's slider asks for, in per cent, on the slider's
+    own steps of 10 between 20 and 300 — so every step is one picture the
+    browser can keep, not one per pixel of slider travel."""
+    return int(min(300, max(20, 10 * round(gain / 10))))
+
+
+def _keep_block_values(aid: str, key: str, view: dict) -> dict:
+    """The processed close-up values, kept in this worker under the key they
+    show, so each contrast step is a window and an encode — not the whole
+    close-up computed again."""
+    while len(_img_cache) > 24:
+        _img_cache.pop(next(iter(_img_cache)), None)
+    _img_cache[(aid, "lcvalues", key)] = view
+    return view
+
+
+def _keep_block_picture(aid: str, key: str, view: dict, gain: int = 100,
+                        fmt: str = "png") -> tuple[bytes, str]:
+    """One contrast step of the close-up, kept in this worker under the key
+    it shows -> (bytes, media type).
 
     The one place it is encoded, whichever request gets there first. Keyed by
     what the picture shows, so whatever is kept under a key is by
-    construction that key's picture and never has to be checked again."""
-    cache_key = (aid, "lcview", key)
+    construction that key's picture and never has to be checked again.
+
+    The contrast is the block's own window narrowed (or widened) about its
+    middle by gain/100, applied to the unrounded processed values and encoded
+    losslessly. It used to be a stretch of the 8-bit picture in the browser,
+    which at 1.5-3x left only 87-171 of 256 grey levels."""
+    cache_key = (aid, "lcview", key, gain, fmt)
     # Held here rather than read back from the cache: another request's
     # eviction may drop the entry between storing it and answering.
-    png = _img_cache.get(cache_key)
-    if png is None:
-        from PIL import Image
-        buf = io.BytesIO()
-        Image.fromarray((view["image"] * 255).astype(np.uint8)).save(
-            buf, format="png")
-        png = buf.getvalue()
+    picture = _img_cache.get(cache_key)
+    if picture is None:
+        lo, hi = view["window"]
+        mid, half = (lo + hi) / 2, (hi - lo) / 2 / (gain / 100)
+        values = np.where(np.isfinite(view["values"]), view["values"], lo)
+        picture = imaging.encode_lossless(
+            imaging.window_to_grey(values, mid - half, mid + half), fmt)
         while len(_img_cache) > 24:
             _img_cache.pop(next(iter(_img_cache)), None)
-        _img_cache[cache_key] = png
-    return png
+        _img_cache[cache_key] = picture
+    return picture
 
 
 @app.get("/api/analyses/{aid}/lowcontrast_view")
-def lowcontrast_view(aid: str):
+def lowcontrast_view(aid: str, fmt: str = "png"):
     """Where each disc is in the block view, and how plainly it shows.
 
     Separate from the picture so the picture can be cached on its own: the
     markers change whenever the block is nudged, the picture only when the
-    geometry it was rendered from changes.
+    geometry it was rendered from changes. ``fmt`` is the picture format the
+    page will ask for next, so that one is ready.
     """
     rec = store.get(aid)
     if rec is None:
@@ -1237,13 +1425,14 @@ def lowcontrast_view(aid: str):
     ctx = _ctx(aid, rec)
     view = lowcontrast.block_view(ctx, centre, angle)
     key = _block_view_key(rec, centre, angle)
+    _keep_block_values(aid, key, view)
     # The page asks for exactly this picture next, by this key. Encoding it
     # now, from the view just computed, makes that request a lookup: the
     # close-up used to be computed twice for every placement, once here for
     # its size and once more for its pixels. Only when this process answers
     # that request too — always under run_app.py; under gunicorn another
     # worker may take it and render as before, and this encode is then spent.
-    _keep_block_png(aid, key, view)
+    _keep_block_picture(aid, key, view, 100, "webp" if fmt == "webp" else "png")
     return pipeline.to_jsonable({
         "size_px": view["size_px"],
         "px_per_mm": view["px_per_mm"],
@@ -1260,8 +1449,7 @@ def lowcontrast_view(aid: str):
     })
 
 
-@app.get("/api/analyses/{aid}/lowcontrast_view.png")
-def lowcontrast_view_png(aid: str, key: str = "", seq: int = 0):
+def _close_up(aid: str, key: str, gain: int, fmt: str) -> Response:
     """The block on its own: straightened, flattened, windowed to itself.
 
     About twenty kilobytes against the nine hundred of the full render, which
@@ -1285,28 +1473,50 @@ def lowcontrast_view_png(aid: str, key: str = "", seq: int = 0):
     keep them. When it does not — a page asking about a placement that has
     since moved — the current picture is still sent, but marked not to be
     kept, so it can never be stored under the name of a placement it does not
-    show. ``seq`` is accepted from pages loaded before this changed and
-    otherwise ignored.
+    show.
+
+    It is a processed view — smoothed on a 0.25 mm grid and flattened — and
+    the page says so; the scan's own pixels of the discs are in the viewer.
+    ``gain`` is the contrast step (see _keep_block_picture).
     """
     # Before any lookup: a record deleted through another worker must stop
     # being served from this one's memory, whatever name it is asked by.
     if not store.exists(aid):
         _drop_cached_image(aid)
         raise HTTPException(404, "not found")
-    kept = _img_cache.get((aid, "lcview", key)) if key else None
-    if kept is not None:
-        return Response(kept, media_type="image/png",
-                        headers={"Cache-Control": "private, max-age=86400"})
+    gain = _block_gain(gain)
+    if key:
+        kept = _img_cache.get((aid, "lcview", key, gain, fmt))
+        view = _img_cache.get((aid, "lcvalues", key))
+        if kept is None and view is not None:
+            kept = _keep_block_picture(aid, key, view, gain, fmt)
+        if kept is not None:
+            return Response(kept[0], media_type=kept[1],
+                            headers={"Cache-Control": _PICTURE_KEEP})
     rec = store.get(aid)
     _, centre, angle = _block_placement(rec)
     current = _block_view_key(rec, centre, angle)
-    png = _img_cache.get((aid, "lcview", current))
-    if png is None:
-        png = _keep_block_png(aid, current, lowcontrast.block_view(
+    view = _img_cache.get((aid, "lcvalues", current))
+    if view is None:
+        view = _keep_block_values(aid, current, lowcontrast.block_view(
             _ctx(aid, rec), centre, angle))
-    keep = "private, max-age=86400" if key == current else "no-store"
-    return Response(png, media_type="image/png",
-                    headers={"Cache-Control": keep})
+    data, media = _keep_block_picture(aid, current, view, gain, fmt)
+    keep = _PICTURE_KEEP if key == current else _PICTURE_NO_KEEP
+    return Response(data, media_type=media, headers={"Cache-Control": keep})
+
+
+@app.get("/api/analyses/{aid}/lowcontrast_view.webp")
+def lowcontrast_view_webp(aid: str, key: str = "", gain: int = 100):
+    """The close-up as lossless WebP (see _close_up)."""
+    return _close_up(aid, key, gain, "webp")
+
+
+@app.get("/api/analyses/{aid}/lowcontrast_view.png")
+def lowcontrast_view_png(aid: str, key: str = "", gain: int = 100,
+                         seq: int = 0):
+    """The close-up as PNG (see _close_up). ``seq`` is accepted from pages
+    loaded before the picture was named by its key, and ignored."""
+    return _close_up(aid, key, gain, "png")
 
 
 class CornersBody(BaseModel):
@@ -2913,35 +3123,22 @@ def _picture_ctx(aid: str, rec: dict):
                                "sid_mm": rec.get("sid_mm") or 1000.0})
 
 
-#: Columns of pictures in one comparison. Twelve fit an A4 landscape page at
-#: a readable size, and at about fifty kilobytes a scan keep the page near
-#: half a megabyte of pictures.
-PICTURE_COLUMNS_MAX = 12
-
-
 def _comparison_pictures(recs: list[dict]) -> dict:
     """The pictures of every test area, per analysis, for the comparison.
 
-    Kept on disk once drawn (thumbnails.pictures_for), so only a scan never
-    shown before costs a decode. Whatever goes wrong with one scan — a
+    Kept on disk once sampled (thumbnails.pictures_for), so only a scan
+    never shown before costs a decode. Whatever goes wrong with one scan — a
     missing source file, a corrupted registration, a region that will not
     render — becomes labelled empty cells for that scan; the report itself
     never fails because of a picture.
 
-    At most PICTURE_COLUMNS_MAX scans get pictures: the reference scans first,
-    then the most recent. A comparison is built from a filter, and "every
-    analysis of this phantom" can be sixty — about three megabytes of pictures
-    and minutes of first-time decoding inside one request, on a 512 kbit/s
-    link. The page says how many were left out; the charts still cover all.
+    Every selected scan gets pictures — the user's choice. There used to be
+    a limit of twelve, the reference scans and the most recent; the cost of
+    many is measured and written in docs/FIELD_TEST_PLAN.md (step 12).
     """
     # Only analyses with results are in the report at all.
-    eligible = [r for r in recs if r.get("results")]
-    references = [r for r in eligible if r.get("is_baseline")]
-    others = sorted((r for r in eligible if not r.get("is_baseline")),
-                    key=lambda r: r.get("acquired_at") or r.get("created_at")
-                    or "", reverse=True)
     out = {}
-    for slim in (references + others)[:PICTURE_COLUMNS_MAX]:
+    for slim in (r for r in recs if r.get("results")):
         aid = slim["id"]
         try:
             rec = store.get(aid)        # the listing omits reg and geometry
@@ -2987,8 +3184,8 @@ def report_html(aid: str):
     if rec.get("geometry"):
         try:
             ctx = _ctx(aid)
-            overlay = pipeline.render_overlay(_scan(aid), ctx, rec["geometry"],
-                                              fmt="jpeg")
+            overlay = pipeline.report_overview(_scan(aid), ctx,
+                                               rec["geometry"])
         except Exception:
             overlay = None
     baseline = store.baseline_for(rec["signature"], rec.get("phantom", ""),

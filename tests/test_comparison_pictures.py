@@ -188,35 +188,44 @@ def test_a_scan_without_a_placed_block_still_shows_what_it_can(client):
     assert len(missing) == 1 and thumbnails.NO_BLOCK in missing[0]
 
 
+def _b64s(cells) -> list[str]:
+    return [re.search(r'base64,([A-Za-z0-9+/=]+)"', c).group(1) for c in cells]
+
+
 def test_one_window_per_row_taken_from_the_reference_scan(client):
     """The shared window comes from the reference scan when the selection
-    holds one, so every other scan is shown the way the reference looks. The
+    holds one, so every other scan is shown the way the reference looks.
+    Each picture is drawn by the server on that window from the kept
+    unrounded values — it used to be stretched there in the browser from an
+    8-bit picture on its own window, which cost up to 47 grey levels. The
     low-contrast close-up is normalised to itself and is never put on a
     shared window — its brightness means nothing next to another scan's."""
-    a, b = _computed(client), _computed(client)
-    client.mod.store.set_baseline(b)
     from phantom_qa import thumbnails
+    a = _computed(client)
+    b = _computed(client, pixels=_image() * 1.25)     # a brighter exposure
+    client.mod.store.set_baseline(b)
     page = _report(client, a, b).text
     kept = {aid: thumbnails._read(client.mod.store.thumbs_dir(aid),
                                   _key(client, aid)) for aid in (a, b)}
-    section = _pictures_section(page)
-    rows = re.findall(r"<tr( data-ref-lo=\"[^\"]*\" data-ref-hi=\"[^\"]*\")?>"
-                      r"<th class='row-head'>([^<]*)", section)
-    by_title = {title: attrs for attrs, title in rows}
-    assert by_title["Low-contrast block"] == "", \
-        "the self-normalised close-up must not get a shared window"
+    rows = _rows(_pictures_section(page))
     for region, title in (("phantom", "Whole phantom"),
                           ("uniformity", "Uniformity squares")):
-        lo = float(re.search(r'data-ref-lo="([^"]+)"', by_title[title]).group(1))
-        assert lo == pytest.approx(kept[b][region]["lo"], rel=1e-6), \
-            f"{title}: the shared window is not the reference scan's"
+        assert kept[a][region]["lo"] != kept[b][region]["lo"],             "the scenario needs two scans with different windows"
+        lo, hi = kept[b][region]["lo"], kept[b][region]["hi"]
+        want = {thumbnails.encode_on(kept[x][region], lo, hi)["b64"]
+                for x in (a, b)}
+        assert set(_b64s(rows[title])) == want,             f"{title}: not drawn on the reference scan's window"
+    own = {thumbnails.encode_on(kept[x]["lowcontrast"],
+                                kept[x]["lowcontrast"]["lo"],
+                                kept[x]["lowcontrast"]["hi"])["b64"]
+           for x in (a, b)}
+    assert set(_b64s(rows["Low-contrast block"])) == own,         "the self-normalised close-up must keep its own window"
+    section = _pictures_section(page)
     assert "shared window taken from here" in section
-    # Without JavaScript the pictures show in their own windows — and the
-    # note has to say so rather than claim a shared one.
-    assert "<div class='win-note' data-own=" in section
-    assert re.search(r"data-shared='[^']*'>Each picture in its own window\.",
-                     section)
-    assert "<label class='win-toggle' hidden>" in section
+    assert "One window for every scan, taken from" in section
+    for trace in ("data-ref-lo", "data-rlo", "win-toggle", "own-window",
+                  "getImageData", "putImageData", "canvas"):
+        assert trace not in page, f"{trace}: something is re-mapped in the browser"
 
 
 def _rows(section: str) -> dict:
@@ -236,24 +245,25 @@ def test_scans_from_another_detector_are_not_put_on_its_window(client):
 
     So each protocol shares a window of its own, and a scan alone on its
     protocol keeps its own window; the cells say which."""
+    from phantom_qa import thumbnails
     from phantom_qa.comparison_report import _ALONE_ON_PROTOCOL
-    aids = [_computed(client) for _ in range(5)]
+    aids = [_computed(client, pixels=_image() * (1.0 + 0.1 * k)) for k in range(5)]
     store = client.mod.store
     for aid, sig in zip(aids, ("A", "A", "B", "B", "C")):
         store.update(aid, signature=sig)
     cells = _rows(_pictures_section(_report(client, *aids).text))["Whole phantom"]
+    kept = [thumbnails._read(store.thumbs_dir(aid), _key(client, aid))["phantom"]
+            for aid in aids]
 
-    def window(cell, attr):
-        m = re.search(rf'{attr}="([^"]+)"', cell)
-        return float(m.group(1)) if m else None
+    def on(i, j):
+        """Scan i's picture as drawn on scan j's window."""
+        return thumbnails.encode_on(kept[i], kept[j]["lo"], kept[j]["hi"])["b64"]
 
-    own = [window(c, "data-lo") for c in cells]
-    target = [window(c, "data-rlo") for c in cells]
-    assert target[0] == target[1] == own[0], "the first protocol shares scan 1"
-    assert target[2] == target[3] == own[2], \
-        "the second protocol shares its own first scan, not scan 1"
-    assert own[4] is None and target[4] is None, \
-        "a scan alone on its protocol keeps its own window"
+    got = _b64s(cells)
+    assert got[0] == on(0, 0) and got[1] == on(1, 0),         "the first protocol shares scan 1"
+    assert got[2] == on(2, 2) and got[3] == on(3, 2),         "the second protocol shares its own first scan, not scan 1"
+    assert got[4] == on(4, 4), "a scan alone on its protocol keeps its own window"
+    assert got[1] != on(1, 1), "the scenario needs windows that differ"
     assert _ALONE_ON_PROTOCOL in cells[4]
     assert "another detector or protocol" in cells[2]
     assert "another detector or protocol" not in cells[0]
@@ -301,28 +311,39 @@ def test_the_inline_script_is_allowed_by_its_hash_and_nothing_else(full_client):
 
 
 def test_a_damaged_picture_cannot_break_out_of_the_page(fast_charts):
-    """The pictures are read back from files on the server's disk and pasted
-    into attributes. A damaged file becomes a labelled empty cell — it can
-    never close the attribute and put its own markup on the page."""
+    """What is kept of a picture is read back from a file on the server's
+    disk. Values that are not an array, or a window that is not a number,
+    become a labelled empty cell; words kept with it are escaped. Nothing
+    from the file can put its own markup on the page."""
     from phantom_qa.comparison_report import build_comparison_report
     from test_store_labels import results_for
-    hostile = {"mime": "image/jpeg", "window": "raw", "lo": 0, "hi": 1,
-               "b64": 'AAAA"><img src=x onerror=alert(1)>', "w": 4, "h": 4}
-    odd_mime = {"mime": 'image/jpeg"><b', "b64": "AAAA", "w": 4, "h": 4}
+    grey = np.zeros((8, 8), np.float32)
+    kept = {
+        "phantom": {"values": 'AAAA"><img src=x onerror=alert(1)>',
+                    "lo": 0.0, "hi": 1.0, "window": "raw"},
+        "linepairs": {"values": grey, "lo": float("nan"), "hi": 1.0,
+                      "window": "raw"},
+        "wedge": {"missing": "<script>alert(2)</script>"},
+        "uniformity": {"values": grey, "lo": 0.0, "hi": 1.0, "window": "raw",
+                       "labels": ["<img src=x onerror=alert(3)>"]},
+    }
     recs = [{"id": "x1", "site": "S", "phantom": "P", "status": "pass",
              "results": results_for(), "created_at": "2026-09-21 10:00:00"}]
-    page = build_comparison_report(
-        recs, pictures={"x1": {"phantom": hostile, "wedge": odd_mime}})
-    assert "onerror" not in page and 'jpeg"><b' not in page
-    cells = _cells(_pictures_section(page))
-    assert sum("class='pic-missing'" in c for c in cells) == len(cells)
+    page = build_comparison_report(recs, pictures={"x1": kept})
+    assert "<img src=x" not in page and "<script>alert" not in page
+    rows = _rows(_pictures_section(page))
+    for title in ("Whole phantom", "Line-pair strip", "Wedge"):
+        assert "class='pic-missing'" in rows[title][0], title
+    assert '<figure class="pic"' in rows["Uniformity squares"][0]
+    assert "&lt;img src=x onerror=alert(3)&gt;" in rows["Uniformity squares"][0]
 
 
 def test_the_table_prints_on_landscape_pages(client):
-    """Several scans side by side do not fit a portrait page."""
+    """Several scans side by side do not fit a portrait page. The whole
+    comparison prints landscape now (Export to PDF, step 14), the table
+    across the page's width."""
     page = _report(client, _computed(client)).text
-    assert re.search(r"@page pictures \{[^}]*size:A4 landscape", page)
-    assert ".pics-card { page:pictures; }" in page
+    assert re.search(r"@page \{ size: A4 landscape;", page)
     assert "table-layout:fixed" in page
 
 
@@ -341,8 +362,9 @@ def test_the_pictures_of_a_real_scan_fit_the_budget(sample_scans, pdef):
         reg = pipeline.run_stage_a(scan, pdef)
         ctx = pipeline.build_ctx(scan, pdef, reg, {"scan_meta": scan.meta})
         pics = thumbnails.render_all(ctx, pipeline.propose_all(ctx))
-        assert all("b64" in p for p in pics.values()), pics
-        total = sum(p["bytes"] for p in pics.values())
+        assert all(thumbnails.drawable(p) for p in pics.values()), pics
+        total = sum(thumbnails.encode_on(p, p["lo"], p["hi"])["bytes"]
+                    for p in pics.values())
         assert total <= BUDGET_PER_SCAN, \
             f"{total} B for one scan's pictures — the budget is {BUDGET_PER_SCAN}"
         totals.append(total)
@@ -387,6 +409,24 @@ def test_a_second_report_draws_nothing_again(client, monkeypatch):
     second = _report(client, a, b).text
     assert len(calls) == 2, "the second report drew the pictures again"
     assert _pictures_section(first) == _pictures_section(second)
+
+
+def test_pictures_kept_the_old_way_are_drawn_again_once(client, monkeypatch):
+    """Before, finished JPEGs on their own window were kept (.json). They
+    cannot be drawn on another window, so they are drawn again once, from
+    the scan, and the old file goes."""
+    import json
+    aid = _computed(client)
+    directory = client.mod.store.thumbs_dir(aid)
+    os.makedirs(directory, exist_ok=True)
+    old = os.path.join(directory, _key(client, aid) + ".json")
+    with open(old, "w", encoding="utf-8") as f:
+        json.dump({"key": _key(client, aid), "version": 1, "regions": {}}, f)
+    calls = _count_renders(monkeypatch)
+    cells = _cells(_pictures_section(_report(client, aid).text))
+    assert len(calls) == 1
+    assert all('<figure class="pic"' in c for c in cells)
+    assert os.listdir(directory) == [_key(client, aid) + ".npz"]
 
 
 def test_the_report_does_not_keep_the_scans_it_decoded(client):
@@ -568,11 +608,9 @@ def test_the_same_phantom_looks_the_same_however_it_lay():
     face_down = exposure([[-4.0, 0.0], [0.0, -4.0]])   # mirrored
 
     def phantom_picture(ctx):
+        # The kept values; outside the detector is shown black.
         p = thumbnails.render_all(ctx, {})["phantom"]
-        from PIL import Image
-        import io
-        return np.asarray(Image.open(io.BytesIO(base64.b64decode(p["b64"]))),
-                          float)
+        return np.nan_to_num(p["values"].astype(float), nan=0.0)
 
     ref = phantom_picture(square)
     for name, ctx in (("turned", turned), ("face down", face_down)):

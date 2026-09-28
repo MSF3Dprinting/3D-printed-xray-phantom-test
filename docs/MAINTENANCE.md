@@ -12,7 +12,7 @@ Backups, integrity checks, re-analysis and logs.
 | `data/phantom_qa.sqlite3` | All analyses: labels, geometry, results, validation, audit trail; the per-phantom measuring-point layouts; the Stage C undo history | no | **yes** |
 | `data/phantom_qa.sqlite3-wal`, `-shm` | SQLite runtime companions | no | no |
 | `data/uploads/*.bin` | The original scan of every analysis | no | **yes** |
-| `data/thumbs/<analysis-id>/` | Small pictures of each test area, kept for the comparison report; removed with their analysis | no | no — redrawn from the scan when next needed |
+| `data/thumbs/<analysis-id>/` | The sampled values of each test area (about 1 MB per analysis), kept so the comparison report can draw its small pictures on any window; removed with their analysis | no | no — sampled again from the scan when next needed |
 | `logs/*` | Application, error and audit logs | no | per retention policy |
 
 `data/` and `logs/` are excluded by `.gitignore`, so `git pull` and branch

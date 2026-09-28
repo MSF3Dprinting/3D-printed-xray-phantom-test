@@ -34,6 +34,35 @@ const S = {
      waits a little longer than the server does, so a bounded analysis reports
      its own failure rather than being cut off by the page. */
   analysisTimeoutS: 120,
+  /* Put in every picture address, learned at boot from /api/auth. The server
+     lets the browser keep a picture for 30 days only when its address names
+     the current version; until it is known, pictures are simply not kept. */
+  pictureVersion: "",
+  /* The viewer in CSS pixels, and screen pixels per CSS pixel (1.25 or 1.5 on
+     laptops set to 125 or 150 %). Set by resizeCanvas. */
+  cssW: 0, cssH: 0, dpr: 1,
+  /* "webp" once the browser has shown it can display lossless WebP, "png"
+     otherwise. The longest side the picture on screen was asked for at, and
+     the window part of its address, so a resize can ask again for the same
+     window at the new size. */
+  pictureFormat: "png", pictureScale: 0, imageParams: "",
+  /* Numbers each picture request, so only the newest answer is used; and
+     whether the newest one failed, which the viewer then says. */
+  imageRequest: 0, imageFailed: false,
+  /* Full detail on zoom: seconds of stillness before it is fetched (from
+     /api/auth), the pieces fetched so far, the window part of the address
+     of the picture on screen (the pieces must match it), and what the view
+     was when the stillness timer last started. */
+  detailDelayS: 1, tiles: new Map(), shownParams: null, viewSig: "",
+  detailTimer: null,
+  /* Pieces waiting to download, nearest the centre first; how many are
+     downloading now; failed attempts per piece; and whether a piece failed
+     so often that the viewer says so. */
+  tileQueue: [], tileActive: 0, tileTries: new Map(), detailFailed: false,
+  /* Where an inspector zooms in (line-pair groups, discs), from the server;
+     the pieces of them waiting to download in the background; and whether
+     this analysis was opened in the step-by-step workflow, which preloads. */
+  detailRegions: [], preloadQueue: [], preloadPending: false,
   /* Set once a packed upload is refused as damaged on the way, and kept until
      the page is reloaded: every later file is then sent as it is (see
      uploadFile), so a fault in this browser's packing cannot refuse the same
@@ -110,7 +139,10 @@ function rememberedAnalysis() {
 function clearAnalysisState() {
   S.aid = null; S.record = null; S.reg = null; S.geometry = null;
   S.results = null; S.baseline = null; S.imgEl = null;
-  S.wlPreview = null; S.renderedWL = null;
+  S.wlPreview = null; S.renderedWL = null; S.imageFailed = false;
+  clearTiles(); S.shownParams = null; S.viewSig = "";
+  clearTimeout(S.detailTimer);
+  S.detailRegions = []; S.preloadPending = false;
   S.selectedRoi = null; S.mode = "normal"; S.manualCorners = [];
   S.fieldEdgeSide = null; S.dragRoi = null; S.dimPreview = null;
   S.pendingFile = null; S.pickPress = null;
@@ -387,42 +419,130 @@ const scr2nat = (p) => [ (p[0] - S.view.tx) / (S.imgScale * S.view.k),
 const canvas = $("#viewer");
 const ctx2d = canvas.getContext("2d");
 
+/* The canvas is sized in the screen's own pixels. On a laptop set to 125 or
+   150 % a canvas of CSS pixels is stretched by the browser, which softens the
+   whole picture. Everything else — outlines, clicks, the view — stays in CSS
+   pixels; draw() scales once for the screen. The CSS size is set explicitly
+   because a canvas takes its size on the page from its pixel count. */
+let resizeReload = null;
 function resizeCanvas() {
   const wrap = $("#viewer-wrap");
-  canvas.width = wrap.clientWidth;
-  canvas.height = wrap.clientHeight;
+  S.dpr = window.devicePixelRatio || 1;
+  S.cssW = wrap.clientWidth;
+  S.cssH = wrap.clientHeight;
+  canvas.width = Math.round(S.cssW * S.dpr);
+  canvas.height = Math.round(S.cssH * S.dpr);
+  canvas.style.width = `${S.cssW}px`;
+  canvas.style.height = `${S.cssH}px`;
+  // A viewer that grew or shrank past a size step needs a picture made for
+  // it. Asked once the resizing has stopped, not for every step of a drag.
+  clearTimeout(resizeReload);
+  if (S.aid && S.imgEl && pictureScale() !== S.pictureScale) {
+    resizeReload = setTimeout(() => loadImage(S.imageParams), 300);
+  }
   draw();
 }
 window.addEventListener("resize", resizeCanvas);
 
+/* The longest side of the picture this viewer can show: the scan fitted into
+   the viewer, in the screen's own pixels. Rounded DOWN to a 128 px step, so a
+   slightly different window size reuses the picture the browser kept — down,
+   not up, because a picture larger than the screen is shrunk by the browser,
+   the softening this is here to avoid. Never larger than the scan. */
+function pictureScale() {
+  const longest = Math.max(S.nativeCols, S.nativeRows);
+  const fit = Math.min(S.cssW * S.dpr / S.nativeCols,
+                       S.cssH * S.dpr / S.nativeRows) * 0.98;
+  const step = Math.floor(longest * fit / 128) * 128;
+  return Math.min(longest, Math.max(256, step));
+}
+
+/* Whether this browser can show lossless WebP, found out once from a
+   one-pixel lossless picture. Every current browser can; one that cannot
+   (Safari before 14, Firefox before 65) is sent PNG — the same picture, 8-15 %
+   larger. */
+const WEBP_LOSSLESS_PROBE =
+  "data:image/webp;base64,UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA==";
+const pictureFormatKnown = new Promise((resolve) => {
+  const probe = new Image();
+  probe.onload = () => {
+    S.pictureFormat = probe.width === 1 && probe.height === 1 ? "webp" : "png";
+    resolve();
+  };
+  probe.onerror = () => { S.pictureFormat = "png"; resolve(); };
+  probe.src = WEBP_LOSSLESS_PROBE;
+});
+
 function zoomFit() {
   if (!S.imgEl) return;
-  const k = Math.min(canvas.width / S.imgEl.width,
-                     canvas.height / S.imgEl.height) * 0.98;
-  S.view = { k, tx: (canvas.width - S.imgEl.width * k) / 2,
-             ty: (canvas.height - S.imgEl.height * k) / 2 };
+  const fill = Math.min(S.cssW / S.imgEl.width, S.cssH / S.imgEl.height) * 0.98;
+  // A picture made for this viewer is shown one picture pixel to one screen
+  // pixel: exactly what the server averaged, nothing resampled by the
+  // browser. Only the scan's full-size picture, on a screen larger still, is
+  // enlarged to fill the viewer.
+  const k = S.imgEl.width < S.nativeCols ? Math.min(fill, 1 / S.dpr) : fill;
+  // Placed on whole screen pixels: half a pixel off, every pixel would be
+  // blended with its neighbour.
+  const onScreen = (css) => Math.round(css * S.dpr) / S.dpr;
+  S.view = { k, tx: onScreen((S.cssW - S.imgEl.width * k) / 2),
+             ty: onScreen((S.cssH - S.imgEl.height * k) / 2) };
   draw();
 }
 
 function loadImage(params = "") {
   if (!S.aid) return;
+  const aid = S.aid;
   // What window these bytes will represent, so a later preview knows what it
   // is re-mapping FROM. Without it the preview would compound its own guesses.
   const asked = wlFromParams(params);
-  const img = new Image();
-  img.onload = () => {
-    const first = !S.imgEl;
-    S.imgEl = img;
-    S.renderedWL = asked;
-    S.wlPreview = null;              // the exact render supersedes the preview
-    S.imgScale = img.width / S.nativeCols;
-    if (first) zoomFit(); else draw();
-  };
-  // JPEG: about a tenth of the PNG, two seconds on a field link instead of
-  // seventeen. Nothing is measured from this picture — the server measures
-  // the original scan, and the discs are placed on their own lossless
-  // close-up — and the window preview re-maps whatever bytes arrive.
-  img.src = `api/analyses/${S.aid}/image.jpg${params}`;
+  const scale = pictureScale();
+  S.imageParams = params;
+  // Only the newest request may reach the screen: an answer for an older
+  // window arriving late would otherwise replace a newer one, and show a
+  // window the slider no longer names.
+  const seq = ++S.imageRequest;
+  S.imageFailed = false;
+  pictureFormatKnown.then(() => {
+    const img = new Image();
+    img.onload = () => {
+      if (S.aid !== aid) return;       // another analysis was opened meanwhile
+      if (seq !== S.imageRequest) return;
+      const first = !S.imgEl;
+      // A picture of another size (the viewer was resized) keeps what is on
+      // screen where it is: same scan pixel, same place.
+      if (!first && S.imgEl.width !== img.width) {
+        S.view.k *= S.imgEl.width / img.width;
+      }
+      S.imgEl = img;
+      S.pictureScale = scale;
+      S.renderedWL = asked;
+      // Pieces of full detail belong to one window; another window needs
+      // its own, and the old ones must never be drawn over the new picture.
+      if (S.shownParams !== params) clearTiles();
+      S.shownParams = params;
+      S.wlPreview = null;              // the exact render supersedes the preview
+      S.imgScale = img.width / S.nativeCols;
+      // ...unless the slider moved on while it was on its way: then it is the
+      // base of a new, labelled preview until the next exact picture.
+      renderWLPreview();
+      if (first) zoomFit(); else draw();
+      // After the picture, never before: the preload must not delay it.
+      if (first && S.preloadPending) {
+        S.preloadPending = false;
+        preloadDetail();
+      }
+    };
+    img.onerror = () => {
+      if (S.aid !== aid || seq !== S.imageRequest) return;
+      S.imageFailed = true;            // said on screen; the preview stays labelled
+      draw();
+    };
+    // Lossless: looking at this picture IS the inspection, and the JPEG it
+    // replaced erased the finest line-pair group on the Philips scans.
+    img.src = `api/analyses/${aid}/image.${S.pictureFormat}${params}`
+            + `${params ? "&" : "?"}scale=${scale}`
+            + `&v=${encodeURIComponent(S.pictureVersion)}`;
+  });
 }
 
 /* The absolute window a request asks for, or the server's own default.
@@ -611,15 +731,358 @@ function activeRois() {
   return out;
 }
 
+/* What the viewer says about the picture on screen. It is exact unless one
+   of two things holds, and then it says so where it cannot be missed: a
+   quick preview is standing in while the exact picture for the new window
+   loads, or that picture could not be loaded. The label goes only when the
+   exact picture for the chosen window is on screen. */
+function updatePictureNote() {
+  const note = $("#picture-note");
+  if (!note) return;
+  let text = "";
+  if (S.imageFailed) {
+    text = "Exact picture could not be loaded — try again";
+  } else if (S.wlPreview) {
+    text = "Preview — exact picture loading";
+  } else if (S.detailFailed) {
+    text = "Full detail could not be loaded — zoom or pan to try again";
+  } else if (detailMissing()) {
+    // Zoomed in beyond the overview: until the pieces cover the screen, what
+    // is there is the overview's pixels enlarged, not the scan's own.
+    text = "Loading full detail…";
+  }
+  // draw() runs on every mouse move; the page is touched only on a change.
+  if (note.dataset.text === text) return;
+  note.dataset.text = text;
+  note.classList.toggle("hidden", !text);
+  note.classList.toggle("failed", S.imageFailed || S.detailFailed);
+  note.classList.toggle("detail", text === "Loading full detail…");
+  $("#picture-retry").classList.toggle("hidden", !S.imageFailed);
+  $("#picture-note-text").textContent = text;
+}
+$("#picture-retry").addEventListener("click", () => loadImage(S.imageParams));
+
+/* ================= full detail on zoom =================
+
+   Zooming in on the overview only enlarges its pixels: at fit it has about
+   one pixel per screen pixel and no more, so the finest line-pair bars are
+   not in it. Once the view has been still for the configured time (1 s, the
+   user's choice), the pieces of the scan at the detail this zoom needs are
+   fetched for what is on screen and drawn over the overview at their exact
+   scan position: level 0 is the scan's own pixels, levels 1 and 2 the exact
+   averages of 2x2 and 4x4 of them. Same sizes as imaging.TILE and LEVELS on
+   the server. */
+const TILE = 256, LEVELS = 3;
+
+/* Screen pixels per scan pixel at the current zoom. */
+function screenPerScanPx() { return S.view.k * S.imgScale * S.dpr; }
+
+/* The zoom level whose pixels are closest to the screen's without being
+   coarser, or -1 while the overview itself has a pixel for every screen
+   pixel — at fit, nothing is fetched. */
+function detailLevel() {
+  if (!S.imgEl || S.view.k * S.dpr <= 1.01) return -1;
+  const level = Math.floor(Math.log2(1 / screenPerScanPx()));
+  return Math.min(LEVELS - 1, Math.max(0, level));
+}
+
+/* The pieces of one level that overlap the viewer, as [tx, ty]. */
+function visibleTiles(level) {
+  const f = 2 ** level;
+  const a = scr2nat([0, 0]), b = scr2nat([S.cssW, S.cssH]);
+  const across = Math.ceil(Math.ceil(S.nativeCols / f) / TILE);
+  const down = Math.ceil(Math.ceil(S.nativeRows / f) / TILE);
+  const x0 = Math.max(0, Math.floor(a[0] / f / TILE));
+  const y0 = Math.max(0, Math.floor(a[1] / f / TILE));
+  const x1 = Math.min(across - 1, Math.floor(b[0] / f / TILE));
+  const y1 = Math.min(down - 1, Math.floor(b[1] / f / TILE));
+  const out = [];
+  for (let ty = y0; ty <= y1; ty++) {
+    for (let tx = x0; tx <= x1; tx++) out.push([tx, ty]);
+  }
+  return out;
+}
+
+/* Keyed by the window too: a piece is only ever drawn over the picture made
+   with the same window. */
+const tileKey = (level, tx, ty) => `${S.shownParams}|${level}|${tx}|${ty}`;
+
+/* Called from draw(): any change of the view — zoom, pan, fit, resize, a new
+   picture — starts the stillness time again; drawing for other reasons, such
+   as the mouse moving over the picture, does not. */
+function scheduleDetail() {
+  const sig = [S.view.k, S.view.tx, S.view.ty, S.cssW, S.cssH, S.dpr,
+               S.shownParams, !!S.wlPreview].join(",");
+  if (sig === S.viewSig) return;
+  S.viewSig = sig;
+  // A new view: pieces no longer on screen stop downloading at once, and
+  // pieces that failed before get their attempts back.
+  S.tileTries.clear();
+  S.detailFailed = false;
+  pruneDetail(detailLevel());
+  clearTimeout(S.detailTimer);
+  S.detailTimer = setTimeout(fetchDetail, S.detailDelayS * 1000);
+}
+
+/* At most this many pieces download at once. On a slow link more at once
+   only share the same bandwidth, each arriving later, and the browser has
+   few connections to spare for the operator's next click. */
+const TILE_PARALLEL = 2;
+
+function fetchDetail() {
+  const level = detailLevel();
+  pruneDetail(level);
+  // Not while a preview stands in for a new window: the pieces would be of
+  // the old one.
+  if (level < 0 || S.wlPreview || S.shownParams === null) return;
+  visibleTiles(level).forEach(([tx, ty]) => {
+    const key = tileKey(level, tx, ty);
+    const have = S.tiles.get(key);
+    if (have) {
+      // Waiting in the background preload but on screen now: it goes to
+      // the front with everything else on screen.
+      if (have.preload && have.state === "queued") {
+        have.preload = false;
+        S.tileQueue.push(have);
+      }
+      return;
+    }
+    if (covered(level, tx, ty) || (S.tileTries.get(key) || 0) >= 3) return;
+    const entry = newTile(level, tx, ty);
+    S.tiles.set(key, entry);
+    S.tileQueue.push(entry);
+  });
+  // The centre of the screen first: that is where the operator is looking.
+  const [cx, cy] = scr2nat([S.cssW / 2, S.cssH / 2]);
+  const away = (e) => {
+    const side = TILE * 2 ** e.level;
+    return Math.hypot((e.tx + 0.5) * side - cx, (e.ty + 0.5) * side - cy);
+  };
+  S.tileQueue.sort((a, b) => away(a) - away(b));
+  pumpTiles();
+  trimTiles();
+}
+
+/* A piece not yet asked for, of the window of the picture on screen. */
+function newTile(level, tx, ty) {
+  const aid = S.aid, params = S.shownParams;
+  return {
+    key: tileKey(level, tx, ty), aid, level, tx, ty, state: "queued",
+    ready: false, img: null, ctrl: null, preload: false,
+    url: `api/analyses/${aid}/tile/${level}/${tx}/${ty}`
+       + `.${S.pictureFormat}${params}${params ? "&" : "?"}`
+       + `v=${encodeURIComponent(S.pictureVersion)}`,
+  };
+}
+
+/* Starts downloads from the front of the queue while fewer than
+   TILE_PARALLEL are running. The background preload only uses a quiet
+   link: one piece at a time, and only while nothing is downloading for the
+   screen — so a place is always free for what the operator looks at next. */
+function pumpTiles() {
+  while (S.tileActive < TILE_PARALLEL && S.tileQueue.length) {
+    const entry = S.tileQueue.shift();
+    if (entry.state === "queued") loadTile(entry);
+  }
+  while (S.tileActive < 1 && S.preloadQueue.length) {
+    const entry = S.preloadQueue.shift();
+    if (entry.preload && entry.state === "queued"
+        && S.tiles.get(entry.key) === entry) loadTile(entry);
+  }
+}
+
+/* The user's decision: in the step-by-step workflow, full detail of every
+   line-pair group and every low-contrast disc downloads in the background
+   once the picture is on screen, so zooming there shows the scan's own
+   pixels at once. Full-size pieces only: they serve every zoom level. */
+function preloadDetail() {
+  if (!S.detailRegions.length || S.shownParams === null) return;
+  S.detailRegions.forEach((region) => {
+    const [x0, y0, x1, y1] = region.px;
+    for (let ty = Math.floor(y0 / TILE); ty <= Math.floor((y1 - 1) / TILE); ty++) {
+      for (let tx = Math.floor(x0 / TILE); tx <= Math.floor((x1 - 1) / TILE); tx++) {
+        if (S.tiles.has(tileKey(0, tx, ty))) continue;
+        const entry = newTile(0, tx, ty);
+        entry.preload = true;
+        S.tiles.set(entry.key, entry);
+        S.preloadQueue.push(entry);
+      }
+    }
+  });
+  pumpTiles();
+}
+
+/* Whether a piece of this level is on screen in full detail: it has
+   arrived, or the finer pieces covering it all have (a preloaded full-size
+   piece serves every coarser level). */
+function covered(level, tx, ty) {
+  const t = S.tiles.get(tileKey(level, tx, ty));
+  if (t && t.ready) return true;
+  if (level === 0) return false;
+  const f = 2 ** (level - 1);
+  const across = Math.ceil(Math.ceil(S.nativeCols / f) / TILE);
+  const down = Math.ceil(Math.ceil(S.nativeRows / f) / TILE);
+  for (let y = 2 * ty; y <= Math.min(2 * ty + 1, down - 1); y++) {
+    for (let x = 2 * tx; x <= Math.min(2 * tx + 1, across - 1); x++) {
+      if (!covered(level - 1, x, y)) return false;
+    }
+  }
+  return true;
+}
+
+/* One piece: downloaded with fetch, so it can be cancelled, and decoded off
+   the page's own thread, so zooming and panning never wait for it. Kept
+   exactly as sent — no colour conversion. The browser's cache is used as for
+   any picture: a piece seen before comes from disk. */
+async function loadTile(entry) {
+  entry.state = "loading";
+  entry.ctrl = new AbortController();
+  S.tileActive++;
+  try {
+    const r = await fetch(entry.url, { signal: entry.ctrl.signal });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const bmp = await createImageBitmap(await r.blob(), {
+      colorSpaceConversion: "none", premultiplyAlpha: "none" });
+    if (S.tiles.get(entry.key) !== entry || S.aid !== entry.aid) {
+      bmp.close();                     // cancelled or replaced meanwhile
+      return;
+    }
+    entry.img = bmp;
+    entry.state = "ready";
+    entry.ready = true;
+    draw();
+  } catch (err) {
+    if (err.name !== "AbortError" && S.tiles.get(entry.key) === entry) {
+      tileFailed(entry);
+    }
+  } finally {
+    S.tileActive--;
+    pumpTiles();
+  }
+}
+
+/* Asked again after the stillness time, three times at most; then the
+   viewer says so until the view changes. */
+function tileFailed(entry) {
+  S.tiles.delete(entry.key);
+  const tries = (S.tileTries.get(entry.key) || 0) + 1;
+  S.tileTries.set(entry.key, tries);
+  if (tries >= 3) {
+    S.detailFailed = true;
+    draw();
+    return;
+  }
+  clearTimeout(S.detailTimer);
+  S.detailTimer = setTimeout(fetchDetail, S.detailDelayS * 1000);
+}
+
+/* Whether a piece still belongs on screen: at a level this zoom draws
+   (coarser pieces fill in under finer ones), overlapping the viewer. */
+function pieceWanted(entry, need) {
+  if (need < 0 || entry.level < need || S.wlPreview) return false;
+  const a = scr2nat([0, 0]), b = scr2nat([S.cssW, S.cssH]);
+  const side = TILE * 2 ** entry.level;
+  return entry.tx * side < b[0] && (entry.tx + 1) * side > a[0]
+      && entry.ty * side < b[1] && (entry.ty + 1) * side > a[1];
+}
+
+/* Cancels what the operator has moved away from: waiting pieces are dropped
+   and running downloads aborted, so the link is free for what is on screen.
+   Pieces already here stay, to be drawn when the view comes back, and so
+   does the background preload, which is never for the screen. */
+function pruneDetail(need) {
+  S.tileQueue = S.tileQueue.filter((e) => {
+    if (pieceWanted(e, need)) return true;
+    S.tiles.delete(e.key);
+    return false;
+  });
+  S.tiles.forEach((e, key) => {
+    if (e.state === "loading" && !e.preload && !pieceWanted(e, need)) {
+      e.ctrl.abort();
+      S.tiles.delete(key);
+    }
+  });
+}
+
+/* A long session of zooming around must not keep every piece in memory; the
+   browser keeps them on disk and gives them back at once. Only pieces that
+   have arrived are let go. */
+function trimTiles() {
+  for (const [key, e] of S.tiles) {
+    if (S.tiles.size <= 600) break;
+    if (e.state === "ready") {
+      e.img.close();
+      S.tiles.delete(key);
+    }
+  }
+}
+
+/* Everything of the pieces at once: another analysis, or another window. */
+function clearTiles() {
+  S.tiles.forEach((e) => {
+    if (e.ctrl) e.ctrl.abort();
+    if (e.img) e.img.close();
+  });
+  S.tiles = new Map();
+  S.tileQueue = [];
+  S.preloadQueue = [];
+  S.tileTries = new Map();
+  S.detailFailed = false;
+}
+
+/* Whether part of the screen still shows the overview's enlarged pixels
+   where full detail belongs. */
+function detailMissing() {
+  const need = detailLevel();
+  if (need < 0 || S.wlPreview) return false;
+  return visibleTiles(need).some(([tx, ty]) => !covered(need, tx, ty));
+}
+
+/* The pieces over the overview, coarsest level first, so a finer piece is
+   always on top and a coarser one never covers it. Placed in scan pixels —
+   the same coordinates as every outline — so the measuring areas stay
+   exactly where they are. Levels no finer than the overview are not drawn;
+   finer ones that have arrived are (a preloaded full-size piece is the best
+   there is at any zoom). */
+function drawDetail() {
+  const need = detailLevel();
+  if (need < 0 || S.wlPreview) return;
+  const z = screenPerScanPx(), perScanPx = S.view.k * S.imgScale;
+  ctx2d.save();
+  ctx2d.translate(S.view.tx, S.view.ty);
+  ctx2d.scale(perScanPx, perScanPx);
+  for (let level = LEVELS - 1; level >= 0; level--) {
+    const f = 2 ** level;
+    if (1 / f <= S.imgScale) continue;
+    ctx2d.imageSmoothingEnabled = z * f < 0.999;
+    visibleTiles(level).forEach(([tx, ty]) => {
+      const t = S.tiles.get(tileKey(level, tx, ty));
+      if (t && t.ready) {
+        ctx2d.drawImage(t.img, tx * TILE * f, ty * TILE * f,
+                        t.img.width * f, t.img.height * f);
+      }
+    });
+  }
+  ctx2d.restore();
+}
+
 function draw() {
-  ctx2d.clearRect(0, 0, canvas.width, canvas.height);
+  updatePictureNote();
+  ctx2d.setTransform(S.dpr, 0, 0, S.dpr, 0, 0);    // CSS pixels from here on
+  ctx2d.clearRect(0, 0, S.cssW, S.cssH);
   if (!S.imgEl) return;
-  ctx2d.imageSmoothingEnabled = S.view.k * S.imgScale < 1.5;
+  // Screen pixels per picture pixel. From one upwards the picture is shown
+  // as the square pixels it has — never blended into a blur that could pass
+  // for detail. Below one (the viewer shrank and the smaller picture has not
+  // arrived yet) the browser has to blend them.
+  ctx2d.imageSmoothingEnabled = S.view.k * S.dpr < 0.999;
   ctx2d.save();
   ctx2d.translate(S.view.tx, S.view.ty);
   ctx2d.scale(S.view.k, S.view.k);
   ctx2d.drawImage(S.wlPreview || S.imgEl, 0, 0);
   ctx2d.restore();
+  drawDetail();
+  scheduleDetail();
 
   /* registration corners */
   if (S.reg && S.reg.summary && S.reg.summary.corners_px) {
@@ -1612,10 +2075,11 @@ function duplicateDialog(d, file) {
       (d.created_at || "").slice(0, 16).replace("T", " ") || "—";
     $("#dup-stage").textContent = stageWords(d);
     $("#dup-status").textContent = d.status || "—";
-    // Small on purpose: a few kB settles "is that my scan" on a link where the
-    // full image costs fifteen seconds.
+    // Small on purpose: about 10 kB settles "is that my scan" on a link where
+    // the full image costs seconds. Lossless like every picture of a scan.
     $("#dup-thumb").src = `api/analyses/${encodeURIComponent(d.id)}`
-                        + "/image.jpg?scale=200";
+                        + `/image.${S.pictureFormat}?scale=200&v=`
+                        + encodeURIComponent(S.pictureVersion);
 
     const back = $("#dup-backdrop");
     back.classList.remove("hidden");
@@ -2363,7 +2827,7 @@ function resumeBanner() {
   const who = m.operator ? ` · started by ${html_escape(m.operator)}` : "";
   const what = m.phantom ? ` · phantom ${html_escape(m.phantom)}` : "";
   return `<div class="reasons-why" id="resume-box">
-    <b>You have an unfinished analysis on this computer.</b>
+    <b>You have an unfinished analysis in this browser.</b>
     <p>${html_escape(m.source_name || "(scan)")}${what}${who} ·
        reached step ${html_escape(m.stage || "A")} · ${agoWords(m.saved_at)}</p>
     <p class="hint">It is stored on the server — continuing costs nothing, and
@@ -2959,8 +3423,15 @@ async function openAnalysis(aid) {
   S.sid = rec.sid_mm || 1000;
   S.nativeCols = S.reg ? S.reg.image.cols : (rec.meta.Columns || 3000);
   S.nativeRows = S.reg ? S.reg.image.rows : (rec.meta.Rows || 3000);
-  loadImage();
+  // The step-by-step workflow: once the picture is on screen, full detail of
+  // the line-pair groups and discs downloads quietly (see preloadDetail).
+  S.detailRegions = rec.detail_regions || [];
+  S.preloadPending = true;
+  // The viewer first, so the picture is asked for at the size it will be
+  // shown at: measured on a hidden viewer it would come out at the smallest
+  // size and be downloaded a second time.
   showTab("analyze");
+  loadImage();
   setStage(openingStage(rec));
 }
 
@@ -3475,10 +3946,51 @@ async function overrideLayoutSave() {
    windowed to itself — at about twenty kilobytes against the nine hundred of
    the full render.
 
-   Loaded once per geometry change. The contrast slider then works on the copy
-   already in the browser, so hunting for the faintest disc costs nothing on
-   the connection — which is what made re-windowing painful in the first
-   place. */
+   Loaded once per geometry change. Each contrast step is then a small
+   picture made exactly by the server (10-15 kB) and kept by the browser, so
+   hunting for the faintest disc costs little on the connection — which is
+   what made re-windowing painful in the first place — and never stretches
+   an 8-bit picture, which left too few grey levels to see faint discs. */
+
+/* The contrast step the slider names, in per cent, on its steps of 10. */
+function blockGain() {
+  const g = parseFloat(($("#lc-view-gain") || {}).value) || 100;
+  return Math.min(300, Math.max(20, Math.round(g / 10) * 10));
+}
+
+const blockPictureUrl = (aid, key, gain) =>
+  `api/analyses/${aid}/lowcontrast_view.${S.pictureFormat}`
+  + `?key=${key}&gain=${gain}`;
+
+/* Another contrast step: the picture on screen stays until the new one has
+   arrived, and only the newest step asked for is drawn. */
+let blockGainTimer = null, blockGainGen = 0;
+function onBlockGain() {
+  clearTimeout(blockGainTimer);
+  blockGainTimer = setTimeout(async () => {
+    const v = S.blockView;
+    const gain = blockGain();
+    if (!v || v.gain === gain) return;
+    // Its own count: a new placement loading meanwhile (loadBlockView) must
+    // neither be cancelled by this nor overwritten with the old one's step.
+    const gen = ++blockGainGen;
+    $("#lc-view-loading").classList.remove("hidden");
+    try {
+      const img = new Image();
+      img.src = blockPictureUrl(v.aid, v.meta.key, gain);
+      await new Promise((ok, fail) => { img.onload = ok; img.onerror = fail; });
+      if (gen !== blockGainGen || S.blockView !== v) return;
+      v.img = img;
+      v.gain = gain;
+      v.canvas = null;
+      drawBlockView();
+    } catch (e) {
+      // The previous step stays on screen; the next move asks again.
+    } finally {
+      if (gen === blockGainGen) $("#lc-view-loading").classList.add("hidden");
+    }
+  }, 150);
+}
 async function loadBlockView(force = false) {
   const panel = $("#lc-view-panel");
   if (!panel || !S.aid) return;
@@ -3498,16 +4010,19 @@ async function loadBlockView(force = false) {
   const gen = ++S.blockViewGen;
   const current = () => gen === S.blockViewGen && S.aid === aid;
   try {
-    const meta = await api(`api/analyses/${aid}/lowcontrast_view`);
+    await pictureFormatKnown;
+    const meta = await api(`api/analyses/${aid}/lowcontrast_view`
+                           + `?fmt=${S.pictureFormat}`);
     if (!current()) return;
     const img = new Image();
     // Named by what the picture shows — pixels, registration, block placement
     // — so nudging the block fetches a new one, leaving it alone never
     // re-fetches it, and undoing back to an earlier placement finds it kept.
-    img.src = `api/analyses/${aid}/lowcontrast_view.png?key=${meta.key}`;
+    const gain = blockGain();
+    img.src = blockPictureUrl(aid, meta.key, gain);
     await new Promise((ok, fail) => { img.onload = ok; img.onerror = fail; });
     if (!current()) return;
-    S.blockView = { aid, seq, meta, img, canvas: null };
+    S.blockView = { aid, seq, meta, img, gain, canvas: null };
     panel.classList.remove("hidden");
     drawBlockView();
     renderBlockLegend(meta);
@@ -3549,20 +4064,9 @@ function drawBlockView() {
     v.canvas.width = w; v.canvas.height = h;
     v.canvas.getContext("2d").drawImage(v.img, 0, 0);
   }
+  // Exactly the picture the server made for this contrast step; nothing is
+  // re-mapped here.
   ctx.drawImage(v.canvas, 0, 0);
-
-  // Contrast stretch about mid grey, as a 256-entry table: the per-pixel work
-  // is one lookup, so the slider stays smooth on the hardware in the field.
-  const gain = (parseFloat(($("#lc-view-gain") || {}).value) || 100) / 100;
-  if (Math.abs(gain - 1) > 0.01) {
-    const data = ctx.getImageData(0, 0, w, h), px = data.data;
-    const lut = new Uint8ClampedArray(256);
-    for (let i = 0; i < 256; i++) lut[i] = Math.round(128 + (i - 128) * gain);
-    for (let i = 0; i < px.length; i += 4) {
-      px[i] = px[i + 1] = px[i + 2] = lut[px[i]];
-    }
-    ctx.putImageData(data, 0, 0);
-  }
 
   (v.meta.markers || []).forEach(m => {
     ctx.beginPath();
@@ -3700,17 +4204,23 @@ function stageC(c) {
       <div class="lc-view-head">
         <b>The block, close up</b>
         <label for="lc-view-gain">contrast
-          <input type="range" id="lc-view-gain" min="20" max="300" value="100">
+          <input type="range" id="lc-view-gain" min="20" max="300" step="10"
+                 value="100">
         </label>
+        <span id="lc-view-loading" class="hint hidden">loading…</span>
         <button class="secondary-sm" id="lc-view-refresh">Refresh</button>
       </div>
+      <p class="lc-view-processed">Processed view — smoothed to make the discs
+      visible</p>
       <div class="lc-view-stage">
         <canvas id="lc-view"></canvas>
       </div>
       <p class="hint" id="lc-view-note">Straightened, flattened and windowed to
       the block itself, so the discs show without re-windowing the whole image.
-      The contrast slider works on the picture already downloaded — it costs no
-      connection. Rings mark where each disc is expected.</p>
+      Each contrast step is made exactly by the server and kept by the browser;
+      a step seen before costs no connection. The scan's own pixels of the
+      discs are in the main image — zoom in there. Rings mark where each disc
+      is expected.</p>
       <div id="lc-view-legend" class="lc-view-legend"></div>
       <div class="lc-insert" role="radiogroup" aria-label="Low-contrast insert">
         <b>Low-contrast insert:</b>
@@ -3790,7 +4300,7 @@ function stageC(c) {
     $("#lc-flip").addEventListener("click", () => flipBlock());
     $("#btn-block-corners").addEventListener("click",
       () => startPicking("lccorners"));
-    $("#lc-view-gain").addEventListener("input", drawBlockView);
+    $("#lc-view-gain").addEventListener("input", onBlockGain);
     $("#lc-view-refresh").addEventListener("click", () => loadBlockView(true));
     $("#lc-insert-drawn").addEventListener("change",
       () => setInsertOrientation(false));
@@ -5230,6 +5740,8 @@ async function initAuth() {
   try {
     const a = await api("api/auth");
     if (a.analysis_timeout_s) S.analysisTimeoutS = a.analysis_timeout_s;
+    if (a.picture_version) S.pictureVersion = String(a.picture_version);
+    if (typeof a.detail_delay_s === "number") S.detailDelayS = a.detail_delay_s;
     // Only an explicit "no sign-in" counts; anything else keeps packing.
     S.signInOff = a.auth_enabled === false;
     if (a.auth_enabled) {

@@ -609,6 +609,11 @@ def block_view(ctx: Ctx, center_mm, angle_deg: float, margin_mm: float = 6.0):
 
     return {
         "image": np.clip((flat - lo) / (hi - lo), 0.0, 1.0),
+        # The processed values before any window, and the window taken from
+        # the block: every contrast step the viewer offers is made from these
+        # on the server, never by stretching an 8-bit picture in the browser.
+        "values": flat,
+        "window": [lo, hi],
         "px_per_mm": VIEW_PX_PER_MM,
         "origin_mm": [-w_mm / 2, -h_mm / 2],
         "size_px": [cols, rows],

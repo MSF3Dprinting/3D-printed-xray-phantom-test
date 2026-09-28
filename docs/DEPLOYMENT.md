@@ -153,7 +153,15 @@ much sooner with `PHANTOMQA_ANALYSIS_TIMEOUT_S` (default 120 s) and records a
 failure the operator can open. Keep the envelope well above it: the point is
 that the application reports its own timeout, instead of gunicorn killing a
 worker or the proxy returning a gateway error, neither of which leaves the
-operator anything to read.
+operator anything to read. The longest request measured apart from uploads
+is the first comparison of many scans: 67 s for all 33 reference scans on the
+development laptop, well inside the envelope.
+
+`PHANTOMQA_DETAIL_DELAY_S` (default 1.0) sets how long the viewer must stay
+still after a zoom or pan before it fetches the scan's full detail for what is
+on screen. The user's choice was 1 s. Shorter fetches more pieces on the way to
+where the operator is going — traffic on a slow link; longer makes them wait
+for detail. A negative or unreadable value falls back to 1.0.
 
 ```ini
 # /etc/systemd/system/phantomqa.service
@@ -293,8 +301,8 @@ curl -sI https://something.example.org/<other-app>/ | head -1
 | Path handling | The allow-list is compared against a normalised path, so duplicate slashes, trailing slashes and the mount prefix cannot bypass it |
 | Host header | `PHANTOMQA_ALLOWED_HOSTS` allow-list; anything else receives 400 |
 | Upload size | Rejected with 413 before the body is read |
-| Response headers | CSP (`script-src 'self'`; the comparison report alone also admits its one inline script by that script's SHA-256 hash, never `'unsafe-inline'`), `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`, COOP, `Permissions-Policy`, and HSTS under HTTPS |
-| API caching | `/api/` responses are `Cache-Control: no-store`, except rendered scan pictures (`image.png`, `image.jpg`) and a low-contrast close-up requested under its current key, which are `private, max-age=86400` — immutable per URL, and never stored by a shared proxy |
+| Response headers | CSP (`script-src 'self'`; the comparison report and the single-analysis report each also admit their one inline script — Export to PDF, and enlarging on the comparison — by that script's SHA-256 hash, never `'unsafe-inline'`), `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`, COOP, `Permissions-Policy`, and HSTS under HTTPS |
+| API caching | `/api/` responses are `Cache-Control: no-store`, except pictures of a scan — the viewer picture (`image.webp`, `image.png`), the full-detail pieces (`tile/…`) and the low-contrast close-up — asked for under the current picture version or key, which are `private, max-age=2592000, immutable, no-transform`: kept by the browser for 30 days, never stored by a shared proxy, and never recompressed on the way. Pictures are not gzipped again |
 | Attack surface | `/docs`, `/redoc` and the OpenAPI schema are disabled |
 | Error handling | Unhandled exceptions return a bare 500 with no traceback. A corrupt or missing stored file returns 422 or 410 with an explanation |
 | Request validation | Malformed request bodies return 422 with the field location and message only — the rejected value is never echoed back |
@@ -314,7 +322,8 @@ user or admin, so the matrix cannot drift.
 
 Deleting an analysis also removes its stored source file, its measuring-point
 edit history, its kept earlier states, its comparison pictures under
-`data/thumbs/`, and — when it was the last analysis carrying that phantom name —
+`data/thumbs/` (about 1 MB per analysis that has been in a comparison: the
+pictures' unrounded values, so they can be drawn on any window), and — when it was the last analysis carrying that phantom name —
 that phantom's stored measuring-point layout; when it was the analysis that
 stored the phantom's current layout, the previous layout is put back.
 

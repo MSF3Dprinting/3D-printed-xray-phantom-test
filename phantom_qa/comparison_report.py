@@ -26,8 +26,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
+from . import imaging
 from .store import flatten_results
-from .thumbnails import REGIONS as _PICTURE_REGIONS
+from .thumbnails import REGIONS as _PICTURE_REGIONS, drawable, encode_on
 
 #: "not measured" counts as a warning and shares its colour; "not applicable"
 #: shares the grey of the legacy "n/a" it partly replaces.
@@ -69,17 +70,17 @@ _PANELS = {
 
 
 def _b64(fig) -> str:
-    """A chart as a 64-colour palette PNG.
+    """A chart as a lossless picture, base64 (shown with CHART_MIME).
 
-    The same encoding the single report uses, for the same reason: a chart is
-    a few flat colours and text, so a palette loses nothing visible and halves
-    the bytes — which matters more here, where the charts repeat for every
-    test and the page now also carries the pictures. Max-coverage keeps the
-    colours the chart actually uses (the faster octree greyed the white page).
+    The same encoding the single report uses: exactly as the chart library
+    drew it, in full colour, lossless WebP (PNG where this server cannot
+    write WebP). It used to be reduced to a 64-colour palette for half the
+    bytes; that moved grey levels on edges and text, and the user's rule is
+    that no picture may lose anything.
 
     The chart is drawn here, on the calling thread: matplotlib is not safe to
     use from several threads. While build_comparison_report is running, the
-    palette step is handed to that report's helper threads instead of being
+    encoding is handed to that report's helper threads instead of being
     waited for, and a placeholder stands in the page until it is done.
     """
     import matplotlib.pyplot as plt
@@ -88,25 +89,28 @@ def _b64(fig) -> str:
     plt.close(fig)
     batch = _CHART_BATCH.get()
     if batch is None:
-        return _palette_b64(buf.getvalue())
+        return _encode_chart(buf.getvalue())
     return batch.submit(buf.getvalue())
 
 
-def _palette_b64(png: bytes) -> str:
-    """The palette step of _b64, on PIL alone, so it may run on any thread."""
+#: How every chart travels: lossless WebP, or PNG on a server whose image
+#: library cannot write WebP — encode_lossless_rgb makes the same choice.
+CHART_MIME = "image/webp" if imaging.WEBP_AVAILABLE else "image/png"
+
+
+def _encode_chart(png: bytes) -> str:
+    """The encoding step of _b64, on PIL alone, so it may run on any thread."""
     from PIL import Image
-    chart = Image.open(io.BytesIO(png)).convert("RGB")
-    out = io.BytesIO()
-    chart.quantize(colors=64, method=Image.Quantize.MAXCOVERAGE).save(
-        out, format="png", optimize=True)
-    return base64.b64encode(out.getvalue()).decode()
+    rgb = np.asarray(Image.open(io.BytesIO(png)).convert("RGB"))
+    data, _ = imaging.encode_lossless_rgb(rgb, "webp")
+    return base64.b64encode(data).decode()
 
 
-#: Helper threads per report for the palette step. It takes about 25 ms a
-#: chart and PIL does most of it without holding the interpreter lock, so it
-#: overlaps the drawing of the next chart: 5.2 s became 4.6 s for two
-#: reference scans. The drawing is the larger part and cannot be spread, so
-#: two threads already keep up with it.
+#: Helper threads per report for the encoding step. PIL does most of it
+#: without holding the interpreter lock, so it overlaps the drawing of the
+#: next chart (measured with the palette step it replaced: 5.2 s became
+#: 4.6 s for two reference scans). The drawing is the larger part and cannot
+#: be spread, so two threads already keep up with it.
 _CHART_THREADS = 2
 
 #: The report being built in this context, if any — set only for the duration
@@ -117,7 +121,7 @@ _CHART_BATCH: contextvars.ContextVar = contextvars.ContextVar(
 
 
 class _ChartBatch:
-    """The charts of one report, palette-encoded while the next is drawn.
+    """The charts of one report, encoded while the next is drawn.
 
     Each chart takes a placeholder in the page, numbered in the order the
     charts were drawn, and the placeholders are replaced by the finished
@@ -133,7 +137,7 @@ class _ChartBatch:
         self._placeholder = re.compile(rf"@@chart-{self._nonce}-(\d+)@@")
 
     def submit(self, png: bytes) -> str:
-        self._jobs.append(self._pool.submit(_palette_b64, png))
+        self._jobs.append(self._pool.submit(_encode_chart, png))
         return f"@@chart-{self._nonce}-{len(self._jobs) - 1}@@"
 
     def raise_first_failure(self) -> None:
@@ -153,7 +157,8 @@ class _ChartBatch:
 
 
 def _img(b64, cls="") -> str:
-    return f'<img class="{cls}" src="data:image/png;base64,{b64}">' if b64 else ""
+    return (f'<img class="{cls}" src="data:{CHART_MIME};base64,{b64}">'
+            if b64 else "")
 
 
 def _mpl():
@@ -569,20 +574,6 @@ _SELF_NORMALISED = (
     "Flattened and windowed to itself, as in the marking step. Brightness "
     "does not compare between scans here — compare which discs you can see.")
 
-_PICTURE_MIMES = ("image/jpeg", "image/png")
-_B64_ALPHABET = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-                          "0123456789+/=")
-
-
-def _clean_b64(value) -> str:
-    """The picture data, if it is plainly base64 and nothing else.
-
-    It comes from a file on the server's own disk, but it is pasted into an
-    attribute; a damaged file must not be able to close that attribute."""
-    s = str(value or "")
-    return s if s and set(s) <= _B64_ALPHABET else ""
-
-
 def _num(value, spec: str) -> str | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
@@ -679,28 +670,27 @@ def _status_chip(status) -> str:
 
 
 def _picture_cell(pic, caption: str, rec: dict, region: str,
-                  shared_with: dict | None = None, own_note: str = "") -> str:
+                  window: tuple | None = None, own_note: str = "") -> str:
     """One scan's picture of one region, with its numbers underneath.
 
-    ``shared_with`` is the picture whose window this one is shown on in the
-    page; without it the picture keeps its own window, and ``own_note`` says
-    whose window it is when that is not the row's. A missing picture is a
-    labelled empty cell saying why — never a gap, which would shift the rest
-    of the row and let the reader compare the wrong columns."""
+    Drawn here by the server on ``window`` — the row's shared window, when
+    this picture is shown on one — or else on its own, from the kept
+    unrounded values; ``own_note`` says whose window it is when that is not
+    the row's. A missing picture is a labelled empty cell saying why — never
+    a gap, which would shift the rest of the row and let the reader compare
+    the wrong columns."""
     pic = pic if isinstance(pic, dict) else {}
-    b64 = _clean_b64(pic.get("b64"))
-    mime = pic.get("mime") if pic.get("mime") in _PICTURE_MIMES else ""
-    if b64 and mime:
-        window = ""
-        if shared_with:
-            window = (f' data-lo="{float(pic["lo"]):.7g}"'
-                      f' data-hi="{float(pic["hi"]):.7g}"'
-                      f' data-rlo="{float(shared_with["lo"]):.7g}"'
-                      f' data-rhi="{float(shared_with["hi"]):.7g}"')
-        w, h = int(pic.get("w") or 0), int(pic.get("h") or 0)
-        size = f' width="{w}" height="{h}"' if w > 0 and h > 0 else ""
+    drawn = None
+    if drawable(pic):
+        lo, hi = window or (pic["lo"], pic["hi"])
+        try:
+            drawn = encode_on(pic, lo, hi)
+        except Exception:       # a damaged kept file costs its cell only
+            drawn = None
+    if drawn:
         body = (f'<figure class="pic" data-caption="{html.escape(caption)}">'
-                f'<img src="data:{mime};base64,{b64}"{size}{window} '
+                f'<img src="data:{drawn["mime"]};base64,{drawn["b64"]}" '
+                f'width="{drawn["w"]}" height="{drawn["h"]}" '
                 f'alt="{html.escape(caption)}"></figure>')
         labels = [str(x) for x in pic.get("labels") or []]
         if labels:
@@ -758,13 +748,11 @@ def _window_sources(ordered, usable: list[int], ref: int) -> dict[int, int]:
 def _picture_section(ordered, labels, pictures: dict) -> str:
     """The table: one column per scan, one row per test area.
 
-    Only scans that were given pictures get a column. The caller leaves some
-    out on purpose when many are selected (see the note this adds), and a
-    column of empty cells for each of those would be both heavy and useless;
-    a scan whose pictures failed still has an entry, and so still gets its
-    labelled empty cells."""
+    Every scan selected gets a column (the user's choice: pictures for all
+    of them, not the twelve most recent). Only a scan with no entry at all
+    in ``pictures`` is left out — a scan whose pictures failed has an entry,
+    and so still gets its labelled empty cells."""
     shown = [(r, lab) for r, lab in zip(ordered, labels) if r["id"] in pictures]
-    left_out = len(ordered) - len(shown)
     ordered = [r for r, _ in shown]
     labels = [lab for _, lab in shown]
     ref = _window_reference(ordered)
@@ -775,7 +763,7 @@ def _picture_section(ordered, labels, pictures: dict) -> str:
         row_pics = [(pictures.get(r["id"]) or {}).get(region) for r in ordered]
         title = _PICTURE_TITLES.get(region, region)
         hint = _PICTURE_HINTS.get(region, "")
-        attrs, note = "", f"<div class='win-note'>{_OWN_WINDOW}</div>"
+        note = f"<div class='win-note'>{_OWN_WINDOW}</div>"
         on_shared, own_notes = {}, {}
         if region == "lowcontrast":
             note = f"<div class='win-note'>{html.escape(_SELF_NORMALISED)}</div>"
@@ -784,9 +772,7 @@ def _picture_section(ordered, labels, pictures: dict) -> str:
             # most pictures share, which is the reference scan's whenever it
             # has a picture in this row.
             usable = [i for i, p in enumerate(row_pics)
-                      if isinstance(p, dict) and p.get("window") == "raw"
-                      and _clean_b64(p.get("b64"))
-                      and _num(p.get("lo"), "g") and _num(p.get("hi"), "g")]
+                      if drawable(p) and p.get("window") == "raw"]
             source = _window_sources(ordered, usable, ref)
             window_sources.update(source.values())
             if source:
@@ -806,23 +792,17 @@ def _picture_section(ordered, labels, pictures: dict) -> str:
                     elif source[i] != primary:
                         own_notes[i] = (f"window from {flat_labels[source[i]]}"
                                         f" — another detector or protocol")
-                on_shared = {i: row_pics[s] for i, s in source.items()}
-                attrs = (f' data-ref-lo="{float(row_pics[primary]["lo"]):.7g}"'
-                         f' data-ref-hi="{float(row_pics[primary]["hi"]):.7g}"')
-                # Without JavaScript every picture shows in its own window,
-                # and the note says so; the script switches both.
-                note = (f"<div class='win-note' data-own='{_OWN_WINDOW}' "
-                        f"data-shared='{html.escape(shared, quote=True)}'>"
-                        f"{_OWN_WINDOW}</div>"
-                        f"<label class='win-toggle' hidden><input "
-                        f"type='checkbox'> window each picture on its own"
-                        f"</label>")
+                # Every picture is drawn by the server on the window it is
+                # said to be on; nothing is re-mapped in the browser.
+                on_shared = {i: (row_pics[s]["lo"], row_pics[s]["hi"])
+                             for i, s in source.items()}
+                note = f"<div class='win-note'>{html.escape(shared)}</div>"
         cells = "".join(
             _picture_cell(p, f"{flat_labels[i]} — {title}", ordered[i], region,
-                          shared_with=on_shared.get(i),
+                          window=on_shared.get(i),
                           own_note=own_notes.get(i, ""))
             for i, p in enumerate(row_pics))
-        body += (f"<tr{attrs}><th class='row-head'>{html.escape(title)}"
+        body += (f"<tr><th class='row-head'>{html.escape(title)}"
                  + (f"<div class='muted'>{html.escape(hint)}</div>"
                     if hint else "")
                  + f"{note}</th>{cells}</tr>")
@@ -853,12 +833,9 @@ def _picture_section(ordered, labels, pictures: dict) -> str:
   <p class="muted">Every picture is straightened to the phantom's own frame, so
   scans taken at any angle, or face down, line up column by column. The numbers
   under each picture are the stored results. Click a picture to enlarge it.
-  The pictures are part of this page, so saving the page keeps them.</p>
-  {(f'<p class="muted"><b>Pictures are shown for {len(ordered)} of '
-    f'{len(ordered) + left_out} scans</b> — the reference scan and the most '
-    f'recent ones — so the page stays light on a slow connection. The charts '
-    f'below still cover all of them. Select fewer scans to see the others '
-    f'side by side.</p>') if left_out else ''}
+  The pictures are part of this page, so saving the page keeps them. They are
+  small JPEG pictures for an overall look; judge fine detail in the viewer,
+  which shows each scan exactly.</p>
   <div class="scroll"><table class="pics">
     <thead><tr><th class="row-head"></th>{head}</tr></thead>
     <tbody>{body}</tbody>
@@ -866,82 +843,27 @@ def _picture_section(ordered, labels, pictures: dict) -> str:
 </section>"""
 
 
-#: Row windows and picture enlargement. Inline, so a copy saved from the
-#: browser keeps working with no server behind it; the server admits exactly
-#: this text by its hash (COMPARISON_SCRIPT_CSP) rather than allowing inline
-#: scripts in general. Without it the page still reads: every picture then
-#: shows in its own window, and the row notes say so.
-_PICTURE_SCRIPT = """
+#: The page's one script: the Export to PDF button, and picture enlargement.
+#: Inline, so a copy saved from the browser keeps working with no server
+#: behind it; the server admits exactly this text by its hash
+#: (COMPARISON_SCRIPT_CSP) rather than allowing inline scripts in general.
+#: The button opens the browser's print window, where the operator chooses
+#: Save as PDF — no PDF library on the server. Enlarging only shows a picture
+#: larger: every picture already arrives on the window its row names, drawn
+#: by the server, and nothing is re-mapped here. Without the script the page
+#: reads the same, just without the button working or enlarging.
+_COMPARISON_SCRIPT = """
 (function () {
   "use strict";
-  function each(list, fn) { Array.prototype.forEach.call(list, fn); }
-  function ready(img, fn) {
-    if (img.complete && img.naturalWidth) { fn(); }
-    else { img.addEventListener("load", fn); }
-  }
-  // Every picture was encoded with 0..255 standing for its own data-lo..
-  // data-hi, so one 256-entry table moves it onto the shared window
-  // data-rlo..data-rhi without fetching anything.
-  function remap(img, rlo, rhi) {
-    var box = img.parentNode, old = box.querySelector("canvas");
-    if (old) { box.removeChild(old); }
-    var lo = parseFloat(img.getAttribute("data-lo"));
-    var hi = parseFloat(img.getAttribute("data-hi"));
-    var c = document.createElement("canvas");
-    c.width = img.naturalWidth;
-    c.height = img.naturalHeight;
-    var g = c.getContext("2d");
-    g.drawImage(img, 0, 0);
-    var d = g.getImageData(0, 0, c.width, c.height), p = d.data;
-    var lut = new Uint8ClampedArray(256), k = (hi - lo) / 255, span = rhi - rlo;
-    for (var v = 0; v < 256; v++) { lut[v] = (lo + v * k - rlo) / span * 255; }
-    for (var i = 0; i < p.length; i += 4) {
-      var q = lut[p[i]];
-      p[i] = q; p[i + 1] = q; p[i + 2] = q;
-    }
-    g.putImageData(d, 0, 0);
-    box.appendChild(c);
-  }
-  each(document.querySelectorAll("tr[data-ref-lo]"), function (row) {
-    var note = row.querySelector(".win-note");
-    var toggle = row.querySelector(".win-toggle");
-    var own = toggle ? toggle.querySelector("input") : null;
-    function show() {
-      var mine = !own || own.checked;
-      row.classList.toggle("own-window", mine);
-      if (note) {
-        note.textContent = note.getAttribute(mine ? "data-own" : "data-shared");
-      }
-    }
-    function failed() {
-      own = null;
-      if (toggle) { toggle.hidden = true; }
-      show();
-    }
-    each(row.querySelectorAll("img[data-rlo]"), function (img) {
-      var rlo = parseFloat(img.getAttribute("data-rlo"));
-      var rhi = parseFloat(img.getAttribute("data-rhi"));
-      if (!(rhi > rlo)) { return; }
-      ready(img, function () {
-        try { remap(img, rlo, rhi); } catch (e) { failed(); }
-      });
-    });
-    if (toggle && own) {
-      toggle.hidden = false;
-      own.addEventListener("change", show);
-    }
-    show();
-  });
-
+  var button = document.getElementById("export-pdf");
+  if (button) { button.addEventListener("click", function () { window.print(); }); }
   var box = document.getElementById("pic-lightbox");
   if (!box) { return; }
   var big = box.querySelector("img"), cap = box.querySelector("figcaption");
   function close() { box.hidden = true; big.removeAttribute("src"); }
   function open(fig) {
-    var img = fig.querySelector("img"), c = fig.querySelector("canvas");
-    var row = fig.closest ? fig.closest("tr") : null;
-    var shared = c && row && !row.classList.contains("own-window");
-    big.src = shared ? c.toDataURL("image/png") : img.src;
+    var img = fig.querySelector("img");
+    big.src = img.src;
     var w = img.naturalWidth || 300, h = img.naturalHeight || 300;
     var k = Math.max(1, Math.min(4, window.innerWidth * 0.94 / w,
                                  window.innerHeight * 0.8 / h));
@@ -960,11 +882,11 @@ _PICTURE_SCRIPT = """
 })();
 """
 
-#: The Content-Security-Policy source that admits _PICTURE_SCRIPT and nothing
-#: else. Computed from the text itself, so editing the script cannot leave a
-#: stale hash behind that silently switches the script off.
+#: The Content-Security-Policy source that admits _COMPARISON_SCRIPT and
+#: nothing else. Computed from the text itself, so editing the script cannot
+#: leave a stale hash behind that silently switches the script off.
 COMPARISON_SCRIPT_CSP = "'sha256-{}'".format(base64.b64encode(
-    hashlib.sha256(_PICTURE_SCRIPT.encode("utf-8")).digest()).decode("ascii"))
+    hashlib.sha256(_COMPARISON_SCRIPT.encode("utf-8")).digest()).decode("ascii"))
 
 _PICTURE_CSS = """
  table.pics { width:auto; }
@@ -976,12 +898,9 @@ _PICTURE_CSS = """
         line-height:0; }
  .pic img { display:block; margin:0; width:100%; max-width:100%; height:auto;
             background:#000; }
- .pic canvas { position:absolute; top:0; left:0; width:100%; height:100%; }
- tr.own-window .pic canvas { visibility:hidden; }
  .pic-labels { display:flex; justify-content:space-around; font-size:10px;
                color:#6b7688; margin-top:2px; }
  .pic-own { font-size:10px; color:#8a5a00; margin-top:3px; }
- tr.own-window .pic-own { display:none; }
  .pic-missing { display:flex; align-items:center; justify-content:center;
                 min-height:70px; padding:8px; text-align:center; font-size:11px;
                 color:#6b7688; background:repeating-linear-gradient(45deg,
@@ -989,9 +908,6 @@ _PICTURE_CSS = """
                 border:1px dashed #c9d1db; border-radius:6px; }
  .pic-facts { font-size:11px; line-height:1.45; margin-top:5px; }
  .win-note { font-size:10.5px; font-weight:400; color:#41506a; margin-top:6px; }
- .win-toggle { display:block; font-size:10.5px; font-weight:400;
-               margin-top:6px; cursor:pointer; }
- .win-toggle[hidden] { display:none; }
  .tag { display:inline-block; font-size:10px; color:#41506a;
         background:#e3eaf3; border-radius:8px; padding:0 7px; margin-top:3px; }
  .lightbox { position:fixed; inset:0; background:rgba(10,14,20,.88);
@@ -999,19 +915,62 @@ _PICTURE_CSS = """
              z-index:10; cursor:zoom-out; }
  .lightbox[hidden] { display:none; }
  .lightbox figure { margin:0; text-align:center; }
+ /* Enlarged, a picture shows its own pixels as squares — never blended into
+    a blur that could pass for detail. */
  .lightbox img { max-width:96vw; max-height:84vh; width:auto; height:auto;
-                 margin:0 auto; background:#000; }
+                 margin:0 auto; background:#000; image-rendering:pixelated; }
  .lightbox figcaption { color:#e8edf3; font-size:13px; margin-top:8px; }
- @page pictures { size:A4 landscape; margin:10mm; }
  @media print {
-   .pics-card { page:pictures; }
-   .pics-card .scroll { overflow:visible; }
+   /* The whole page is landscape (see _print_css); the scans share the
+      width, a row of pictures is never cut across two pages, and the scan
+      headings repeat at the top of every page the table continues on. */
    table.pics { width:100%; table-layout:fixed; }
+   table.pics th.row-head { width:110px; min-width:0; }
    table.pics th.pic-head, table.pics td.pic-cell { width:auto; min-width:0; }
    table.pics tr { break-inside:avoid; }
-   .win-toggle, .lightbox { display:none !important; }
+   table.pics thead { display:table-header-group; }
+   .lightbox { display:none !important; }
  }
 """
+
+
+def _print_css(title: str, span: str, filters: str) -> str:
+    """How the comparison prints — and so how Save as PDF looks.
+
+    A4 landscape, because the scans stand side by side. What is compared and
+    the dates it spans at the top of every page, the page number at the
+    bottom. Nothing to click is printed. Charts, pictures and table rows are
+    kept whole; sections are not — most are taller than a page, and kept
+    whole they were first pushed to a new page and then split anyway, which
+    left the first page with nothing but the title. Headings never end a
+    page, long tables repeat their heading and wrap rather than run off the
+    page's edge, and the verdict colours print as they show."""
+    from .report import _css_string
+    margin = ('font-family: "Segoe UI", Arial, sans-serif; font-size: 8pt; '
+              'color: #5b6b80;')
+    return (
+        "@page { size: A4 landscape; margin: 12mm 10mm 12mm 10mm;\n"
+        f"  @top-left {{ content: {_css_string(title)}; {margin} }}\n"
+        f"  @top-right {{ content: {_css_string(span)}; {margin} }}\n"
+        f"  @bottom-left {{ content: {_css_string(filters)}; {margin} }}\n"
+        f'  @bottom-right {{ content: "Page " counter(page) " of " counter(pages); {margin} }}\n'
+        "}\n"
+        "@media print {\n"
+        "  body { background: #fff; -webkit-print-color-adjust: exact;\n"
+        "         print-color-adjust: exact; }\n"
+        "  .wrap { max-width: none; margin: 0; padding: 0; }\n"
+        "  .no-print, button, input, select, textarea { display: none !important; }\n"
+        "  .card { margin: 8px 0; }\n"
+        "  h1, h2, h3 { break-after: avoid; }\n"
+        "  img, .facts, figure { break-inside: avoid; }\n"
+        "  /* A chart taller than a page cannot be kept whole: it was cut at\n"
+        "     the page's edge. Shrunk to fit instead, in proportion. */\n"
+        "  img { max-height: 170mm; object-fit: contain; }\n"
+        "  tr { break-inside: avoid; }\n"
+        "  thead { display: table-header-group; }\n"
+        "  .scroll { overflow: visible; }\n"
+        "  td, th { white-space: normal; }\n"
+        "}\n")
 
 
 # --------------------------------------------------------------------- report
@@ -1026,8 +985,8 @@ def build_comparison_report(records: list[dict], title_suffix: str = "",
     an analysis missing from it gets labelled empty cells. Left out, the page
     is charts only, as it was before the pictures existed.
 
-    The charts are drawn one after another on this thread while their palette
-    step runs on helper threads of this report's own (see _b64). The page is
+    The charts are drawn one after another on this thread while their
+    encoding runs on helper threads of this report's own (see _b64). The page is
     byte for byte the one drawing and encoding each chart in turn gives, and
     a chart that fails fails the report with the same error; the helper
     threads end with the report, however it ends."""
@@ -1152,8 +1111,11 @@ def _compose_comparison_report(records: list[dict], title_suffix: str = "",
         picture_css = _PICTURE_CSS
         picture_tail = ('<div id="pic-lightbox" class="lightbox" hidden>'
                         '<figure><img alt=""><figcaption></figcaption>'
-                        '</figure></div>'
-                        f"<script>{_PICTURE_SCRIPT}</script>")
+                        '</figure></div>')
+    chosen_by = " · ".join(f"{k}: {v}" for k, v in (filters or {}).items() if v)
+    print_css = _print_css(f"MSF Phantom QA — comparison{title_suffix}",
+                           f"{n} analyses · {span}",
+                           chosen_by or "selected analyses")
 
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <title>Phantom QA — comparison</title>
@@ -1181,9 +1143,16 @@ def _compose_comparison_report(records: list[dict], title_suffix: str = "",
  .fact {{ background:#eef2f6; border-radius:8px; padding:7px 12px;
           font-size:12px; }}
  .fact b {{ font-size:15px; display:block; }}
- @media print {{ body {{ background:#fff; }} .card {{ break-inside:avoid; }} }}
+ .toolbar {{ display:flex; gap:10px; align-items:center; margin:0 0 12px; }}
+ .toolbar button {{ font:inherit; font-size:13px; font-weight:600;
+                    padding:6px 14px; border-radius:6px; cursor:pointer;
+                    border:1px solid #2f6db5; background:#3b7dd8; color:#fff; }}
+{print_css}
 {picture_css}
 </style></head><body><div class="wrap">
+<div class="toolbar no-print"><button id="export-pdf" type="button">Export to
+PDF</button><span class="muted" style="font-size:12px">opens the print window —
+choose “Save as PDF” as the printer; landscape pages</span></div>
 <h1>MSF Phantom QA — comparison{html.escape(title_suffix)}</h1>
 <p class="muted" style="font-size:12px">{html.escape(span)}
 {(' · ' + filt) if filt else ''}</p>
@@ -1219,4 +1188,4 @@ def _compose_comparison_report(records: list[dict], title_suffix: str = "",
 </section>
 
 {sections}
-</div>{picture_tail}</body></html>"""
+</div>{picture_tail}<script>{_COMPARISON_SCRIPT}</script></body></html>"""

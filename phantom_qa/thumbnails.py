@@ -21,13 +21,20 @@ Five regions per scan:
   lowcontrast  the flattened close-up already used in the marking step
   uniformity   the five squares side by side, sharing one window
 
-Each picture is encoded with its own generous window, and that window travels
-with it. The page can then re-map every picture in a row onto one shared
-window in the browser, so a brighter picture really is brighter, without a
-second copy of anything crossing the link.
+What is kept for each region is the sampled values themselves, unrounded,
+with the region's own generous window. The report encodes each picture on the
+window it is shown on — one shared window per row and protocol, so a brighter
+picture really is brighter — with :func:`encode_on`. The page used to stretch
+8-bit pictures from one window onto another in the browser, which cost up to
+47 grey levels; nothing is re-mapped in the browser any more.
 
-The pictures depend only on the scan, its registration and the low-contrast
-block placement, so they are rendered once and kept on disk — see
+These small pictures are the one lossy encoding in the application, by the
+user's explicit choice: JPEG at today's size, for an overall look side by
+side ("keep compressed images not full size"). Fine detail is judged in the
+viewer, which shows the scan exactly.
+
+The values depend only on the scan, its registration and the low-contrast
+block placement, so they are sampled once and kept on disk — see
 :func:`pictures_for`.
 """
 
@@ -52,7 +59,8 @@ log = get_logger("thumbnails")
 #: Part of every cache key. Bump it whenever the same inputs would now produce
 #: a different picture — a new region, another size, another encoding — so
 #: pictures kept on disk from the old code are re-rendered rather than served.
-PICTURE_VERSION = 1
+#: 2: the unrounded values are kept, not finished pictures on their own window.
+PICTURE_VERSION = 2
 
 #: Row order in the comparison table.
 REGIONS = ("phantom", "linepairs", "wedge", "lowcontrast", "uniformity")
@@ -100,9 +108,11 @@ UNIFORMITY_ORDER = ("TL", "TR", "C", "BL", "BR")
 #: little under 3 px/mm loses nothing a viewer could see.
 LOWCONTRAST_WIDTH_PX = 280
 
+#: The single deliberate lossy encoding in the application (see the module
+#: note): the comparison's small pictures, by the user's choice.
 JPEG_QUALITY = 75
-#: Generous on purpose: the page may later re-map a picture onto the window of
-#: another scan, and anything clipped here cannot be brought back there.
+#: A region's own window, generous so that a scan alone on its detector and
+#: protocol — shown on its own window — keeps its highlights and shadows.
 WINDOW_PERCENTILES = (0.2, 99.8)
 
 
@@ -179,45 +189,53 @@ def _window(values: np.ndarray) -> tuple[float, float]:
     return lo, hi
 
 
-def _to_8bit(values: np.ndarray, lo: float, hi: float) -> np.ndarray:
-    a = np.clip((values - lo) / (hi - lo), 0.0, 1.0)
-    a[~np.isfinite(values)] = 0.0
-    return (a * 255.0 + 0.5).astype(np.uint8)
+def _from_values(values: np.ndarray, lo: float | None = None,
+                 hi: float | None = None, window: str = "raw",
+                 **extra) -> dict:
+    """One region as what is kept of it: the unrounded values and their own
+    window ``lo``..``hi``.
 
-
-def _encode(a8: np.ndarray) -> tuple[str, bytes]:
-    """JPEG for grey pictures, PNG only where it comes out smaller.
-
-    A flattened, smoothed picture — the low-contrast close-up of a flat
-    exposure, say — can be smaller losslessly; a noisy radiograph never is."""
-    from PIL import Image
-    im = Image.fromarray(a8)
-    jpg = io.BytesIO()
-    im.save(jpg, format="JPEG", quality=JPEG_QUALITY, optimize=True)
-    png = io.BytesIO()
-    im.save(png, format="PNG", optimize=True)
-    if png.tell() < jpg.tell():
-        return "image/png", png.getvalue()
-    return "image/jpeg", jpg.getvalue()
-
-
-def _picture(a8: np.ndarray, lo: float, hi: float, window: str = "raw",
-             **extra) -> dict:
-    """One encoded picture and what the page needs to know about it.
-
-    ``lo`` and ``hi`` are the pixel values that 0 and 255 stand for. With
-    ``window="raw"`` those are scan values and the page may re-map the picture
-    onto another scan's window; ``"self"`` marks a picture already normalised
-    to itself, whose brightness means nothing next to another scan's."""
-    mime, data = _encode(a8)
-    return {"mime": mime, "b64": base64.b64encode(data).decode("ascii"),
-            "bytes": len(data), "w": int(a8.shape[1]), "h": int(a8.shape[0]),
+    With ``window="raw"`` the values are scan values, and the report may show
+    the picture on another scan's window of the same protocol; ``"self"``
+    marks values already normalised to themselves, whose brightness means
+    nothing next to another scan's."""
+    if lo is None or hi is None:
+        lo, hi = _window(values)
+    return {"values": np.asarray(values, dtype=np.float32),
             "lo": float(lo), "hi": float(hi), "window": window, **extra}
 
 
-def _from_values(values: np.ndarray, **extra) -> dict:
-    lo, hi = _window(values)
-    return _picture(_to_8bit(values, lo, hi), lo, hi, **extra)
+def drawable(region) -> bool:
+    """Whether a kept region can be drawn: values and a finite window."""
+    if not isinstance(region, dict):
+        return False
+    v = region.get("values")
+    return (isinstance(v, np.ndarray) and v.ndim == 2 and v.size > 0
+            and all(isinstance(region.get(k), (int, float))
+                    and np.isfinite(region[k]) for k in ("lo", "hi")))
+
+
+def encode_on(region: dict, lo: float, hi: float) -> dict:
+    """One region's picture on the window ``lo``..``hi``, as the page embeds
+    it: ``{mime, b64, bytes, w, h}``.
+
+    Made on the server from the unrounded values, on exactly the window the
+    page says it is on. JPEG — the one deliberate lossy encoding in the
+    application, by the user's choice — or PNG where that comes out smaller,
+    as a flattened, smoothed picture can; a noisy radiograph never is.
+    Anything outside the detector is black."""
+    from PIL import Image
+    from . import imaging
+    v = region["values"]
+    a8 = imaging.window_to_grey(np.where(np.isfinite(v), v, lo), lo, hi)
+    jpg = io.BytesIO()
+    Image.fromarray(a8).save(jpg, format="JPEG", quality=JPEG_QUALITY,
+                             optimize=True)
+    png, _ = imaging.encode_lossless(a8, "png")
+    mime, data = (("image/png", png) if len(png) < jpg.tell()
+                  else ("image/jpeg", jpg.getvalue()))
+    return {"mime": mime, "b64": base64.b64encode(data).decode("ascii"),
+            "bytes": len(data), "w": int(a8.shape[1]), "h": int(a8.shape[0])}
 
 
 # ---------------------------------------------------------------- regions
@@ -268,18 +286,21 @@ def _lowcontrast(ctx, geometry) -> dict:
     makes the faintest discs visible at all — so it is marked ``self`` and the
     page never puts it on a shared window: the brightness of two close-ups
     says nothing about the two exposures, only which discs can be seen does."""
-    from PIL import Image
+    from . import imaging
     block = ((geometry or {}).get("lowcontrast") or {}).get("block") or {}
     if not block.get("center_mm"):
         return {"missing": NO_BLOCK}
     view = lowcontrast.block_view(ctx, block["center_mm"],
                                   float(block.get("angle_deg", 0.0)))
-    a8 = (np.clip(view["image"], 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
-    h, w = a8.shape
+    values = view["values"]
+    h, w = values.shape
     if w > LOWCONTRAST_WIDTH_PX:
-        size = (LOWCONTRAST_WIDTH_PX, max(int(round(h * LOWCONTRAST_WIDTH_PX / w)), 1))
-        a8 = np.asarray(Image.fromarray(a8).resize(size, Image.LANCZOS))
-    return _picture(a8, 0.0, 1.0, window="self")
+        # Averaged down, never resampled with a sharpening filter.
+        values = imaging.shrink_by_averaging(
+            values, (LOWCONTRAST_WIDTH_PX,
+                     max(int(round(h * LOWCONTRAST_WIDTH_PX / w)), 1)))
+    lo, hi = view["window"]
+    return _from_values(values, lo, hi, window="self")
 
 
 def _uniformity(src: _Source, pdef) -> dict:
@@ -311,7 +332,7 @@ def _uniformity(src: _Source, pdef) -> dict:
     for k, tile in enumerate(tiles):
         strip[:, k * (cols + gap):k * (cols + gap) + cols] = tile
     lo, hi = _window(inner)
-    return _picture(_to_8bit(strip, lo, hi), lo, hi, labels=ids)
+    return _from_values(strip, lo, hi, labels=ids)
 
 
 def render_all(ctx, geometry) -> dict:
@@ -369,46 +390,72 @@ def cache_key(rec: dict, *, pdef_version: str, algo_version: str) -> str:
 
 
 def _read(directory: str | None, key: str) -> dict | None:
+    """The regions kept under ``key``, or None for anything but a whole,
+    current file. Read without pickle: the file holds arrays and one JSON
+    text, and nothing in it can run code."""
     if not directory:
         return None
     try:
-        with open(os.path.join(directory, f"{key}.json"), encoding="utf-8") as f:
-            doc = json.load(f)
-    except (OSError, ValueError):
-        return None
-    if not isinstance(doc, dict):
-        return None
-    regions = doc.get("regions")
-    if (doc.get("key") != key or doc.get("version") != PICTURE_VERSION
-            or not isinstance(regions, dict)
-            or any(not isinstance(regions.get(n), dict) for n in REGIONS)):
+        with np.load(os.path.join(directory, f"{key}.npz"),
+                     allow_pickle=False) as kept:
+            doc = json.loads(str(kept["meta"]))
+            if (not isinstance(doc, dict) or doc.get("key") != key
+                    or doc.get("version") != PICTURE_VERSION
+                    or not isinstance(doc.get("regions"), dict)):
+                return None
+            regions = {}
+            for name in REGIONS:
+                meta = doc["regions"].get(name)
+                if not isinstance(meta, dict):
+                    return None
+                if "missing" in meta:
+                    regions[name] = {"missing": str(meta["missing"])}
+                    continue
+                regions[name] = {
+                    "values": np.asarray(kept[name], dtype=np.float32),
+                    "lo": float(meta["lo"]), "hi": float(meta["hi"]),
+                    "window": str(meta["window"]),
+                    **({"labels": [str(x) for x in meta["labels"]]}
+                       if meta.get("labels") else {})}
+    except Exception:           # missing, half-written or damaged: a miss
         return None
     return regions
 
 
 def _write(directory: str, key: str, regions: dict) -> None:
-    """Keep the pictures under their key, and drop any older set.
+    """Keep the regions under their key, and drop any older set.
 
-    Written to a temporary file and renamed into place, so another worker
-    reading the same analysis at that moment sees either the whole file or
-    none of it. A failure to write costs a re-render next time, never the
-    page."""
-    name = f"{key}.json"
+    The values compressed in one file, with what else is known about each
+    region as JSON beside them. Written to a temporary file and renamed into
+    place, so another worker reading the same analysis at that moment sees
+    either the whole file or none of it. A failure to write costs a
+    re-render next time, never the page."""
+    name = f"{key}.npz"
+    arrays, meta = {}, {}
+    for region, r in regions.items():
+        if "values" in r:
+            arrays[region] = r["values"]
+            meta[region] = {k: r[k] for k in ("lo", "hi", "window", "labels")
+                            if k in r}
+        else:
+            meta[region] = {"missing": r.get("missing", FAILED)}
+    doc = json.dumps({"key": key, "version": PICTURE_VERSION,
+                      "regions": meta})
     try:
         os.makedirs(directory, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"key": key, "version": PICTURE_VERSION,
-                       "regions": regions}, f)
+        with os.fdopen(fd, "wb") as f:
+            np.savez_compressed(f, meta=np.array(doc), **arrays)
         os.replace(tmp, os.path.join(directory, name))
     except OSError as e:
         log.warning("comparison pictures could not be kept in %s: %s",
                     directory, e)
         return
-    # Pictures of measuring points that no longer exist are dead weight; only
-    # finished files are touched, never another worker's temporary one.
+    # Pictures of measuring points that no longer exist are dead weight — as
+    # are files from before the values were kept (.json); only finished
+    # files are touched, never another worker's temporary one.
     for other in os.listdir(directory):
-        if other.endswith(".json") and other != name:
+        if other.endswith((".json", ".npz")) and other != name:
             try:
                 os.remove(os.path.join(directory, other))
             except OSError:
@@ -423,7 +470,8 @@ def forget(directory: str | None) -> None:
 
 def pictures_for(rec: dict, directory: str | None, make_ctx, *,
                  pdef_version: str, algo_version: str) -> dict:
-    """``{region: picture or {"missing": reason}}`` for one stored analysis.
+    """``{region: kept values or {"missing": reason}}`` for one stored
+    analysis — draw each with :func:`encode_on`.
 
     ``rec`` must be a full record (registration and geometry included);
     ``make_ctx`` builds the analysis context and is only called when the

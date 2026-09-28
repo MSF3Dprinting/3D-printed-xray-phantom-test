@@ -104,19 +104,33 @@ def test_the_finalised_backfill_stays_tied_to_its_column(tmp_path):
 
 # -------------------------------------------------- the comparison report
 
-def test_comparison_charts_are_palette_pngs():
-    """A chart is a few flat colours and text; a palette halves its bytes
-    and loses nothing visible — as the single report already does."""
+def test_comparison_charts_are_kept_exactly():
+    """As in the single report: every pixel as the chart library drew it.
+    The 64-colour palette they used to be reduced to moved grey levels on
+    edges and text, and the user's rule is that no picture may lose
+    anything."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    import numpy as np
     from PIL import Image
     from phantom_qa import comparison_report as CR
 
-    fig, ax = plt.subplots(figsize=(4, 2))
-    ax.plot([0, 1, 2], [1, 3, 2])
-    img = Image.open(io.BytesIO(base64.b64decode(CR._b64(fig))))
-    assert img.mode == "P" and len(img.getpalette()) // 3 <= 256
+    def chart():
+        fig, ax = plt.subplots(figsize=(4, 2))
+        ax.plot([0, 1, 2], [1, 3, 2])
+        return fig
+
+    full = io.BytesIO()
+    fig = chart()
+    fig.savefig(full, format="png", dpi=115, bbox_inches="tight")
+    plt.close(fig)
+    got = base64.b64decode(CR._b64(chart()))
+    if CR.CHART_MIME == "image/webp":
+        assert got[12:16] == b"VP8L", "only the lossless kind of WebP"
+    a = np.asarray(Image.open(io.BytesIO(full.getvalue())).convert("RGB"))
+    b = np.asarray(Image.open(io.BytesIO(got)).convert("RGB"))
+    assert np.array_equal(a, b)
 
 
 def _recs(n, baseline=None):
@@ -129,12 +143,11 @@ def _recs(n, baseline=None):
     return out
 
 
-def test_the_picture_table_is_capped_and_keeps_the_reference(tmp_path,
-                                                            monkeypatch):
-    """Sixty scans of one phantom were sixty columns of pictures: about three
-    megabytes and minutes of first-time decoding inside one request, on a
-    512 kbit/s link. Now at most twelve — the reference first, then the most
-    recent — and the charts still cover every scan."""
+def test_every_selected_scan_gets_its_pictures(tmp_path, monkeypatch):
+    """The user's decision on how many scans get pictures in a comparison:
+    "All — what user selects". There used to be a limit of twelve, the
+    reference and the most recent; the cost of many is measured in
+    docs/FIELD_TEST_PLAN.md (step 12)."""
     from test_authorization import _build_app
     mod = _build_app(tmp_path, monkeypatch)
     monkeypatch.setattr(mod.store, "get", lambda aid: {"id": aid})
@@ -143,15 +156,13 @@ def test_the_picture_table_is_capped_and_keeps_the_reference(tmp_path,
     monkeypatch.setattr(mod.thumbnails, "pictures_for",
                         lambda rec, d, ctx, **k: {"phantom": rec["id"]})
 
-    recs = _recs(20, baseline=0)          # the reference is the OLDEST scan
+    recs = _recs(20, baseline=0)
     chosen = mod._comparison_pictures(recs)
-    assert len(chosen) == mod.PICTURE_COLUMNS_MAX == 12
-    assert "a00" in chosen, "the reference scan must always be shown"
-    newest = sorted((r["id"] for r in recs[1:]), reverse=True)[:11]
-    assert set(chosen) == {"a00", *newest}
+    assert set(chosen) == {r["id"] for r in recs}
+    assert not hasattr(mod, "PICTURE_COLUMNS_MAX")
 
 
-def test_scans_left_out_get_no_column_and_the_page_says_so():
+def test_a_scan_with_no_pictures_entry_gets_no_column():
     from phantom_qa import comparison_report as CR
     from phantom_qa import thumbnails
     ordered = _recs(3)
@@ -160,7 +171,8 @@ def test_scans_left_out_get_no_column_and_the_page_says_so():
                 "a02": thumbnails.unavailable(thumbnails.FAILED)}
     page = CR._picture_section(ordered, labels, pictures)
     assert page.count("class='pic-head'") == 2
-    assert "Pictures are shown for 2 of 3 scans" in page
+    # No note about a limit: there is none any more.
+    assert "Pictures are shown for" not in page
 
 
 def test_nothing_is_said_when_every_scan_has_pictures():

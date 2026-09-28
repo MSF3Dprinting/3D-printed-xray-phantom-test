@@ -42,9 +42,41 @@ a fixed absolute scale would white out an image from the wrong device entirely.
 **auto** returns to the automatic window.
 
 Moving a slider changes the picture at once, without waiting for the
-connection. A moment after you stop, a sharper copy of the picture at the new
-window replaces the preview. The picture on screen is only for looking at:
-every number is measured on the original scan on the server.
+connection. While it is only a quick preview, the picture says **Preview —
+exact picture loading** in its top-left corner. A moment after you stop, the
+exact picture for the new window replaces it and the label goes. If the exact
+picture cannot be loaded, the label turns red — **Exact picture could not be
+loaded — try again** — with a **Try again** button, and the preview stays
+labelled. Every number is measured on the original scan on the server.
+
+#### The picture is exact
+
+Looking at the picture is the inspection, so nothing you see has lost detail
+on the way:
+
+- **The picture you open** is made for your screen: exactly as many pixels as
+  the viewer shows, including on laptops set to 125 or 150 % display scaling,
+  lossless. Each screen pixel is the average of the scan pixels it covers.
+- **When you zoom in** past what that picture holds, the scan's own pixels are
+  fetched for what is on screen. They come once the view has been **still for
+  about a second** (the administrator can change this), the middle of the
+  screen first. Until the screen is covered a small blue **Loading full
+  detail…** shows over the picture. Nothing locks while this happens — zoom,
+  pan and click as usual; what you moved away from is cancelled. The finest
+  line-pair group (2 lp/mm) only shows its bars at this full detail.
+- **Enlarged, pixels show as squares**, never blended into a blur that could
+  pass for detail.
+- **In the step-by-step workflow**, once the picture is open, the full detail
+  of the line-pair strip and of the low-contrast discs downloads quietly in the
+  background, so zooming onto them is sharp at once — on a slow link after
+  about 6–10 seconds of background download.
+- **Each picture is kept by your browser** for 30 days, so a scan, a window or
+  a zoom seen before costs nothing the next time.
+
+On a 512 kbit/s link, opening a scan costs 40–125 kB depending on the screen,
+and zooming 2× onto the line-pair strip takes 6–8 seconds to fill in the first
+time — 2–4 seconds once the background download has finished, and a disc at
+once.
 
 ### Upload — choose the file and identify the scan
 
@@ -421,12 +453,16 @@ The discs are a fraction of a percent in contrast, and the window that suits the
 whole phantom is far too wide to show them. Under the block's controls, **The
 block, close up** shows the block on its own: straightened, with the block's
 own brightness gradient removed, lightly smoothed, and windowed to the block
-itself. The discs usually show at once, without touching W and C. The picture is
-about 20 kB, so it arrives quickly even on a slow link.
+itself. The discs usually show at once, without touching W and C. It is marked
+**Processed view — smoothed to make the discs visible**: it is not the scan's
+own pixels — for those, zoom into the discs in the main image. The picture is
+about 15 kB, so it arrives quickly even on a slow link.
 
-- **contrast** — a slider from 20 % to 300 %. It works on the picture already
-  in the browser, so hunting for the faintest disc costs nothing on the
-  connection.
+- **contrast** — a slider from 20 % to 300 %, in steps of 10 %. Each step is
+  made exactly by the server (about 10–16 kB, a fifth of a second on a slow
+  link) and kept by the browser, so going back to a step costs nothing. The
+  picture on screen stays until the new step has arrived; *loading…* shows
+  meanwhile.
 - **Coloured rings** mark where each disc is expected from the block's
   placement:
 
@@ -731,8 +767,8 @@ different analyses never interfere.
 The scan is on the server from the moment the upload finishes, so nothing is
 lost and **the file never needs uploading again**.
 
-When you come back, the upload page offers *"You have an unfinished analysis on
-this computer"* with the file, phantom, operator and the step you had reached.
+When you come back, the upload page offers *"You have an unfinished analysis in
+this browser"* with the file, phantom, operator and the step you had reached.
 Press **Continue this analysis** to pick it up. Nothing is fetched or
 recomputed until you press it, so a reload is always a safe way out of a page
 that is misbehaving.
@@ -765,6 +801,20 @@ you can:
 - **re-run** it
 - open the **printable report**, or download **CSV** or **JSON**
 - **verify the source file** against its recorded SHA-256
+
+#### The printable report and Export to PDF
+
+The report opens in its own tab. **Export to PDF** at its top opens the
+browser's print window: choose **Save as PDF** as the printer. The PDF is A4
+portrait; every page carries the site / phantom and the analysis id at the top
+and the date and *Page N of M* at the bottom. Buttons are left out, and no test
+section, table or chart is split across two pages — which leaves some pages
+part empty.
+
+The report's picture of the scan is the scan averaged to 1000 pixels, lossless,
+with the measuring areas drawn over it as sharp lines; the charts are exactly
+as drawn. It is a record, not the place for judging fine detail — do that in the
+viewer. A report is about 600 kB, some 7 seconds on a 512 kbit/s link.
 
 #### Finalising
 
@@ -1118,27 +1168,38 @@ says so, because on another detector's window it would come out black or white
 and look like a fault that is not there. The note at the left of each row says
 which window is in use.
 
-- **To window each picture on its own**, tick *window each picture on its own*
-  at the left of the row — useful when one scan is much darker than the rest.
-  Untick it to go back to the shared window. Each row has its own switch.
+- **Each picture is drawn by the server on that window** from the scan's own
+  values, so what you compare is exact. (The switch that showed each picture
+  on its own window is gone: it needed the browser to re-stretch the pictures,
+  which cost grey levels.)
 - **The low-contrast row** is always windowed to each picture itself, as in
   step C: compare which discs you can see, not how bright the pictures are.
 - **To enlarge a picture**, click it. Click anywhere or press Escape to close.
-  The enlargement uses whichever window the row is showing.
+  Enlarged, its pixels show as squares.
+- These pictures are **small JPEG pictures, for an overall look** — the one
+  place in the application where pictures are compressed with loss, by
+  decision, to keep comparisons light. Judge fine detail in the viewer.
 - A scan with no picture gets a **labelled empty cell** saying why — for
   example *could not be registered — no picture* — never a gap, so the columns
   cannot shift and be compared wrongly.
 
 The pictures are **part of the page**: saving the comparison from the browser
 (*Save page as…*) keeps every picture, and the saved copy works without the
-server, windows and enlarging included. Nothing is e-mailed from the
-application; a saved copy is how a comparison travels. When printed, the table
-gets a landscape page of its own.
+server, enlarging included. Nothing is e-mailed from the application; a saved
+copy is how a comparison travels.
 
-The pictures cost about 60–70 kB per scan — a ten-scan comparison about
-0.7 MB. The first time a scan appears in a comparison the server needs a few
-seconds to draw its pictures; after that they are kept, and are only redrawn
+**Every scan you select gets its pictures.** The pictures cost about 30–40 kB
+per scan as they travel; the charts below are most of the page. Measured on the
+reference scans at 512 kbit/s: 2 scans about 6 seconds, 12 scans about 22, 33
+scans about 43. The first time a scan appears in a comparison the server needs
+a second or two to prepare it; after that it is kept, and only prepared again
 when that scan's measuring points or registration change.
+
+**Export to PDF** at the top works as in the single report, on A4 landscape
+pages: the picture table repeats its scan headings on every page, and no row of
+pictures and no chart is cut — a chart taller than a page is shrunk to fit it.
+With many scans the pictures are small on paper: about 1.5 cm across with 12
+scans.
 
 ---
 

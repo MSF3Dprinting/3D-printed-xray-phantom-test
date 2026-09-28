@@ -8,6 +8,7 @@ setup, but a missing password is a hard error whenever auth is enabled.
 
 from __future__ import annotations
 
+import math
 import os
 import secrets
 import sys
@@ -41,6 +42,15 @@ def _int(name: str, default: int) -> int:
         return int(os.environ.get(name, default))
     except ValueError:
         return default
+
+
+def _seconds(name: str, default: float) -> float:
+    """A non-negative number of seconds; anything unreadable is the default."""
+    try:
+        v = float(os.environ.get(name, default))
+    except ValueError:
+        return default
+    return v if math.isfinite(v) and v >= 0 else default
 
 
 class Config:
@@ -94,6 +104,11 @@ class Config:
         # backstop, not a target: every scan measured so far finishes inside
         # ten seconds. 0 disables it.
         self.analysis_timeout_s = _int("PHANTOMQA_ANALYSIS_TIMEOUT_S", 120)
+        # Seconds the viewer must stay still after a zoom or pan before full
+        # detail is fetched for what is on screen. The user's choice: 1 s,
+        # adjustable. Shorter fetches more pieces on the way to where the
+        # operator is going; longer makes them wait for detail.
+        self.detail_delay_s = _seconds("PHANTOMQA_DETAIL_DELAY_S", 1.0)
 
         # --- logging
         self.log_dir = os.environ.get("PHANTOMQA_LOG_DIR", "logs")

@@ -14,12 +14,16 @@ habits dominated the traffic, and all three were free to fix:
 Measured before this work, at 512 kbit/s: the record 197 kB, a proposal 92 kB,
 the printed report 1.7 MB, each image or window change about fifteen seconds.
 
-The second round re-encoded the two pictures that were left, since both are
-only looked at (tests/test_lighter_downloads.py). On the reference Philips
-scan the report fell from 1.72 MB to 0.39 (1.3 MB to 0.27 as it travels,
-compressed) and the viewer's picture from 1.1 MB to 0.11 — about four seconds
-and two at 512 kbit/s, where they were twenty and seventeen. The budgets below
-hold those gains on a real scan.
+The second round re-encoded the two pictures that were left
+(tests/test_lighter_downloads.py): on the reference Philips scan the report
+fell from 1.72 MB to 0.39 with a JPEG overview. Both pictures went to JPEG
+and came back, because the user's rule is that nothing may lose visual
+detail. The viewer's picture is now lossless and sized to the viewer
+(tests/test_exact_viewer.py): 341 kB as WebP at 1024 px on this scan. The
+report's is the scan averaged to 1000 px, lossless, with vector outlines
+(tests/test_exact_reports.py): the report is 0.61 MB, 0.45 as it travels.
+Both measured 2026-09-28. The budgets below hold those figures on a real
+scan.
 """
 
 import io
@@ -110,10 +114,10 @@ def real_scan(tmp_path_factory):
         c.post(f"/api/analyses/{aid}/compute", json={"sid_mm": 1000.0})
         got = {name: c.get(f"/api/analyses/{aid}/{path}")
                for name, path in (("report", "report.html"),
-                                  ("png", "image.png"),
-                                  ("jpg", "image.jpg"),
+                                  ("png", "image.png?scale=1024"),
+                                  ("webp", "image.webp?scale=1024"),
                                   ("thumb_png", "image.png?scale=200"),
-                                  ("thumb_jpg", "image.jpg?scale=200"))}
+                                  ("thumb_webp", "image.webp?scale=200"))}
         c.close()
     for name, r in got.items():
         assert r.status_code == 200, f"{name}: {r.status_code}"
@@ -122,45 +126,55 @@ def real_scan(tmp_path_factory):
 
 @needs_samples
 def test_the_printed_report_fits_its_budget(real_scan):
-    """1.72 MB before, 0.39 after. The budget has room for the report to grow
-    a little; it has no room for the overview going back to PNG (1.3 MB) or
-    the charts losing their palette (another 0.14 MB)."""
+    """1.72 MB once, 0.39 with a JPEG overview, 0.61 now that the overview is
+    the scan averaged to 1000 px and lossless (measured 2026-09-28; 0.45 MB as
+    it travels, compressed). The budget has room for the charts going
+    lossless too; none for the overview going back to a 1400 px PNG (1.3 MB)
+    or growing past the report column."""
     size = len(real_scan["report"].content)
-    assert size < 450_000, f"the report is {size / 1e6:.2f} MB"
+    assert size < 700_000, f"the report is {size / 1e6:.2f} MB"
 
 
 @needs_samples
-def test_the_report_carries_the_overview_as_jpeg_and_the_charts_as_png(
-        real_scan):
+def test_the_report_carries_the_overview_lossless_and_the_charts(real_scan):
     kinds = re.findall(r'data:image/(\w+);base64,',
                        real_scan["report"].text)
-    assert kinds.count("jpeg") == 1, kinds
-    assert kinds.count("png") >= 3, "the charts are missing from the report"
+    assert "jpeg" not in kinds, "no lossy picture of the scan in a report"
+    assert kinds.count("webp") >= 1, kinds
+    assert len(kinds) >= 4, "the charts are missing from the report"
 
 
 @needs_samples
 def test_the_viewer_picture_fits_its_budget(real_scan):
-    """Opened with every analysis, and again each time the window settles."""
-    png, jpg = real_scan["png"], real_scan["jpg"]
-    assert jpg.headers["content-type"] == "image/jpeg"
-    assert len(jpg.content) < 150_000, f"{len(jpg.content)} B"
-    assert len(jpg.content) < len(png.content) / 5, (
-        f"JPEG {len(jpg.content)} B against PNG {len(png.content)} B")
+    """Opened with every analysis, and again each time the window settles.
+
+    Lossless, so the budget is what lossless costs at a laptop viewer's size:
+    341 kB measured, with room for a little variation and none for a
+    picture larger than it has to be. WebP is the smaller of the two exact
+    formats; if it stops being so, the page's choice of it is wrong."""
+    png, webp = real_scan["png"], real_scan["webp"]
+    assert webp.headers["content-type"] == "image/webp"
+    assert len(webp.content) < 400_000, f"{len(webp.content)} B"
+    assert len(webp.content) < len(png.content), (
+        f"WebP {len(webp.content)} B against PNG {len(png.content)} B")
 
 
 @needs_samples
-def test_the_duplicate_thumbnail_is_lighter_as_jpeg(real_scan):
-    thumb = real_scan["thumb_jpg"].content
-    assert len(thumb) < 8_000, f"{len(thumb)} B"
-    assert len(thumb) < len(real_scan["thumb_png"].content)
+def test_the_duplicate_thumbnail_stays_small(real_scan):
+    """10.5 kB as lossless WebP, measured; it settles "is that my scan"."""
+    thumb = real_scan["thumb_webp"].content
+    assert len(thumb) < 16_000, f"{len(thumb)} B"
+    assert len(thumb) <= len(real_scan["thumb_png"].content)
 
 
 def test_a_rendered_image_may_be_kept_but_only_by_the_operator(client, analysed):
     """The pixels never change and the URL carries everything that varies it.
 
     Private, because it is patient-adjacent imagery that must not rest in a
-    shared proxy."""
-    answer = client.get(f"/api/analyses/{analysed}/image.png")
+    shared proxy. Kept only when the address names the picture version the
+    page learned at start (tests/test_exact_viewer.py)."""
+    v = client.get("/api/auth").json()["picture_version"]
+    answer = client.get(f"/api/analyses/{analysed}/image.png?v={v}")
     cache = answer.headers.get("cache-control", "")
     assert "private" in cache and "max-age" in cache, cache
     assert "no-store" not in cache

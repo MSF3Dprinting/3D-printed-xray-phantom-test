@@ -28,7 +28,14 @@
       <button id="zoom-fit">fit</button>
       <span id="cursor-mm" class="mono"></span>
     </div>
-    <div id="viewer-wrap"><canvas id="viewer"></canvas></div>
+    <div id="viewer-wrap"><canvas id="viewer"></canvas>
+      <!-- Says when the picture on screen is not the exact one for the
+           chosen window: a quick preview, or a failed download. -->
+      <div id="picture-note" class="hidden" role="status" aria-live="polite">
+        <span id="picture-note-text"></span>
+        <button id="picture-retry" class="hidden">Try again</button>
+      </div>
+    </div>
     <!-- Corner picking controls sit under the image, not in a dialog: the
          whole task is judging the picture, so the picture must stay visible
          while the points are corrected. -->

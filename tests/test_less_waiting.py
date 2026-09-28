@@ -17,7 +17,7 @@ fix is undone or if the fix changed what arrives:
   half a second of waiting, most of it with the page frozen, to save nothing.
   A tunnel at localhost to a deployed server, which has sign-in, still packs.
 
-  The comparison report palette-encodes each chart on a helper thread while
+  The comparison report encodes each chart on a helper thread while
   the next is drawn — 5.2 s became 4.6 s for two reference scans — and the
   page is byte for byte the one it was.
 
@@ -53,6 +53,9 @@ from phantom_qa import comparison_report as cr
 from phantom_qa import pipeline
 from phantom_qa.store import Store
 from test_block_view import _proposed
+
+#: How a picture named by what it shows is kept (tests/test_exact_viewer.py).
+KEEP = "private, max-age=2592000, immutable, no-transform"
 from test_review_fixes import _app_js, _fn
 from test_store_labels import add, fake_scan, results_for
 
@@ -381,30 +384,30 @@ def _chart_threads():
 def _drawing_order(monkeypatch, recs):
     """Each chart's PNG digest, in the order the page draws the charts."""
     order = []
-    real = cr._palette_b64
+    real = cr._encode_chart
 
     def noting(png):
         order.append(hashlib.sha256(png).hexdigest())
         return real(png)
 
-    monkeypatch.setattr(cr, "_palette_b64", noting)
+    monkeypatch.setattr(cr, "_encode_chart", noting)
     cr._compose_comparison_report(recs)
-    monkeypatch.setattr(cr, "_palette_b64", real)
+    monkeypatch.setattr(cr, "_encode_chart", real)
     assert len(order) >= 4 and len(set(order)) == len(order), \
         "the scenario needs several charts that can be told apart"
     return order
 
 
 def _failing_from(order, first, real):
-    """A palette step that fails for every chart from ``first`` on, each in
+    """An encoding step that fails for every chart from ``first`` on, each in
     its own words, so only the error encoding in turn meets first is right."""
-    def palette(png):
+    def encode(png):
         i = order.index(hashlib.sha256(png).hexdigest())
         if i >= first:
             raise OSError(f"chart {i} could not be encoded") \
                 from MemoryError(f"chart {i}")
         return real(png)
-    return palette
+    return encode
 
 
 def test_the_comparison_page_is_byte_for_byte_the_one_encoded_in_turn(
@@ -414,31 +417,31 @@ def test_the_comparison_page_is_byte_for_byte_the_one_encoded_in_turn(
     from matplotlib.figure import Figure
     recs = _records(tmp_path)
     drawn_on, encoded_on = set(), set()
-    real_savefig, real_palette = Figure.savefig, cr._palette_b64
+    real_savefig, real_encode = Figure.savefig, cr._encode_chart
 
     def savefig(self, *a, **k):
         drawn_on.add(threading.current_thread().name)
         return real_savefig(self, *a, **k)
 
-    def palette(png):
+    def encode(png):
         encoded_on.add(threading.current_thread().name)
-        return real_palette(png)
+        return real_encode(png)
 
     monkeypatch.setattr(Figure, "savefig", savefig)
-    monkeypatch.setattr(cr, "_palette_b64", palette)
+    monkeypatch.setattr(cr, "_encode_chart", encode)
     for pictures in (None, {}):
         pooled = cr.build_comparison_report(recs, filters={"site": "Goma"},
                                             pictures=pictures)
         in_turn = cr._compose_comparison_report(
             recs, filters={"site": "Goma"}, pictures=pictures)
         assert pooled == in_turn
-        assert pooled.count("data:image/png;base64,") >= 6
+        assert pooled.count(f"data:{cr.CHART_MIME};base64,") >= 6
         assert "@@chart-" not in pooled
 
     me = threading.current_thread().name
     assert drawn_on == {me}, "matplotlib must only ever run on the caller's thread"
     helpers = {n for n in encoded_on if n.startswith("comparison-chart")}
-    assert helpers, "the palette step never reached the helper threads"
+    assert helpers, "the encoding step never reached the helper threads"
     assert encoded_on == helpers | {me}
     assert not _chart_threads(), "the helper threads outlived the report"
     assert cr._CHART_BATCH.get() is None
@@ -451,8 +454,8 @@ def test_a_chart_that_fails_fails_the_report_with_the_same_error(
     but the error raised is still the first one's."""
     recs = _records(tmp_path)
     order = _drawing_order(monkeypatch, recs)
-    monkeypatch.setattr(cr, "_palette_b64",
-                        _failing_from(order, 2, cr._palette_b64))
+    monkeypatch.setattr(cr, "_encode_chart",
+                        _failing_from(order, 2, cr._encode_chart))
     with pytest.raises(OSError) as in_turn:
         cr._compose_comparison_report(recs)
     with pytest.raises(OSError) as pooled:
@@ -472,8 +475,8 @@ def test_a_chart_failure_comes_before_anything_the_page_ran_into_after_it(
     not be what the report dies of."""
     recs = _records(tmp_path)
     order = _drawing_order(monkeypatch, recs)
-    monkeypatch.setattr(cr, "_palette_b64",
-                        _failing_from(order, 1, cr._palette_b64))
+    monkeypatch.setattr(cr, "_encode_chart",
+                        _failing_from(order, 1, cr._encode_chart))
 
     def table(*a, **k):
         raise RuntimeError("the pictures table")
@@ -547,7 +550,7 @@ def test_the_close_up_is_computed_once_for_its_markers_and_its_picture(
     kept = _picture(client, aid, key)
     assert kept.status_code == 200
     assert kept.content[:8] == b"\x89PNG\r\n\x1a\n"
-    assert kept.headers["cache-control"] == "private, max-age=86400"
+    assert kept.headers["cache-control"] == KEEP
     assert len(renders) == 1, "the picture request rendered the close-up again"
     assert not reads, "the picture request read the whole record again"
 
@@ -556,7 +559,7 @@ def test_the_close_up_is_computed_once_for_its_markers_and_its_picture(
     fresh = _picture(client, aid, key)
     assert len(renders) == 2
     assert fresh.content == kept.content
-    assert fresh.headers["cache-control"] == "private, max-age=86400"
+    assert fresh.headers["cache-control"] == KEEP
 
 
 def _another_worker(mod, monkeypatch):
@@ -576,19 +579,21 @@ def test_on_a_server_another_worker_may_answer_and_renders_as_before(
     one process, as run_app.py runs; what is served is the same either way."""
     aid = _proposed(client, phantom="WORKERS")
     renders = _counted(monkeypatch, client.mod.lowcontrast, "block_view")
-    encodes = _counted(monkeypatch, client.mod, "_keep_block_png")
+    encodes = _counted(monkeypatch, client.mod, "_keep_block_picture")
     key = _view(client, aid)["key"]
     first = client.mod._img_cache
-    kept = first[(aid, "lcview", key)]
+    kept = first[(aid, "lcview", key, 100, "png")][0]
 
     _another_worker(client.mod, monkeypatch)
     answer = _picture(client, aid, key)
     assert answer.status_code == 200
     assert (len(renders), len(encodes)) == (2, 2)
     assert answer.content == kept
-    assert answer.headers["cache-control"] == "private, max-age=86400"
-    assert list(client.mod._img_cache) == [(aid, "lcview", key)]
-    assert first[(aid, "lcview", key)] == kept, \
+    assert answer.headers["cache-control"] == KEEP
+    # This worker now holds the processed values and the one picture made.
+    assert set(client.mod._img_cache) == {(aid, "lcvalues", key),
+                                          (aid, "lcview", key, 100, "png")}
+    assert first[(aid, "lcview", key, 100, "png")][0] == kept, \
         "the first worker's copy is untouched, only unused"
 
 
@@ -617,8 +622,10 @@ def test_a_name_is_only_ever_answered_with_its_own_picture(client, monkeypatch):
 
     def telltale(ctx, centre, angle, *a, **k):
         view = real(ctx, centre, angle, *a, **k)
-        return {**view, "image": np.full_like(view["image"],
-                                              (abs(angle) % 90.0) / 90.0)}
+        # The picture is made from the processed values and their window.
+        return {**view, "values": np.full_like(view["values"],
+                                               (abs(angle) % 90.0) / 90.0),
+                "window": [0.0, 1.0]}
 
     monkeypatch.setattr(client.mod.lowcontrast, "block_view", telltale)
     aid = _proposed(client, phantom="NAMES")
@@ -639,7 +646,8 @@ def test_a_name_is_only_ever_answered_with_its_own_picture(client, monkeypatch):
     for stale in (old_key, "0" * 16, ""):
         answer = _picture(client, aid, stale)
         assert answer.status_code == 200
-        assert answer.headers["cache-control"] == "no-store", stale
+        assert answer.headers["cache-control"] == "no-store, no-transform", \
+            stale
         assert answer.content == new.content, "today's picture is still sent"
 
 

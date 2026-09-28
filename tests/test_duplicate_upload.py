@@ -394,11 +394,12 @@ def test_operator_text_is_never_written_as_markup(app_js):
 
 
 def test_the_thumbnail_is_asked_for_small(app_js):
-    """A few kB settles "is that my scan". The full image costs fifteen
-    seconds on the link this is deployed over."""
+    """About 10 kB settles "is that my scan". The full image costs seconds on
+    the link this is deployed over."""
     body = app_js[app_js.index("function duplicateDialog("):
                   app_js.index("async function placeBlock(")]
-    match = re.search(r"image\.(?:png|jpg)\?scale=(\d+)", body)
+    match = re.search(r"image\.(?:png|webp|\$\{S\.pictureFormat\})\?scale=(\d+)",
+                      body)
     assert match and int(match.group(1)) <= 256, \
         "the dialog must not pull the full-size render"
 

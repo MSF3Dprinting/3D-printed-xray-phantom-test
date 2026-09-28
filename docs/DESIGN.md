@@ -310,29 +310,36 @@ reference scans that correlate at 0.88–0.93. Correctly placed grids sit at
 Stage C shows the low-contrast block on its own (`lowcontrast.block_view`):
 sampled at 4 px/mm in the block's frame, an 8 mm Gaussian subtracted to remove
 the illumination gradient, smoothed at 1 mm, windowed to the 1st–99th
-percentile of the block's interior. About 20 kB as PNG, against 0.9 MB for the
-full render. Two routes, so the picture can be cached apart from what changes
-around it:
+percentile of the block's interior. It is a processed view and the page says
+so ("Processed view — smoothed to make the discs visible"). `block_view` keeps
+the unrounded processed `values` and that `window`; each contrast step (gain
+20–300 % in steps of 10, `_block_gain`) is the window narrowed about its
+middle by gain/100, applied to the values and encoded losslessly
+(`_keep_block_picture`, cached per worker under
+`(aid, "lcview", key, gain, fmt)`, the values under `(aid, "lcvalues", key)`).
+It used to be one 8-bit PNG stretched in the browser, which at 1.5–3× left
+87–171 of 256 grey levels; measured now: 256 at 300 %, 10–16 kB a step. Two
+routes, so the picture can be cached apart from what changes around it:
 
-- `GET …/lowcontrast_view` — JSON: size, one marker per disc with its
+- `GET …/lowcontrast_view?fmt=…` — JSON: size, one marker per disc with its
   visibility (matched-filter response against the strongest disc of the same
   exposure: ≥ 0.5 clear, ≥ 0.2 faint, else at the limit), the orientation
-  summary, and `key`.
-- `GET …/lowcontrast_view.png?key=…` — the picture.
+  summary, and `key`. It encodes the 100 % step in the page's format.
+- `GET …/lowcontrast_view.webp` (or `.png`) `?key=…&gain=…` — the picture.
 
 The picture is a function of the stored pixels, the registration and the block
 placement, so `_block_view_key` digests exactly those: the file's SHA-256, the
-registration transform, `ALGO_VERSION`, and the block centre and angle rounded
-to 4 decimals (16 hex characters). The edit counter was tried first and is
+registration transform, `ALGO_VERSION`, `PICTURE_VERSION`, and the block
+centre and angle rounded to 4 decimals (16 hex characters). The edit counter was tried first and is
 wrong: it steps back on undo and forward again onto a different edit, and it
 restarts at 0 when the phantom is registered again, so one counter value could
 name two placements — and the cache served the old picture under the new rings.
 
 **Computed once per placement.** The page always asks for the JSON and then for
 the picture it names, and both routes used to run `block_view` — about 30 ms
-each time the block moved. The JSON route now encodes the PNG from the view it
-has just computed and keeps it in the per-worker image cache under
-`(aid, "lcview", key)` (`_keep_block_png`, the one place it is encoded), so the
+each time the block moved. The JSON route now keeps the view it has just
+computed and encodes the 100 % step from it (`_keep_block_values`,
+`_keep_block_picture`, the one place it is encoded), so the
 picture request that follows is a lookup: measured B→C 130 → 100 ms, and each
 block nudge 154 → 123 ms. Those figures are from `run_app.py`, one process
 answering both requests. Under gunicorn the lookup happens only when the same
@@ -344,14 +351,15 @@ milliseconds at most) and one slot of its cache for nothing.
 
 The PNG route first checks that the record still exists (one indexed `SELECT`;
 a delete served by another worker drops this worker's copies and answers 404).
-A picture this worker holds under the requested `key` is then sent as it is,
-with `Cache-Control: private, max-age=86400`, without reading the record: the
-key digests everything the picture depends on, so the bytes kept under it are
-that picture, and re-deriving the key would only repeat what the name says. A
-key it does not hold — evicted, kept by another worker, or never issued — gets
-the picture rendered from the record as it is now: `private` when the key names
-that placement, otherwise `no-store`, so bytes are never stored under the name
-of a placement they do not show. The middleware lets that header stand. A `seq`
+A picture this worker holds (or can make from the values it holds) under the
+requested `key` is then sent with `Cache-Control: private, max-age=2592000,
+immutable, no-transform`, without reading the record: the key digests
+everything the picture depends on, so the bytes kept under it are that
+picture, and re-deriving the key would only repeat what the name says. A key
+it does not hold — evicted, kept by another worker, or never issued — gets the
+picture rendered from the record as it is now: kept when the key names that
+placement, otherwise `no-store, no-transform`, so bytes are never stored under
+the name of a placement they do not show. The middleware lets that header stand. A `seq`
 parameter from pages loaded before this change is accepted and ignored.
 
 The page fetches the JSON again when the edit counter moves and asks for the
@@ -362,9 +370,10 @@ close-up through `refreshBlockView`, one load at a time: a nudge during a load
 only notes that one more is wanted, so a run of quick nudges fetches the
 close-up of where the block ended up rather than one for every step, and only
 the newest load may draw (`S.blockViewGen`), so a late answer can never put an
-older placement — or another analysis's close-up — back on screen. The contrast
-slider re-maps the downloaded picture through a 256-entry table and costs no
-traffic.
+older placement — or another analysis's close-up — back on screen. A contrast
+step is asked for 150 ms after the slider stops (`onBlockGain`); the picture
+on screen stays until it arrives, and only the newest step is drawn (its own
+counter, so a reload of the placement is never cancelled by it).
 
 ## Two dates, kept apart
 
@@ -407,8 +416,8 @@ refusal with the same dialog.
 
 **Both sides shown.** "Already analysed" answered a question nobody asked. The
 dialog shows the chosen file (name, size, modified time — two exports called
-`003_0000.dcm` differ only in that) next to the stored record (a 200 px JPEG
-thumbnail, id, labels, operator, both dates, progress, result), so the operator
+`003_0000.dcm` differ only in that) next to the stored record (a 200 px
+lossless thumbnail, id, labels, operator, both dates, progress, result), so the operator
 can see whether it is the thing they meant and what became of it.
 
 **Same exposure, different file.** A re-export from the archive has a new hash
@@ -467,10 +476,79 @@ image from the other entirely.
 
 The slider is previewed in the browser: the eight-bit picture on screen is
 re-mapped through a 256-entry table from the window it was rendered with to the
-one asked for, instantly and without traffic. The exact render is fetched once
-the slider has been still for 400 ms and replaces the preview. Every pause used
-to fetch a fresh megabyte — about fifteen seconds at 512 kbit/s — which is most
-of why finding the low-contrast discs was reported as painful.
+one asked for, instantly and without traffic. That preview is an approximation
+and is labelled on the picture ("Preview — exact picture loading") for as long
+as it stands. The exact render is fetched once the slider has been still for
+400 ms and replaces the preview; the label goes only then. Requests are
+numbered and only the newest answer is drawn; an exact picture arriving after
+the slider moved on becomes the base of a new, labelled preview; a failed
+download says so in red with a Try again button. Every pause used to fetch a
+fresh megabyte — about fifteen seconds at 512 kbit/s — which is most of why
+finding the low-contrast discs was reported as painful. This is the only place
+the browser re-maps picture values (guarded, tests/test_picture_guard.py).
+
+## Pictures of the scan are exact
+
+The user's rule (2026-09-27, after the viewer had been switched to JPEG and the
+finest line-pair group disappeared): *"The compression could never lead to
+lose of visual details! Never in any part of the app."* Measured before the
+change: the viewer's JPEG kept 0.3–1.5 % of the 2 lp/mm bar contrast on the
+Philips scans; the scan's own pixels keep 99–103 %.
+
+**One road** (`phantom_qa/imaging.py`). Every picture of the scan is: a stated
+window mapped to 8 bits, rounded to the nearest level (it used to truncate —
+half a level too dark); reduced, where the screen cannot show every pixel, only
+by averaging (Pillow's BOX: each output pixel the plain mean of the whole scan
+pixels whose centres fall in it — never a sharpening filter, which draws
+halos); encoded lossless — WebP in its lossless mode (8–15 % smaller than PNG at
+viewer sizes, measured) or PNG. `decode` exists for the checks.
+
+**The viewer.** `image.webp` / `image.png?scale=…&wc=…&ww=…&v=…`: the page
+detects lossless WebP once (a one-pixel VP8L picture) and asks for PNG where it
+cannot show it; it asks for the viewer's size in screen pixels
+(`devicePixelRatio`), rounded down to 128 px steps and never above the scan, and
+shows it one picture pixel per screen pixel on whole pixels at fit. The canvas
+has the screen's own pixels; smoothing is off from 1:1 upwards.
+
+**Full detail on zoom.** `tile/{level}/{x}/{y}.webp|png`: 256 px pieces at
+level 0 (the scan's own pixels) and 1–2 (exact means of 2×2 and 4×4 blocks,
+edge blocks over what is there — `imaging.block_average`), on the same window
+rule as the overview (`_limits`). The server keeps the levels of the last 4
+scans. The page fetches the pieces a zoom needs once the view has been still
+for `PHANTOMQA_DETAIL_DELAY_S` (default 1 s, via `/api/auth`), with `fetch` so
+they can be cancelled, decoded off the main thread (`createImageBitmap`, no
+colour conversion), at most 2 at once, centre first; anything moved away from is
+aborted at once. Pieces are drawn in scan coordinates, coarsest level first. In
+the step-by-step workflow the boxes round every line-pair group, between them,
+and round every disc (`detail_regions` in the analysis record) are preloaded at
+full size, one at a time and only while nothing downloads for the screen.
+Measured at 512 kbit/s: no page task over 50 ms while zooming and panning; 2×
+on the strip covered in 6–8 s, 2–4 s after the preload (372–609 kB a scan).
+
+**Caching.** Every picture address carries `PICTURE_VERSION`; a response to an
+address naming the current version is `private, max-age=2592000, immutable,
+no-transform`, anything else `no-store, no-transform`. Bump the version whenever
+anything changes what a picture looks like.
+
+**Reports.** The printed report's picture is the scan averaged to 1000 px,
+lossless WebP, with the outlines as an SVG in scan coordinates over it
+(`pipeline.report_overview`, `outline_shapes`, `outlines_svg`); the charts are
+lossless WebP, not the 64-colour palette they were. The comparison keeps each
+scan's sampled values (float32 `.npz`, about 1 MB a scan on disk, read without
+pickle) and draws each small picture on the window its row names on the server
+(`thumbnails.encode_on`) — JPEG at quality 75, the one lossy encoding in the
+application, by the user's choice for an overall look; nothing is re-mapped in
+the browser any more. Every selected scan gets pictures.
+
+**Export to PDF.** Both reports have a button calling `window.print()` (an
+inline script admitted by its hash); `@page` sets A4 portrait (single report)
+or landscape (comparison) with the analysis, dates and page numbers in the
+margin boxes. Checked by printing real reports in Edge and looking at every
+page.
+
+**Guards.** `tests/test_picture_guard.py` fails on any lossy encoding in the
+code other than the one JPEG call, and compares every kind of picture of two
+real reference scans pixel by pixel with a calculation written out in the test.
 
 ## Detectors report failure rather than guessing
 
@@ -767,23 +845,31 @@ picture. The line-pair corridor runs through the groups' **design** positions,
 so a group mis-placed on one scan shows as exactly that; it shows the strip as
 it is and does not depend on the parked line-pair question below.
 
-**The window travels with the picture.** Each picture is encoded with its own
-generous window (0.2–99.8 percentile) and carries the scan values that 0 and 255
-stand for (`lo`, `hi`). The page re-maps every picture of a row onto one shared
-window with a 256-entry table, so a brighter picture really is brighter without
-a second copy crossing the link. The shared window is per protocol signature —
-the same rule that scopes a baseline (`_window_sources`): the group holding the
-selection's reference scan takes that scan's window, any other group its own
-reference's or its first scan's; a scan alone on its protocol keeps its own
-window, because on another detector's window it comes out black or white. The low-contrast picture is the
-Stage C close-up, normalised to itself (`window: "self"`), and is never re-mapped.
+**The values are kept, the picture is drawn on the window shown.** Each region
+keeps its unrounded sampled values with its own generous window (0.2–99.8
+percentile, `lo`, `hi`). The server draws every picture of a row on one shared
+window (`thumbnails.encode_on`), so a brighter picture really is brighter. It
+used to send 8-bit pictures on their own windows and re-map them in the browser,
+which cost 14–47 grey levels; that and the "own window" switch are gone. The
+shared window is per protocol signature — the same rule that scopes a baseline
+(`_window_sources`): the group holding the selection's reference scan takes that
+scan's window, any other group its own reference's or its first scan's; a scan
+alone on its protocol keeps its own window, because on another detector's window
+it comes out black or white. The low-contrast picture is the Stage C close-up
+(its processed values, averaged to 280 px), normalised to itself
+(`window: "self"`), and always drawn on its own window.
 
-**Budget.** JPEG at quality 75, or PNG where that comes out smaller. All five
-pictures of a reference scan come to 42–54 kB; the 70 kB budget per scan and
-0.8 MB per ten scans are asserted in `tests/test_comparison_pictures.py`.
+**Budget.** JPEG at quality 75, or PNG where that comes out smaller — the one
+lossy encoding in the application, by the user's choice (small pictures for an
+overall look; fine detail is judged in the viewer). All five pictures of a
+reference scan stay within the 70 kB budget per scan and 0.8 MB per ten scans
+asserted in `tests/test_comparison_pictures.py`. Every selected scan gets
+pictures (the limit of twelve is gone): measured on the 33 reference scans, the
+picture table travels as 0.06 MB for 2 scans, 0.42 for 12 and 1.38 for 33.
 
-**Disk cache.** Drawing needs the decoded scan — seconds and tens of megabytes
-— so the pictures are kept under `data/thumbs/<analysis-id>/<key>.json`. The
+**Disk cache.** Sampling needs the decoded scan — seconds and tens of megabytes
+— so the values are kept under `data/thumbs/<analysis-id>/<key>.npz` (float32,
+compressed, about 1 MB a scan; read with `allow_pickle=False`). The
 key digests everything they depend on (`thumbnails.cache_key`):
 `PICTURE_VERSION`, the algorithm and definition versions, the file's SHA-256,
 `geometry_seq`, the registration transform and the block centre and angle.
@@ -793,9 +879,9 @@ transform and block are what the pictures are drawn from, so they are in the
 key; the sequence rides along so any measuring-point change re-renders.
 
 - Written to a temporary file and renamed into place, so another worker sees
-  the whole file or none of it; after a successful write every older `.json`
-  in that directory is removed. A failure to write costs a re-render next time,
-  never the page.
+  the whole file or none of it; after a successful write every older `.npz`,
+  and any `.json` kept the old way, in that directory is removed. A failure to
+  write costs a re-render next time, never the page.
 - A region that failed to draw is shown as a labelled gap and the set is not
   written, so the next report tries again.
 - Invalidation is by key: an edit, a re-registration, a re-run, a new algorithm
@@ -816,10 +902,11 @@ whatever goes wrong with one scan becomes labelled empty cells for that scan
 
 ## Comparison charts are encoded while the next is drawn
 
-Each chart of the comparison report is drawn with matplotlib and then reduced to
-a 64-colour palette PNG (`_b64`), about 25 ms of PIL work per chart that the
-next chart used to wait for. During `build_comparison_report` that palette step
-(`_palette_b64`) runs on two helper threads of the report's own, while the
+Each chart of the comparison report is drawn with matplotlib and then encoded
+as lossless WebP (`_b64`; it was a 64-colour palette PNG until 2026-09-28, which
+moved grey levels on edges and text), PIL work that the next chart used to wait
+for. During `build_comparison_report` that encoding step
+(`_encode_chart`) runs on two helper threads of the report's own, while the
 calling thread draws the next chart; each chart holds a placeholder in the page
 until the page is composed, and the placeholders are then replaced by the
 finished pictures. Two reference scans went from 5.2 s to 4.6 s; the drawing is
@@ -828,7 +915,7 @@ from several.
 
 The page is byte for byte the one encoding each chart in turn gives — the same
 encoding, only earlier — and a test builds it both ways and compares. A chart
-whose palette step fails fails the report with that chart's error, the first in
+whose encoding fails fails the report with that chart's error, the first in
 drawing order, exactly as in turn, even when the page went on to fail somewhere
 else afterwards. The helper threads end with the report however it ends (the
 pool is a `with` block per request), and the batch is found through a context
@@ -839,20 +926,21 @@ pass for one.
 
 ## One inline script, admitted by its hash
 
-The comparison report is meant to be saved from the browser and read with no
-server behind it — nothing is e-mailed from the application — so its one script
-(the shared row windows and the click-to-enlarge lightbox) is inline. The
-Content-Security-Policy everywhere else is `script-src 'self'`. For
-`/api/comparison_report.html` alone the middleware adds `'sha256-…'` of that
-exact script text, `COMPARISON_SCRIPT_CSP`, which `comparison_report.py`
-computes from `_PICTURE_SCRIPT` at import — so editing the script can never
-leave a stale hash behind that silently switches it off, and nothing else inline
-can run on the page. `'unsafe-inline'` is never used.
+Both reports are meant to be saved from the browser and read with no server
+behind them — nothing is e-mailed from the application — so each has one inline
+script: the comparison's (`_COMPARISON_SCRIPT`: the Export to PDF button and the
+click-to-enlarge lightbox) and the single report's (`REPORT_SCRIPT`: the Export
+to PDF button). The Content-Security-Policy everywhere else is
+`script-src 'self'`. For `/api/comparison_report.html` the middleware adds
+`'sha256-…'` of the exact script text, `COMPARISON_SCRIPT_CSP`, and for
+`/api/analyses/{id}/report.html` `REPORT_SCRIPT_CSP` — each computed from the
+text at import, so editing a script can never leave a stale hash behind that
+silently switches it off, and nothing else inline can run on the page.
+`'unsafe-inline'` is never used.
 
-Without the script the page still reads: every picture shows in its own window
-and the row notes say so; the per-row switch stays hidden. A copy opened from
-disk carries no CSP header and the script runs. The enlargement of a re-mapped
-picture is a `data:` URL, which `img-src 'self' data:` already admits.
+Without the script the page still reads the same; only the button and the
+enlarging do nothing. A copy opened from disk carries no CSP header and the
+script runs.
 
 ## Two privilege levels, with the administrator password per action
 
@@ -947,30 +1035,21 @@ access, and an exported report remains readable years later with no server
 involved. The comparison report embeds its pictures and its one script too, so
 a copy saved from the browser keeps both.
 
-## Pictures for looking are lossy; numbers never come from them
+## Downloads made light — without losing detail
 
-Every byte crosses a field link at about 512 kbit/s, and the two heaviest
-downloads were pictures nobody measures from.
+Every byte crosses a field link at about 512 kbit/s. The second bandwidth round
+(2026-09-22) made the viewer's picture and the printed report's overview JPEG
+and its charts 64-colour palettes, on the argument that "nothing is measured
+from them". That was wrong — looking at the picture is the inspection, and the
+viewer's JPEG erased the finest line-pair group — and was undone on
+2026-09-28; see *Pictures of the scan are exact* above. What stands from that
+round:
 
-- **The viewer's picture** is `image.jpg` (quality 75, progressive), about
-  0.1 MB for a reference scan at 1600 px against 1.1 MB as PNG. `image.png`
-  stays for anything that wants the exact eight-bit render; both come from one
-  `_render_view`, so they cannot drift apart in window or size — and the size
-  matters, because the page places every outline through the picture's width
-  over the scan's. The low-contrast discs, where a few grey levels decide what
-  an operator sees, are placed on their own lossless close-up.
-- **The printed report** embeds the annotated overview as JPEG (quality 80
-  with full colour resolution — chroma subsampling smeared the magenta disc
-  rings into a blur) and its charts as 64-colour palette PNGs (the max-coverage
-  quantiser keeps white white; JPEG was larger than PNG for every chart and
-  blurs text). A reference report went from 1.7 MB to 0.39 MB with every number
-  and verdict unchanged. `report._photo` re-encodes anything that is not already
-  JPEG, so no caller can put the megabyte back.
-- **Rendered scan images are privately cacheable** (`Cache-Control: private,
-  max-age=86400`): the upload never changes and the URL carries everything that
-  varies the picture, so the same URL is always the same bytes. Private because
-  it is patient-adjacent imagery that must not sit in a shared proxy. Every
-  other `/api/` response stays `no-store`; the close-up decides for itself (see
+- **Pictures are sized to where they are shown** — the viewer's to its screen
+  pixels, the report's to its column — and **kept by the browser**: now for
+  30 days, immutable, under the picture version (see above). Private because it
+  is patient-adjacent imagery that must not sit in a shared proxy. Every other
+  `/api/` response stays `no-store`; the close-up decides for itself (see
   above).
 - **Text is compressed in the application** (`GZipMiddleware`), not in the
   proxy, because the proxy configuration is deployment, which this work does

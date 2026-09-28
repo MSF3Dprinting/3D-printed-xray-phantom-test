@@ -262,8 +262,10 @@ def test_a_repeated_edit_counter_never_serves_the_old_picture(client,
 
     def telltale(ctx, centre, angle, *a, **k):
         view = real(ctx, centre, angle, *a, **k)
-        return {**view, "image": np.full_like(view["image"],
-                                              (abs(angle) % 90.0) / 90.0)}
+        # The picture is made from the processed values and their window.
+        return {**view, "values": np.full_like(view["values"],
+                                               (abs(angle) % 90.0) / 90.0),
+                "window": [0.0, 1.0]}
 
     monkeypatch.setattr(client.mod.lowcontrast, "block_view", telltale)
     aid = _proposed(client, phantom="BLOCKVIEW-UNDO")
@@ -301,7 +303,7 @@ def test_the_browser_keeps_the_picture_only_under_its_own_name(client):
     for wrong in ("0" * 16, ""):
         stale = _picture(client, aid, wrong)
         assert stale.status_code == 200
-        assert stale.headers["cache-control"] == "no-store"
+        assert stale.headers["cache-control"] == "no-store, no-transform"
         assert stale.content == right.content, "the current picture is still sent"
 
 
@@ -310,5 +312,7 @@ def test_the_page_asks_for_the_picture_by_its_name(app_js=None):
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "phantom_qa", "webapp", "static", "app.js")
     src = open(path, encoding="utf-8").read()
-    assert "lowcontrast_view.png?key=${meta.key}" in src
+    assert "lowcontrast_view.${S.pictureFormat}" in src
+    assert "?key=${key}&gain=${gain}" in src
+    assert "blockPictureUrl(aid, meta.key, gain)" in src
     assert "lowcontrast_view.png?seq=" not in src

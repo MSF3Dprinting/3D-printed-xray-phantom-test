@@ -6,7 +6,7 @@ import types
 
 import pytest
 
-from phantom_qa.comparison_report import build_comparison_report
+from phantom_qa.comparison_report import CHART_MIME, build_comparison_report
 from phantom_qa.store import Store, _acquired_at, csv_export, wide_csv_export
 
 
@@ -287,11 +287,11 @@ def test_comparison_report_is_mostly_plots(store):
             results_for(sd=100 + 10 * i))
     recs = [store.get(r["id"]) for r in store.list_all()]
     out = build_comparison_report(recs)
-    n_images = out.count("data:image/png;base64,")
+    n_images = out.count(f"data:{CHART_MIME};base64,")
     assert n_images >= 6, f"expected several plots, got {n_images}"
     assert out.count("<details>") >= 4, "numeric tables should be collapsible"
     # every metric table lives inside a <details>
-    assert out.index("data:image/png;base64,") < out.index("<details>")
+    assert out.index(f"data:{CHART_MIME};base64,") < out.index("<details>")
 
 
 def test_comparison_report_scales_to_many_phantoms(store):

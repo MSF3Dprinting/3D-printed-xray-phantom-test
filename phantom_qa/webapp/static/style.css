@@ -33,6 +33,19 @@ main { display: flex; height: calc(100vh - 49px); }
 #viewer-toolbar label { display: flex; gap: 4px; align-items: center; color: var(--muted); }
 #viewer-wrap { flex: 1 1 auto; position: relative; overflow: hidden; background: #000; }
 #viewer { position: absolute; inset: 0; cursor: grab; }
+/* Over the picture's top-left corner, where it cannot be missed; clicks pass
+   through to the picture except on its own button. */
+#picture-note {
+  position: absolute; top: 8px; left: 8px; z-index: 2; pointer-events: none;
+  display: flex; gap: 8px; align-items: center; padding: 4px 10px;
+  border-radius: 6px; font-size: 12px; font-weight: 600;
+  background: rgba(20, 23, 28, 0.88); color: var(--warn);
+  border: 1px solid var(--warn);
+}
+#picture-note.failed { color: var(--fail); border-color: var(--fail); }
+#picture-note.detail { color: var(--accent); border-color: var(--accent);
+  font-weight: 400; }
+#picture-note button { pointer-events: auto; }
 #overlay-toggles {
   display: flex; gap: 10px; padding: 5px 10px; background: var(--panel);
   border-top: 1px solid var(--border); font-size: 12px; flex-wrap: wrap;
@@ -440,6 +453,9 @@ button.danger:disabled { opacity: 0.45; cursor: default; }
   background: #000; border-radius: 6px; padding: 6px; overflow-x: auto;
 }
 #lc-view { display: block; width: 100%; height: auto; image-rendering: auto; }
+/* It is not the scan's own pixels, and must not pass for them. */
+.lc-view-processed { margin: 4px 0; font-size: 12px; font-weight: 600;
+  color: var(--warn); }
 .lc-view-legend { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
 .lc-chip {
   font-size: 11px; padding: 2px 8px; border-radius: 10px;

@@ -3,7 +3,8 @@
 Stage A: register()                -> registration + transform
 Stage B/C: propose_all()           -> per-test geometry proposals (editable)
 Stage D/E: compute_all()           -> results from (possibly adjusted) geometry
-Overlays: render_overlay()         -> annotated PNG/JPEG for reports/snapshots
+Overlays: report_overview()        -> lossless picture + SVG outlines (report)
+          render_overlay()         -> annotated PNG (command line)
 """
 
 from __future__ import annotations
@@ -263,70 +264,45 @@ _COLORS = {"geometry": "#00c8ff", "linepairs": "#ffd400",
            "lowcontrast": "#ff7bda", "uniformity": "#7bff9f",
            "wedge": "#ff9d5c", "reg": "#ff4040"}
 
-#: How the overview is encoded when it travels as JPEG. The picture is an
-#: X-ray, which JPEG suits, but the ROI outlines drawn on it are one pixel wide
-#: and coloured. Chroma subsampling (PIL's default) halves the colour
-#: resolution, and on the reference scans that smeared the magenta disc rings
-#: into a grey-pink blur and made the dotted background rings vanish; full
-#: colour resolution costs about a fifth more bytes and keeps them legible.
-#: Optimised, progressive coding is lossless and a few per cent smaller.
-OVERLAY_JPEG = {"quality": 80, "subsampling": 0, "optimize": True,
-                "progressive": True}
+def outline_shapes(ctx: Ctx, geometry_all: dict) -> list[dict]:
+    """Every outline drawn over a picture of the scan, in scan pixels.
 
-
-def render_overlay(scan: ScanData, ctx: Ctx, geometry_all: dict,
-                   max_px: int = 1400, fmt: str = "png") -> bytes:
-    """Annotated overview: image + registration corners + all ROIs.
-
-    PNG by default, which is what the command line writes beside its results.
-    The printed report asks for ``fmt="jpeg"``: as PNG the overview was a
-    megabyte, four-fifths of the whole report and fifteen seconds or more on a
-    field link, for a picture that is only looked at. Rendering the JPEG
-    directly, rather than re-encoding a finished PNG, also saves the second or
-    so the PNG encoder spends on a noisy X-ray.
-    """
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from matplotlib.patches import Circle as MplCircle
-    from matplotlib.patches import Polygon as MplPolygon
-
-    img = scan.pixels
-    ds = max(1, int(np.ceil(max(img.shape) / max_px)))
-    small = img[::ds, ::ds]
-    lo, hi = np.percentile(small, [1, 99])
-
-    fig, axp = plt.subplots(figsize=(11, 11), dpi=120)
-    axp.imshow(small, cmap="gray", vmin=lo, vmax=hi,
-               extent=(0, img.shape[1], img.shape[0], 0))
-    axp.set_axis_off()
-
+    One list for both pictures that show them — the printed report draws it as
+    sharp vector lines, the command line into its PNG — so the two can never
+    disagree about where something was measured. Each shape is a dict:
+    kind "poly" (points, closed), "line" (points), or "circle" (centre, r);
+    with its colour, a relative line weight, and whether it is dashed or
+    dotted."""
+    shapes = []
     if ctx.reg is not None:
-        c = np.vstack([ctx.reg.corners_px, ctx.reg.corners_px[:1]])
-        axp.plot(c[:, 0], c[:, 1], color=_COLORS["reg"], lw=1.2, ls="--")
+        shapes.append({"kind": "poly", "color": _COLORS["reg"], "weight": 1.2,
+                       "dash": "dashed",
+                       "points": np.asarray(ctx.reg.corners_px, float).tolist()})
 
-    def draw_roi(roi, color):
-        if not isinstance(roi, dict):
-            return
+    def add(roi, color):
         t = roi.get("type")
         if t == "rect":
-            axp.add_patch(MplPolygon(np.asarray(roi["corners_px"]), closed=True,
-                                     fill=False, edgecolor=color, lw=1.0))
+            shapes.append({"kind": "poly", "color": color, "weight": 1.0,
+                           "dash": "", "points": np.asarray(
+                               roi["corners_px"], float).tolist()})
         elif t == "circle":
-            axp.add_patch(MplCircle(roi["center_px"], roi["radius_px"],
-                                    fill=False, edgecolor=color, lw=1.0))
+            shapes.append({"kind": "circle", "color": color, "weight": 1.0,
+                           "dash": "", "centre": list(roi["center_px"]),
+                           "r": float(roi["radius_px"])})
         elif t == "annulus":
             for r in (roi["inner_radius_px"], roi["outer_radius_px"]):
-                axp.add_patch(MplCircle(roi["center_px"], r, fill=False,
-                                        edgecolor=color, lw=0.6, ls=":"))
+                shapes.append({"kind": "circle", "color": color, "weight": 0.6,
+                               "dash": "dotted",
+                               "centre": list(roi["center_px"]), "r": float(r)})
         elif t == "segment":
-            p0, p1 = np.asarray(roi["p0_px"]), np.asarray(roi["p1_px"])
-            axp.plot([p0[0], p1[0]], [p0[1], p1[1]], color=color, lw=0.8)
+            shapes.append({"kind": "line", "color": color, "weight": 0.8,
+                           "dash": "", "points": [list(roi["p0_px"]),
+                                                  list(roi["p1_px"])]})
 
     def walk(node, color):
         if isinstance(node, dict):
             if node.get("type") in ("rect", "circle", "segment", "annulus"):
-                draw_roi(node, color)
+                add(node, color)
             else:
                 for v in node.values():
                     walk(v, color)
@@ -338,12 +314,108 @@ def render_overlay(scan: ScanData, ctx: Ctx, geometry_all: dict,
         g = geometry_all.get(name)
         if g and not g.get("_error"):
             walk(g, _COLORS[name])
+    return shapes
+
+
+def outlines_svg(shapes: list[dict], width: int, height: int) -> str:
+    """The outlines as an SVG laid exactly over a picture of the whole scan.
+
+    Its coordinates are scan pixels (viewBox), stretched onto the picture's
+    box like the picture itself, so every line sits where it was measured
+    however the page or the printer scales it — and stays sharp at any size,
+    which drawn into the picture it could not. Line widths and dashes are set
+    for a picture about 1000 px across."""
+    unit = max(width, height) / 1000.0            # scan px per picture px
+    dashes = {"dashed": f"{6 * unit:.1f} {4 * unit:.1f}",
+              "dotted": f"{1.5 * unit:.1f} {2.5 * unit:.1f}"}
+    out = [f'<svg class="outlines" viewBox="0 0 {width} {height}" '
+           'preserveAspectRatio="none" aria-hidden="true" '
+           'xmlns="http://www.w3.org/2000/svg">']
+    for s in shapes:
+        style = (f'fill="none" stroke="{s["color"]}" '
+                 f'stroke-width="{1.4 * s["weight"] * unit:.2f}"')
+        if s["dash"]:
+            style += f' stroke-dasharray="{dashes[s["dash"]]}"'
+        if s["kind"] == "circle":
+            (x, y), r = s["centre"], s["r"]
+            out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r:.1f}" {style}/>')
+        else:
+            pts = " ".join(f"{x:.1f},{y:.1f}" for x, y in s["points"])
+            tag = "polygon" if s["kind"] == "poly" else "polyline"
+            out.append(f'<{tag} points="{pts}" {style}/>')
+    out.append("</svg>")
+    return "".join(out)
+
+
+#: Longest side of the printed report's picture of the scan: about the width
+#: of the report column on screen, and about 130 dpi across A4 when printed.
+REPORT_PICTURE_PX = 1000
+
+
+def report_overview(scan: ScanData, ctx: Ctx, geometry_all: dict,
+                    fmt: str = "webp") -> dict:
+    """The printed report's picture of the scan, and the outlines over it.
+
+    The scan averaged down to REPORT_PICTURE_PX in the viewer's automatic
+    window, encoded losslessly (the user chose WebP for reports: they are not
+    used for visual QC, but nothing may lose detail anywhere). The outlines
+    travel beside it as SVG rather than drawn into it: sharp at any zoom and
+    in print, and the picture stays exactly the scan.
+
+    The report's JPEG before this kept every 2nd or 3rd scan pixel with no
+    averaging and was redrawn by the chart library, which kept 8-46 % of the
+    finest line-pair group's bar contrast."""
+    from . import imaging
+    img = scan.pixels
+    h, w = img.shape
+    k = REPORT_PICTURE_PX / max(h, w)
+    size = None if k >= 1 else (max(1, round(w * k)), max(1, round(h * k)))
+    lo, hi = np.percentile(img, [1, 99])
+    data, media = imaging.render(img, lo, hi, size, fmt)
+    return {"picture": data, "media": media,
+            "svg": outlines_svg(outline_shapes(ctx, geometry_all), w, h)}
+
+
+def render_overlay(scan: ScanData, ctx: Ctx, geometry_all: dict,
+                   max_px: int = 1400) -> bytes:
+    """Annotated overview for the command line: image + registration corners
+    + all ROIs, as a PNG beside its results. The scan is reduced by
+    averaging, never by skipping pixels (which invents patterns in the line
+    pairs), and PNG is lossless."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Circle as MplCircle
+    from matplotlib.patches import Polygon as MplPolygon
+    from . import imaging
+
+    img = scan.pixels
+    ds = max(1, int(np.ceil(max(img.shape) / max_px)))
+    small = imaging.shrink_by_averaging(
+        img, (-(-img.shape[1] // ds), -(-img.shape[0] // ds)))
+    lo, hi = np.percentile(img, [1, 99])
+
+    fig, axp = plt.subplots(figsize=(11, 11), dpi=120)
+    axp.imshow(small, cmap="gray", vmin=lo, vmax=hi, interpolation="nearest",
+               extent=(0, img.shape[1], img.shape[0], 0))
+    axp.set_axis_off()
+
+    styles = {"": "-", "dashed": "--", "dotted": ":"}
+    for s in outline_shapes(ctx, geometry_all):
+        lw, ls = s["weight"], styles[s["dash"]]
+        if s["kind"] == "circle":
+            axp.add_patch(MplCircle(s["centre"], s["r"], fill=False,
+                                    edgecolor=s["color"], lw=lw, ls=ls))
+        elif s["kind"] == "poly":
+            axp.add_patch(MplPolygon(np.asarray(s["points"]), closed=True,
+                                     fill=False, edgecolor=s["color"], lw=lw,
+                                     ls=ls))
+        else:
+            p = np.asarray(s["points"])
+            axp.plot(p[:, 0], p[:, 1], color=s["color"], lw=lw, ls=ls)
 
     buf = io.BytesIO()
     fig.tight_layout(pad=0.2)
-    if fmt == "jpeg":
-        fig.savefig(buf, format="jpeg", pil_kwargs=dict(OVERLAY_JPEG))
-    else:
-        fig.savefig(buf, format="png")
+    fig.savefig(buf, format="png")
     plt.close(fig)
     return buf.getvalue()

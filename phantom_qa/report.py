@@ -6,16 +6,17 @@ state. Charts are rendered server-side with matplotlib and inlined as base64,
 so the report file has no external dependencies (offline/archive safe).
 
 Every byte of a picture travels to a field site at about 512 kbit/s, so each
-picture is encoded in whatever carries it in the fewest bytes without losing
-anything a reader can see: the charts as palette PNGs, the annotated overview
-of the scan as JPEG. On a reference scan the report was 1.7 MB before this and
-0.39 MB after, with every number and verdict in it unchanged — only pictures
-were re-encoded.
+picture is sent at the size the report can show and no larger. Nothing is
+encoded lossily: the user's rule is that no picture anywhere may lose detail.
+The scan is a 1000 px picture averaged from the stored values, lossless, with
+the measuring-area outlines as vector lines over it. The charts are lossless
+WebP in full colour.
 """
 
 from __future__ import annotations
 
 import base64
+import hashlib
 import html
 import io
 
@@ -32,32 +33,93 @@ _STATUS_COLOR = {"pass": "#2e9e44", "warn": "#d9a021", "fail": "#cf3f3f",
                  "not applicable": "#7a7a7a", "not measured": "#d9a021"}
 
 
-def _fig_to_b64(fig) -> str:
-    """A chart as a palette PNG.
+def _chart(fig) -> str:
+    """A chart as a lossless picture, ready for an img src (a data: URI).
 
-    A chart is a few flat colours plus the anti-aliased edges between them, so
-    a 64-colour palette holds everything visible — no pixel of the reference
-    line-pattern chart moved by more than 7 of 255 grey levels, and those
-    only on edges — at half the bytes: that chart, the heaviest, went from
-    196 kB to 92. JPEG is the wrong tool here; it came out larger than the
-    full-colour PNG for every chart, and blurs text.
-
-    Max-coverage rather than the faster octree quantiser: the octree averages
-    each colour bucket, which turned the white page into 254 across every
-    chart. Max-coverage keeps the colours the chart actually uses.
+    Exactly as the chart library drew it, in full colour: lossless WebP (the
+    user chose WebP for reports), PNG where this server cannot write it. It
+    used to be reduced to a 64-colour palette for half the bytes, which moved
+    up to 7 grey levels on the edges and text — a loss, and the user's rule
+    is that no picture may lose anything.
     """
     import matplotlib.pyplot as plt
     from PIL import Image
+    from . import imaging
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=110, bbox_inches="tight")
     plt.close(fig)
     # Opaque already (the figure has a white face), so dropping alpha loses
-    # nothing and lets the palette spend every entry on visible colour.
-    chart = Image.open(io.BytesIO(buf.getvalue())).convert("RGB")
-    out = io.BytesIO()
-    chart.quantize(colors=64, method=Image.Quantize.MAXCOVERAGE).save(
-        out, format="png", optimize=True)
-    return base64.b64encode(out.getvalue()).decode()
+    # nothing.
+    rgb = np.asarray(Image.open(io.BytesIO(buf.getvalue())).convert("RGB"))
+    data, media = imaging.encode_lossless_rgb(rgb, "webp")
+    return f"data:{media};base64,{base64.b64encode(data).decode()}"
+
+
+#: The report's one script: the Export to PDF button opens the browser's
+#: print window, where the operator chooses "Save as PDF" — no PDF library
+#: on the server. Inline so a saved copy keeps it; the server admits exactly
+#: this text by its hash (REPORT_SCRIPT_CSP), not inline scripts in general.
+REPORT_SCRIPT = """
+(function () {
+  "use strict";
+  var button = document.getElementById("export-pdf");
+  if (button) { button.addEventListener("click", function () { window.print(); }); }
+})();
+"""
+
+#: The Content-Security-Policy source that admits REPORT_SCRIPT and nothing
+#: else. Computed from the text, so editing the script cannot leave a stale
+#: hash behind that silently switches the button off.
+REPORT_SCRIPT_CSP = "'sha256-{}'".format(base64.b64encode(
+    hashlib.sha256(REPORT_SCRIPT.encode("utf-8")).digest()).decode("ascii"))
+
+
+def _css_string(text: str) -> str:
+    """Text as a CSS string: quotes, backslashes, angle brackets and control
+    characters escaped, so no label can end the string or the style block."""
+    out = []
+    for ch in str(text):
+        if ch in '"\\<>' or ord(ch) < 32 or ord(ch) == 127:
+            out.append(f"\\{ord(ch):x} ")
+        else:
+            out.append(ch)
+    return '"' + "".join(out) + '"'
+
+
+def _print_css(record: dict) -> str:
+    """How the report prints — and so how Save as PDF looks.
+
+    A4 portrait. The phantom, the analysis and its date at the top of every
+    page, the page number at the bottom, so a single printed page still says
+    what it belongs to. Nothing to click is printed. Sections, tables and
+    pictures are kept whole where they fit on a page, a heading never ends a
+    page, and the colours of the verdicts print as they show."""
+    who = " / ".join(x for x in (record.get("site"), record.get("phantom")) if x)
+    when = record.get("acquired_at") or record.get("created_at") or ""
+    margin = ('font-family: "Segoe UI", Arial, sans-serif; font-size: 8pt; '
+              'color: #5b6b80;')
+    return (
+        "@page { size: A4 portrait; margin: 15mm 12mm 15mm 12mm;\n"
+        f"  @top-left {{ content: {_css_string('MSF Phantom QA — ' + (who or 'unlabelled'))}; {margin} }}\n"
+        f"  @top-right {{ content: {_css_string('Analysis ' + str(record.get('id') or ''))}; {margin} }}\n"
+        f"  @bottom-left {{ content: {_css_string(('Acquired ' if record.get('acquired_at') else 'Uploaded ') + when[:16])}; {margin} }}\n"
+        f'  @bottom-right {{ content: "Page " counter(page) " of " counter(pages); {margin} }}\n'
+        "}\n"
+        "@media print {\n"
+        "  body { background: #fff; -webkit-print-color-adjust: exact;\n"
+        "         print-color-adjust: exact; }\n"
+        "  .wrap { max-width: none; margin: 0; padding: 0; }\n"
+        "  .no-print, button, input, select, textarea { display: none !important; }\n"
+        "  .card { break-inside: avoid; margin: 8px 0; }\n"
+        "  h1, h2, h3 { break-after: avoid; }\n"
+        "  table, img, .overview, .summary, .idgrid { break-inside: avoid; }\n"
+        "  thead { display: table-header-group; }\n"
+        "  tr { break-inside: avoid; }\n"
+        "  img, .overview { max-width: 100% !important; }\n"
+        "  /* Never taller than a page, or it would be cut at the page's edge. */\n"
+        "  .card > img { max-height: 250mm; object-fit: contain; }\n"
+        "  pre.cmd { white-space: pre-wrap; overflow: visible; }\n"
+        "}\n")
 
 
 def _chip(s: str) -> str:
@@ -100,37 +162,45 @@ def _delta_cell(value, base):
     return f"<td class='num'>{_num(base)}</td><td class='num'{warn}>{d:+.1f}%</td>"
 
 
-def _img(b64: str) -> str:
-    return f'<img src="data:image/png;base64,{b64}">'
+def _img(src: str) -> str:
+    """A chart, from the data: URI _chart made."""
+    return f'<img src="{src}">'
 
 
 #: Widest picture of the scan worth sending: the report column is about a
-#: thousand pixels on screen, and this still prints at about 180 dpi across
-#: the printable width of A4.
-_PHOTO_MAX_PX = 1400
+#: thousand pixels on screen (pipeline.REPORT_PICTURE_PX).
+_PHOTO_MAX_PX = 1000
+
+
+def _figure(overview: dict) -> str:
+    """The scan with its measuring-area outlines: the lossless picture, and
+    the outlines as vector lines laid exactly over it (see
+    pipeline.report_overview). Both inside the file, so a saved report still
+    shows them with no connection to the server."""
+    b64 = base64.b64encode(overview["picture"]).decode()
+    return (f'<div class="overview"><img alt="The scan with the measuring '
+            f'areas outlined" src="data:{overview["media"]};base64,{b64}">'
+            f'{overview["svg"]}</div>')
 
 
 def _photo(raw: bytes) -> str:
-    """The annotated overview of the scan, embedded as JPEG.
+    """A finished overview picture handed in as bytes — from a caller that
+    draws its own, like the command line — embedded losslessly.
 
-    The web route renders it as JPEG to begin with. Anything else handed in —
-    a PNG from an older caller, say — is re-encoded here with the same
-    settings, so no caller can quietly put the megabyte back into a document
-    that has to cross a field link. It is a picture for looking at; every
-    number in the report was measured on the original scan."""
+    Re-encoded here so no caller can put a megabyte back into a document
+    that has to cross a field link: shrunk by averaging when it is wider
+    than the report column, then lossless WebP. Never a second lossy pass."""
     from PIL import Image
-    from .pipeline import OVERLAY_JPEG
-    if not raw.startswith(b"\xff\xd8"):
-        pic = Image.open(io.BytesIO(raw)).convert("RGB")
-        if pic.width > _PHOTO_MAX_PX:
-            pic = pic.resize((_PHOTO_MAX_PX,
-                              round(pic.height * _PHOTO_MAX_PX / pic.width)),
-                             Image.LANCZOS)
-        buf = io.BytesIO()
-        pic.save(buf, format="jpeg", **OVERLAY_JPEG)
-        raw = buf.getvalue()
-    b64 = base64.b64encode(raw).decode()
-    return f'<img src="data:image/jpeg;base64,{b64}">'
+    from . import imaging
+    pic = Image.open(io.BytesIO(raw)).convert("RGB")
+    if pic.width > _PHOTO_MAX_PX:
+        pic = pic.resize((_PHOTO_MAX_PX,
+                          round(pic.height * _PHOTO_MAX_PX / pic.width)),
+                         Image.BOX)
+    data, media = imaging.encode_lossless_rgb(np.asarray(pic), "webp")
+    b64 = base64.b64encode(data).decode()
+    return (f'<img alt="The scan with the measuring areas outlined" '
+            f'src="data:{media};base64,{b64}">')
 
 
 # --------------------------------------------------------------------- charts
@@ -169,7 +239,7 @@ def _chart_wedge(res):
         ax2.set_title("deviation from linear", fontsize=9)
         ax2.grid(alpha=0.3, axis="y")
     fig.tight_layout()
-    return _fig_to_b64(fig)
+    return _chart(fig)
 
 
 def _chart_lowcontrast(res, baseline_rows=None):
@@ -205,7 +275,7 @@ def _chart_lowcontrast(res, baseline_rows=None):
     ax.set_ylabel("|CNR|")
     ax.grid(alpha=0.3, axis="y")
     fig.tight_layout()
-    return _fig_to_b64(fig)
+    return _chart(fig)
 
 
 def _chart_uniformity(res):
@@ -229,7 +299,7 @@ def _chart_uniformity(res):
     ax.set_xlabel(f"uniformity square (tolerance ±{tol:g}%)")
     ax.grid(alpha=0.3, axis="y")
     fig.tight_layout()
-    return _fig_to_b64(fig)
+    return _chart(fig)
 
 
 def _chart_linepairs(res):
@@ -270,7 +340,7 @@ def _chart_linepairs(res):
         if i == len(rows) - 1:
             ax2.set_xlabel("line index", fontsize=8)
     fig.tight_layout()
-    return _fig_to_b64(fig)
+    return _chart(fig)
 
 
 # -------------------------------------------------------------------- sections
@@ -669,7 +739,7 @@ server kept and reports any mismatch. Every check is written to the audit log.</
 </section>"""
 
 
-def build_report(record: dict, overlay: bytes | None = None,
+def build_report(record: dict, overlay: dict | bytes | None = None,
                  baseline: dict | None = None,
                  integrity: dict | None = None) -> str:
     results = record.get("results") or {}
@@ -717,10 +787,13 @@ def build_report(record: dict, overlay: bytes | None = None,
         + _wedge_section(results, bmap)
     )
 
+    # The web route hands in the picture and its outlines separately
+    # (pipeline.report_overview); a finished picture as bytes still works.
     overlay_html = ""
     if overlay:
         overlay_html = _section("Confirmed geometry overlay", "",
-                                _photo(overlay))
+                                _figure(overlay) if isinstance(overlay, dict)
+                                else _photo(overlay))
 
     audit_html = "".join(
         f"<tr><td>{html.escape(a['ts'])}</td><td>{html.escape(a['stage'])}</td>"
@@ -770,6 +843,13 @@ def build_report(record: dict, overlay: bytes | None = None,
              padding:8px 12px; display:flex; gap:10px; align-items:center;
              font-size:12.5px; }}
  img {{ max-width:100%; height:auto; display:block; margin:8px 0; }}
+ /* The outlines lie over the picture in scan coordinates, so the frame must
+    be exactly the picture's size: shrink-wrapped, never wider. */
+ .overview {{ position:relative; display:inline-block; max-width:100%;
+              margin:8px 0; line-height:0; }}
+ .overview img {{ margin:0; }}
+ .overview svg.outlines {{ position:absolute; left:0; top:0; width:100%;
+                           height:100%; }}
  code {{ font-size:10.5px; word-break:break-all; }}
  pre.cmd {{ background:#f2f5f8; border:1px solid #dfe4ea; border-radius:6px;
             padding:8px 10px; font-size:11px; overflow-x:auto; }}
@@ -783,8 +863,14 @@ def build_report(record: dict, overlay: bytes | None = None,
  .vmeta {{ font-size:12.5px; margin-top:4px; }}
  .vcomment {{ font-size:12.5px; margin-top:8px; background:#f2f5f8;
               border-radius:6px; padding:8px 10px; }}
- @media print {{ body {{ background:#fff; }} .card {{ break-inside: avoid; }} }}
-</style></head><body><div class="wrap">
+ .toolbar {{ display:flex; gap:10px; align-items:center; margin: 0 0 12px; }}
+ .toolbar button {{ font: inherit; font-size:13px; font-weight:600;
+                    padding:6px 14px; border-radius:6px; cursor:pointer;
+                    border:1px solid #2f6db5; background:#3b7dd8; color:#fff; }}
+{_print_css(record)}</style></head><body><div class="wrap">
+<div class="toolbar no-print"><button id="export-pdf" type="button">Export to
+PDF</button><span class="muted" style="font-size:12px">opens the print window —
+choose “Save as PDF” as the printer</span></div>
 <h1>MSF Phantom QA report</h1>
 <p class="muted" style="font-size:12px">
 <b>Analysis</b> {html.escape(record['id'])} ·
@@ -810,6 +896,7 @@ def build_report(record: dict, overlay: bytes | None = None,
 <table>{meta_rows}</table></section>
 {_integrity_block(record, integrity)}
 <section class="card"><h2>Audit trail</h2>
-<table><tr><th>time</th><th>stage</th><th>action</th><th>detail</th></tr>
-{audit_html}</table></section>
-</div></body></html>"""
+<table><thead><tr><th>time</th><th>stage</th><th>action</th><th>detail</th>
+</tr></thead><tbody>
+{audit_html}</tbody></table></section>
+</div><script>{REPORT_SCRIPT}</script></body></html>"""

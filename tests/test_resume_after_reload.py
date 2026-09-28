@@ -122,10 +122,10 @@ def test_the_note_is_dropped_when_the_work_ends(app_js):
         "finalising must stop offering the analysis as unfinished"
     assert "remembered.aid === aid) forgetOpenAnalysis()" in app_js, \
         "deleting a record must not leave a banner pointing at it"
-    assert "forgetOpenAnalysis();" in app_js[app_js.index("function clearAnalysisState"):
-                                             app_js.index("function rememberIdentity")
-                                             if "function rememberIdentity" in app_js
-                                             else app_js.index("function clearAnalysisState") + 900]
+    # The whole function, however long it grows; a fixed number of
+    # characters broke as soon as it gained a few lines.
+    clear = app_js[app_js.index("function clearAnalysisState"):]
+    assert "forgetOpenAnalysis();" in clear[:clear.index("\n}\n")]
 
 
 def test_hiding_the_banner_destroys_nothing(app_js):

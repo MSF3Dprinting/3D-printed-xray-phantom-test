@@ -136,6 +136,7 @@ ROUTES = [
     # as the record it belongs to.
     ("GET",  "/api/analyses/{aid}/lowcontrast_view", "user"),
     ("GET",  "/api/analyses/{aid}/lowcontrast_view.png", "user"),
+    ("GET",  "/api/analyses/{aid}/lowcontrast_view.webp", "user"),
     ("GET",  "/api/labels",                        "user"),
     ("GET",  "/api/phantom_profiles",              "user"),
     ("GET",  "/api/signatures",                    "user"),
@@ -146,9 +147,12 @@ ROUTES = [
     ("GET",  "/api/comparison_report.html",        "user"),
     ("GET",  "/api/analyses/{aid}",                "user"),
     ("GET",  "/api/analyses/{aid}/image.png",      "user"),
-    # The same render as JPEG, for the viewer on slow links. Same picture,
+    # The same render as lossless WebP, what the viewer draws. Same picture,
     # same reach, so the same level.
-    ("GET",  "/api/analyses/{aid}/image.jpg",      "user"),
+    ("GET",  "/api/analyses/{aid}/image.webp",     "user"),
+    # Pieces of the same scan at full detail, for zooming. Same reach.
+    ("GET",  "/api/analyses/{aid}/tile/{level}/{tx}/{ty}.webp", "user"),
+    ("GET",  "/api/analyses/{aid}/tile/{level}/{tx}/{ty}.png",  "user"),
     ("GET",  "/api/analyses/{aid}/roi_stats",      "user"),
     ("GET",  "/api/analyses/{aid}/verify",         "user"),
     ("GET",  "/api/analyses/{aid}/export.json",    "user"),
@@ -197,6 +201,13 @@ ROUTES = [
 ]
 
 
+def _url(path: str, aid: str) -> str:
+    """A route's address for the fixture analysis. Picture tiles also name a
+    level and a position; the first tile of the full-size level always
+    exists."""
+    return path.format(aid=aid, level=0, tx=0, ty=0)
+
+
 def test_route_inventory_is_complete(app_mod):
     """Every mounted route must appear in ROUTES.
 
@@ -226,7 +237,7 @@ def test_route_inventory_is_complete(app_mod):
 @pytest.mark.parametrize("method,path,level",
                          [r for r in ROUTES if r[2] != "public"])
 def test_anonymous_is_rejected(client, analysis, method, path, level):
-    url = path.format(aid=analysis)
+    url = _url(path, analysis)
     r = client.request(method, url, json={}, headers={"X-CSRF-Token": "x"})
     assert r.status_code in (401, 403), (
         f"{method} {url} returned {r.status_code} to an ANONYMOUS caller")
@@ -240,7 +251,7 @@ def test_anonymous_is_rejected(client, analysis, method, path, level):
                          [r for r in ROUTES if r[2] != "public"])
 def test_anonymous_never_leaks_data(client, analysis, method, path, level):
     """A denied response must not contain any stored content."""
-    url = path.format(aid=analysis)
+    url = _url(path, analysis)
     r = client.request(method, url, json={}, headers={"X-CSRF-Token": "x"})
     body = r.text.lower()
     for secret in ("goma", "sha256", "phantom_qa.sqlite3", "traceback"):
@@ -273,7 +284,7 @@ def test_user_is_not_blocked_by_auth(app_mod, analysis, method, path):
     c = TestClient(app_mod.app, raise_server_exceptions=False)
     csrf = _login(c)
     c.headers.update({"X-CSRF-Token": csrf})
-    url = path.format(aid=analysis)
+    url = _url(path, analysis)
     r = c.request(method, url, json={})
     assert r.status_code not in (401, 403), (
         f"{method} {url} refused an authenticated user ({r.status_code})")
@@ -287,7 +298,7 @@ def test_user_is_not_blocked_by_auth(app_mod, analysis, method, path):
      {"status": "validated", "validated_by": "Someone"}),
 ])
 def test_admin_routes_reject_a_plain_user(user_client, analysis, path, body):
-    url = path.format(aid=analysis)
+    url = _url(path, analysis)
     payload = {k: v.format(aid=analysis) if isinstance(v, str) else v
                for k, v in body.items()}
     for pw in ("", "wrong", USER_PW):
@@ -375,7 +386,7 @@ def test_admin_actions_disabled_without_admin_password(tmp_path, monkeypatch):
 def test_state_changing_requests_need_csrf(app_mod, analysis, method, path):
     c = TestClient(app_mod.app)
     _login(c)                                   # session cookie, no CSRF header
-    url = path.format(aid=analysis)
+    url = _url(path, analysis)
     r = c.request(method, url, json={})
     assert r.status_code == 403, (
         f"{method} {url} accepted a request with no CSRF header")
@@ -673,6 +684,9 @@ def test_image_endpoint_requires_auth(client, analysis):
     r = client.get(f"/api/analyses/{analysis}/image.png")
     assert r.status_code == 401
     assert not r.content.startswith(b"\x89PNG")
+    r = client.get(f"/api/analyses/{analysis}/image.webp")
+    assert r.status_code == 401
+    assert not r.content.startswith(b"RIFF")
 
 
 def test_export_json_has_no_secrets(user_client, analysis):
