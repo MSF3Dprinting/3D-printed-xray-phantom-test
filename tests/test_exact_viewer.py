@@ -763,7 +763,13 @@ def test_the_preload_is_part_of_the_step_by_step_workflow_only():
     """Field analysis, when it comes, shows no zoomed picture to wait for."""
     app_js = _app_js()
     opening = _body(app_js, "async function openAnalysis(", "\n}\n")
-    assert "S.preloadPending = true" in opening
+    # Held back while Field analysis is on offer or done, and started when
+    # the operator chooses to work step by step (startWithheldPreload).
+    assert "S.preloadWithheld = fieldAhead(rec);" in opening
+    assert "S.preloadPending = !S.preloadWithheld;" in opening
+    ahead = _body(app_js, "function fieldAhead(", "\n}\n")
+    assert 'rec.analysis_mode === "field"' in ahead
+    assert "rec.field_offer.offered" in ahead
     assert "S.detailRegions = rec.detail_regions || []" in opening
     load = _body(app_js, "function loadImage(", "function wlFromParams")
     assert "if (first && S.preloadPending)" in load

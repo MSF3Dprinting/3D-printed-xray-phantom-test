@@ -1392,6 +1392,28 @@ of at most 15 minutes each:
 3. everything else, including the reference-scan benchmark. That is about
    10 min: the 24 min 23 s total minus the two parts above.
 
+**Done 2026-09-29**, after commit e03070b. The round's tests had grown and the
+laptop ran slower than on 2026-09-27, so it ran in 7 foreground parts of under
+10 minutes (the last split in two), each of the 65 test files exactly once:
+
+| Part | Files | Result | Time |
+|---|---|---|---|
+| 1 | pictures, reports, upload, security, comparison, review fixes, integrity, pre-deployment, load (17 files) | 483 passed, 1 failed | 8 min 31 s |
+| 2 | permissions, bandwidth, lighter downloads, close-up, waiting, stale state, damaged inputs, orientation per phantom (8) | 387 passed | 7 min 39 s |
+| 3 | Field analysis, schema upgrade, labels, exposure index (4) | 128 passed | 2 min 28 s |
+| 4 | re-run, discard, unusable exposures, wording, sign-off protection, references, insert orientation (7) | 193 passed | 5 min 27 s |
+| 5 | step C save choice, round-3 journey, saved layouts, quality gate, time limit (5) | 121 passed | 5 min 6 s |
+| 6a | dates, concurrent editing, deletion, features, field edges, filters, edit history, ingest, line pairs, manual adjustment (12) | 141 passed | 3 min 0 s |
+| 6b | MONOCHROME1, persistence, proxy, registration, ROI orientation, round-2 fixes, runtime files, samples, unanalysed tests, validation, wedge (11) | 160 passed | 1 min 39 s |
+| 7 | the reference-scan benchmark (1) | 23 passed | 46 s |
+
+**The one failure** was a Part A test of the viewer's zoom preload: it still
+looked for the preload always switched on, and step 20 holds it back while
+Field analysis is on offer or done. That file was not in the Part B closing
+check, and should have been. The test now checks the rule as built, and the
+viewer's preload tests pass (3 in 18 s). **1637 tests, all passing now**, in
+34 min 35 s of test time. One changed test file is left for you to commit.
+
 ## Not in this round
 
 - **Line pairs on the blue prints (parked).** They keep showing fail or warn in
