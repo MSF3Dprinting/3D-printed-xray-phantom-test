@@ -116,10 +116,12 @@ def test_only_unfinished_work_is_remembered(app_js):
 
 def test_the_note_is_dropped_when_the_work_ends(app_js):
     """Finalise, delete and starting a new analysis all clear it."""
-    assert "forgetOpenAnalysis();\n      status(\"Finalized.\")" in app_js \
-        or "forgetOpenAnalysis()" in app_js[app_js.index("btn-finalize"):
-                                            app_js.index("btn-validate-f")], \
+    # One function behind both Finalise buttons: step F's and the Field
+    # analysis result screen's.
+    fin = app_js[app_js.index("async function finalizeAnalysis("):]
+    assert "forgetOpenAnalysis();" in fin[:fin.index("\n}\n")], \
         "finalising must stop offering the analysis as unfinished"
+    assert app_js.count('addEventListener("click", finalizeAnalysis)') == 2
     assert "remembered.aid === aid) forgetOpenAnalysis()" in app_js, \
         "deleting a record must not leave a banner pointing at it"
     # The whole function, however long it grows; a fixed number of

@@ -23,7 +23,7 @@ import io
 import numpy as np
 
 from .pipeline import verdict_notes
-from .store import flatten_results
+from .store import FIELD_MODE_TEXT, flatten_results
 
 #: "not measured" counts as a warning in the verdict and is coloured like one;
 #: "not applicable" keeps the neutral grey of the "n/a" that analyses stored
@@ -98,10 +98,14 @@ def _print_css(record: dict) -> str:
     when = record.get("acquired_at") or record.get("created_at") or ""
     margin = ('font-family: "Segoe UI", Arial, sans-serif; font-size: 8pt; '
               'color: #5b6b80;')
+    # Every printed page of a Field analysis says so, not only the first:
+    # a page taken out of the stack must not pass for a reviewed analysis.
+    ident = "Analysis " + str(record.get("id") or "") + (
+        " · Field analysis — automatic" if _is_field(record) else "")
     return (
         "@page { size: A4 portrait; margin: 15mm 12mm 15mm 12mm;\n"
         f"  @top-left {{ content: {_css_string('MSF Phantom QA — ' + (who or 'unlabelled'))}; {margin} }}\n"
-        f"  @top-right {{ content: {_css_string('Analysis ' + str(record.get('id') or ''))}; {margin} }}\n"
+        f"  @top-right {{ content: {_css_string(ident)}; {margin} }}\n"
         f"  @bottom-left {{ content: {_css_string(('Acquired ' if record.get('acquired_at') else 'Uploaded ') + when[:16])}; {margin} }}\n"
         f'  @bottom-right {{ content: "Page " counter(page) " of " counter(pages); {margin} }}\n'
         "}\n"
@@ -604,6 +608,35 @@ _VALIDATION_TEXT = {"validated": "VALIDATED",
                     "": "PENDING REVIEW"}
 
 
+def _is_field(record: dict) -> bool:
+    return (record.get("analysis_mode") or "full") == "field"
+
+
+def _mode_block(record: dict) -> str:
+    """How the analysis was run, when that was automatically (request B).
+
+    First in the report, before the ruling: whoever reads the numbers has to
+    know that nobody looked at the measuring points before they were taken,
+    and where the points came from."""
+    if not _is_field(record):
+        return ""
+    run = next((e.get("detail") or {} for e in reversed(record.get("audit")
+                                                         or [])
+                if isinstance(e, dict) and e.get("action") == "field analysis"),
+               {})
+    source = ""
+    if run.get("points_from"):
+        source = (f" They were placed from the points saved for phantom "
+                  f"{html.escape(str(run.get('phantom') or ''))} on "
+                  f"{html.escape(str(run.get('points_saved_at') or '')[:16])} "
+                  f"by {html.escape(str(run.get('points_saved_by') or ''))}, "
+                  f"from scan {html.escape(str(run['points_from']))}.")
+    return (f'<p class="modebox"><b>{html.escape(FIELD_MODE_TEXT)}.</b>'
+            f"{source} Nobody looked at them on screen before they were "
+            f"measured; the outlines on the picture below show where they "
+            f"were.</p>")
+
+
 def _validation_block(record: dict) -> str:
     """The administrator's ruling — the first thing a reader needs to know."""
     st = record.get("validation_status") or ""
@@ -611,9 +644,15 @@ def _validation_block(record: dict) -> str:
     who = record.get("validated_by") or ""
     when = (record.get("validated_at") or "")[:16]
     comment = record.get("validation_comment") or ""
+    # A ruling on a Field analysis is a ruling on points nobody reviewed on
+    # screen, and says so wherever the ruling is printed (decision 5).
+    automatic = " (automatic)" if st and _is_field(record) else ""
     if st:
         meta = (f"<div class='vmeta'>Approved by <b>{html.escape(who)}</b>"
-                f" on {html.escape(when)}</div>")
+                f" on {html.escape(when)}"
+                + (" — signed off on a Field analysis, whose measuring points "
+                   "were not reviewed on screen" if automatic else "")
+                + "</div>")
     else:
         meta = ("<div class='vmeta'>No administrator has ruled on this analysis "
                 "yet. The measurements below stand on their own; they have not "
@@ -623,7 +662,7 @@ def _validation_block(record: dict) -> str:
     return f"""
 <section class="card vcard" style="border-left:6px solid {color}">
   <h2>Validation</h2>
-  <div class="vstate" style="color:{color}">{_VALIDATION_TEXT.get(st, st)}</div>
+  <div class="vstate" style="color:{color}">{_VALIDATION_TEXT.get(st, st)}{automatic.upper()}</div>
   {meta}
   {body}
 </section>"""
@@ -838,6 +877,8 @@ def build_report(record: dict, overlay: dict | bytes | None = None,
  .note {{ font-size:11.5px; color:#5b6b80; margin:4px 0 8px; }}
  .warnbox {{ background:#fff5d6; border:1px solid #d9a021; padding:8px 12px;
              border-radius:6px; }}
+ .modebox {{ background:#eaf2fc; border:1px solid #3b7dd8; padding:8px 12px;
+             border-radius:6px; font-size:13px; }}
  .summary {{ display:flex; flex-wrap:wrap; gap:8px; }}
  .sumcell {{ background:#fff; border:1px solid #dde3ea; border-radius:8px;
              padding:8px 12px; display:flex; gap:10px; align-items:center;
@@ -879,6 +920,7 @@ choose “Save as PDF” as the printer</span></div>
 <b>SID</b> {record.get('sid_mm') or 1000.0} mm ·
 <b>Algorithm</b> v{html.escape(record.get('algo_version') or '')}<br>
 <b>Protocol signature</b> {html.escape(record.get('signature') or '')}</p>
+{_mode_block(record)}
 {reduced}
 {_validation_block(record)}
 {_identity_block(record)}

@@ -61,8 +61,11 @@ const S = {
   tileQueue: [], tileActive: 0, tileTries: new Map(), detailFailed: false,
   /* Where an inspector zooms in (line-pair groups, discs), from the server;
      the pieces of them waiting to download in the background; and whether
-     this analysis was opened in the step-by-step workflow, which preloads. */
+     this analysis was opened in the step-by-step workflow, which preloads.
+     Held back while Field analysis is on offer or done: nobody zooms there,
+     and on a slow link the download would only compete with the result. */
   detailRegions: [], preloadQueue: [], preloadPending: false,
+  preloadWithheld: false,
   /* Set once a packed upload is refused as damaged on the way, and kept until
      the page is reloaded: every later file is then sent as it is (see
      uploadFile), so a fault in this browser's packing cannot refuse the same
@@ -142,7 +145,7 @@ function clearAnalysisState() {
   S.wlPreview = null; S.renderedWL = null; S.imageFailed = false;
   clearTiles(); S.shownParams = null; S.viewSig = "";
   clearTimeout(S.detailTimer);
-  S.detailRegions = []; S.preloadPending = false;
+  S.detailRegions = []; S.preloadPending = false; S.preloadWithheld = false;
   S.selectedRoi = null; S.mode = "normal"; S.manualCorners = [];
   S.fieldEdgeSide = null; S.dragRoi = null; S.dimPreview = null;
   S.pendingFile = null; S.pickPress = null;
@@ -176,6 +179,10 @@ const chip = (s) => `<span class="chip ${(s || "na").replace(/[^a-z]/g, "")}">${
 /* The note the overall verdict carries: what it left out because it did not
    apply to this image. Empty for analyses stored before the split. */
 const verdictNotes = (notes) => (notes || []).map(html_escape).join("; ");
+/* What a Field analysis is called on screen; the same words as the report
+   (store.FIELD_MODE_TEXT). */
+const FIELD_MODE_TEXT =
+  "Field analysis — automatic, measuring points not reviewed on screen";
 
 function csrfToken() {
   const m = document.cookie.match(/(?:^|;\s*)phantomqa_csrf=([^;]+)/);
@@ -2178,6 +2185,12 @@ function validationDialog(rec, submit) {
     const back = $("#val-backdrop");
     $("#val-target").textContent =
       `${rec.id} · ${[rec.site, rec.phantom].filter(Boolean).join(" / ") || "unlabelled"}`;
+    // The approver has to know what they are ruling on (decision 5): a Field
+    // analysis may be signed off, and the report prints it as automatic.
+    const mode = $("#val-mode");
+    mode.textContent = rec.analysis_mode === "field"
+      ? `${FIELD_MODE_TEXT}. The ruling is printed as automatic.` : "";
+    mode.classList.toggle("hidden", rec.analysis_mode !== "field");
     const cur = rec.validation_status || "";
     document.querySelectorAll('input[name="vstatus"]').forEach(
       r => { r.checked = (r.value === cur); });
@@ -3425,14 +3438,31 @@ async function openAnalysis(aid) {
   S.nativeRows = S.reg ? S.reg.image.rows : (rec.meta.Rows || 3000);
   // The step-by-step workflow: once the picture is on screen, full detail of
   // the line-pair groups and discs downloads quietly (see preloadDetail).
+  // Not while Field analysis is on offer or done — see startWithheldPreload.
   S.detailRegions = rec.detail_regions || [];
-  S.preloadPending = true;
+  S.preloadWithheld = fieldAhead(rec);
+  S.preloadPending = !S.preloadWithheld;
   // The viewer first, so the picture is asked for at the size it will be
   // shown at: measured on a hidden viewer it would come out at the smallest
   // size and be downloaded a second time.
   showTab("analyze");
   loadImage();
   setStage(openingStage(rec));
+}
+
+/* Whether this analysis is headed for, or came from, Field analysis. */
+function fieldAhead(rec) {
+  return !!rec && (rec.analysis_mode === "field"
+                   || !!(rec.field_offer && rec.field_offer.offered));
+}
+
+/* The operator chose to work step by step after all: start the background
+   download of full detail that Field analysis held back. */
+function startWithheldPreload() {
+  if (!S.preloadWithheld) return;
+  S.preloadWithheld = false;
+  if (S.shownParams !== null) preloadDetail();
+  else S.preloadPending = true;       // after the picture, as usual
 }
 
 /* Which step to open a stored analysis at.
@@ -3483,7 +3513,10 @@ function stageA(c) {
   const rp = S.record.reduced_precision
     ? `<p class="hint" style="color:var(--warn)">⚠ reduced-precision input
        (plain image, no metadata)</p>` : "";
+  const offer = (S.record && S.record.field_offer) || null;
+  const offered = !!(offer && offer.offered);
   c.innerHTML = `<h2>Stage A — Registration check</h2>${rp}${qualityBanner()}
+    ${fieldChoice(offer)}
     <div class="card"><div class="kv">
       <div>rotation</div><div>${fmt(s.rotation_deg, 2)}°</div>
       <div>mirrored</div><div>${s.mirrored}</div>
@@ -3495,14 +3528,18 @@ function stageA(c) {
     <p class="hint">Check on the image: the red dashed outline must follow the
     phantom edge; rotation/mirroring must be plausible. If detection failed, use
     manual corners.</p>
-    <button class="primary" id="btn-confirm-a">Confirm registration ✓</button>
+    ${offered ? "" : `<button class="primary" id="btn-confirm-a">Confirm
+      registration ✓</button>`}
     <button class="secondary" id="btn-manual-corners">Manual corners…</button>
     <button class="secondary" id="btn-back-u">Back to upload</button>`;
   // Every other step has a way back to the one before it; this is the first
   // step's, and the step before it is the upload page. The scan stays on the
   // server and in the unfinished list there, so this costs nothing.
   $("#btn-back-u").addEventListener("click", goToUpload);
+  const field = $("#btn-field");
+  if (field) field.addEventListener("click", runField);
   $("#btn-confirm-a").addEventListener("click", async () => {
+    startWithheldPreload();
     status("Detecting patterns…");
     try {
       await postJSON(`api/analyses/${S.aid}/confirm`, { stage: "A" });
@@ -3514,6 +3551,97 @@ function stageA(c) {
   });
   $("#btn-manual-corners").addEventListener("click",
     () => startPicking("corners"));
+}
+
+/* The choice after registration (request B; decision 13).
+
+   Offered: Field analysis highlighted, with the phantom ID large enough to be
+   checked from across the room — a wrong ID is the one mistake the automatic
+   run cannot catch — and where its saved points came from; the full analysis
+   beside it. Not offered: the full analysis only, and one line saying why. */
+function fieldChoice(offer) {
+  if (!offer) return "";
+  if (!offer.offered) {
+    return `<p class="hint field-not-offered">Field analysis is not available:
+      ${html_escape(offer.why)}</p>`;
+  }
+  const when = (offer.points_saved_at || "").slice(0, 16);
+  return `<div class="field-choice">
+    <div class="choice choice-field">
+      <h3>Field analysis — automatic</h3>
+      <p class="field-phantom" title="Phantom ID">${html_escape(offer.phantom)}</p>
+      <p class="hint">Points saved on ${html_escape(when)}
+        by ${html_escape(offer.points_saved_by || "—")},
+        from scan ${html_escape(offer.points_from || "—")}.</p>
+      <p class="hint">Places those points, measures, and shows the results.
+        Check the phantom ID first.</p>
+      <button class="primary" id="btn-field">Run Field analysis</button>
+    </div>
+    <div class="choice choice-full">
+      <h3>Full analysis — step by step</h3>
+      <p class="hint">Check the patterns and every measuring point on the
+        image yourself before measuring.</p>
+      <button class="secondary" id="btn-confirm-a">Confirm registration ✓</button>
+    </div>
+  </div>`;
+}
+
+/* Field analysis, one request: the server places the saved points, measures
+   and stores the results with the code the steps use. */
+async function runField() {
+  const btn = $("#btn-field");
+  if (btn) btn.disabled = true;
+  status("Field analysis running — placing the saved points and measuring…",
+         false, true);
+  let r;
+  try {
+    // Two steps' worth of work in one request: finding the patterns, then
+    // measuring.
+    r = await postJSON(`api/analyses/${S.aid}/field_run`, {},
+                       { timeoutMs: 2 * analysisTimeoutMs() });
+  } catch (e) {
+    status(e.message, true, true);
+    // Refused, or the connection gave out while the server went on: show
+    // what the server now holds rather than guess.
+    try { await refreshRecord(); } catch (_) {
+      if (btn) btn.disabled = false;
+    }
+    return;
+  }
+  S.geometry = r.geometry;
+  S.layoutSource = r.layout_source || "";
+  noteHistory(r);
+  if (r.outcome === "stopped") {
+    Object.assign(S.record, {
+      stage: "B", analysis_mode: "full", field_stopped: r.reason,
+      field_offer: { offered: false, reasons: [], why:
+        `Field analysis stopped on this analysis: ${r.reason} Continue step `
+        + `by step.` }});
+    startWithheldPreload();
+    status("");
+    setStage("B");
+    return;
+  }
+  S.results = r.results;
+  Object.assign(S.record, {
+    stage: "F", analysis_mode: "field", status: r.overall,
+    results: r.results, field_result: r.field_result,
+    field_offer: { offered: false, reasons: [],
+                   why: "Field analysis has already been run on this analysis." }});
+  status("");
+  setStage("F");
+}
+
+/* Re-read the analysis from the server, without the picture. */
+async function refreshRecord() {
+  const rec = await api(`api/analyses/${S.aid}`);
+  S.record = rec;
+  S.geometry = rec.geometry;
+  S.results = rec.results;
+  S.history = rec.history || S.history;
+  S.layoutSource = rec.layout_source || "";
+  if (!fieldAhead(rec)) startWithheldPreload();
+  setStage(openingStage(rec));
 }
 
 /* Adopt a fresh proposal, and say plainly where the marks came from.
@@ -3603,6 +3731,8 @@ async function submitManualCorners() {
   try {
     S.reg = await postJSON(`api/analyses/${S.aid}/register`,
       { corners_px: corners });
+    // New ruler lines and a new quality verdict: the offer may have changed.
+    if (S.record && S.reg.field_offer) S.record.field_offer = S.reg.field_offer;
     S.geometry = null;
     setStage("A");
     status("Re-registered.");
@@ -3686,7 +3816,11 @@ function stageB(c) {
       <ul>${missing.map(m => `<li>${m}</li>`).join("")}</ul></div>`;
   }
 
+  const stopped = (S.record && S.record.field_stopped) || "";
   c.innerHTML = `<h2>Stage B — Pattern identification</h2>
+    ${stopped ? `<div class="reasons-why field-stopped"><b>Field analysis
+      stopped here.</b> ${html_escape(stopped)} Continue step by step: check
+      the patterns on the image, then the measuring points.</div>` : ""}
     <p class="hint">Look at the image, not at this panel: every pattern found is
     outlined and labelled there. Check that each outline is on the right object
     with the right label — zoom in. A pattern found end-for-end, or a group
@@ -4896,6 +5030,8 @@ async function toggleBaseline(value) {
 /* ---- Stage F ---- */
 function stageF(c) {
   const r = S.record || {};
+  // A Field analysis finishes, and reopens, on its own result screen.
+  if (r.analysis_mode === "field" && S.results) return fieldResult(c);
   const identWarn = (!r.site && !r.phantom)
     ? '<p class="hint" style="color:var(--warn)">⚠ This analysis has no site or '
       + 'phantom, so it will not appear in any grouped trend. Use <b>Edit</b> in '
@@ -4941,26 +5077,7 @@ function stageF(c) {
     <button class="secondary" id="btn-new">New analysis</button>`;
   const bl = $("#btn-baseline");
   if (bl) bl.addEventListener("click", () => toggleBaseline(!r.is_baseline));
-  $("#btn-finalize").addEventListener("click", async () => {
-    try {
-      // Finalising no longer touches the baseline: it is its own decision now,
-      // and re-finalising must not silently clear a reference.
-      const done = await postJSON(`api/analyses/${S.aid}/finalize`, {});
-      // The page's own copy of the record has to learn it too. Until it did,
-      // the Discard button stayed on screen after finalising, and pressing it
-      // opened the administrator delete panel instead of a discard.
-      if (S.record) {
-        S.record.finalized_at = done.finalized_at || S.record.finalized_at;
-        S.record.protection = [...new Set([...(S.record.protection || []),
-                                           "finalized"])];
-      }
-      renderIdentityBar();
-      renderStage();
-      // Finished work belongs in History, not in a "continue this" banner.
-      forgetOpenAnalysis();
-      status("Finalized.");
-    } catch (e) { status(e.message, true); }
-  });
+  $("#btn-finalize").addEventListener("click", finalizeAnalysis);
   $("#btn-validate-f").addEventListener("click", () =>
     setValidation(S.record, (v) => {
       Object.assign(S.record, v);
@@ -4970,6 +5087,80 @@ function stageF(c) {
   $("#btn-verify").addEventListener("click", () => verifyAnalysis(S.aid));
   $("#btn-rerun").addEventListener("click", () => rerunAnalysis(S.aid));
   // One road to the upload step, so both entrances behave the same.
+  $("#btn-new").addEventListener("click", goToUpload);
+}
+
+async function finalizeAnalysis() {
+  try {
+    // Finalising no longer touches the baseline: it is its own decision now,
+    // and re-finalising must not silently clear a reference.
+    const done = await postJSON(`api/analyses/${S.aid}/finalize`, {});
+    // The page's own copy of the record has to learn it too. Until it did,
+    // the Discard button stayed on screen after finalising, and pressing it
+    // opened the administrator delete panel instead of a discard.
+    if (S.record) {
+      S.record.finalized_at = done.finalized_at || S.record.finalized_at;
+      S.record.protection = [...new Set([...(S.record.protection || []),
+                                         "finalized"])];
+    }
+    renderIdentityBar();
+    renderStage();
+    // Finished work belongs in History, not in a "continue this" banner.
+    forgetOpenAnalysis();
+    status("Finalized.");
+  } catch (e) { status(e.message, true); }
+}
+
+/* The Field analysis result screen (request B; decision 14).
+
+   The verdict with one line per test, what should be looked at, and the
+   measuring points on the image beside it — the viewer that is already on
+   screen, so nothing more is downloaded. Finalising is a button, never
+   automatic; there is no way to make this the reference scan (decision 4). */
+function fieldResult(c) {
+  const r = S.record || {};
+  const fr = r.field_result || {};
+  const run = fr.run || {};
+  const lines = (fr.lines || []).map(l =>
+    `<tr><td>${html_escape(l.test)}</td><td>${chip(l.status)}</td>
+     <td class="hint">${html_escape(l.reason || "")}</td></tr>`).join("");
+  const review = (fr.review || []).length
+    ? `<div class="reasons-why field-review"><b>Review recommended</b><ul>
+       ${fr.review.map(x => `<li>${html_escape(x)}</li>`).join("")}</ul>
+       <p class="hint">Look at the measuring points on the image, open the
+       full report, or review the analysis step by step.</p></div>`
+    : `<div class="reasons-pass"><b>Nothing to review.</b> Every test that
+       applies to this image passed.</div>`;
+  const when = (run.points_saved_at || "").slice(0, 16);
+  const finalised = r.finalized_at
+    ? `<p><span class="chip pass">finalised</span>
+       ${html_escape(r.finalized_at.slice(0, 16))}</p>` : "";
+  c.innerHTML = `<h2>Field analysis — automatic</h2>
+    <p class="field-phantom" title="Phantom ID">${html_escape(r.phantom || "")}</p>
+    <p class="hint">Measuring points placed from the points saved on
+      ${html_escape(when || "—")} by ${html_escape(run.points_saved_by || "—")},
+      from scan ${html_escape(run.points_from || "—")}. They are drawn on the
+      image; they were not reviewed on screen.</p>
+    <div class="card"><h3>Overall ${chip(r.status)}</h3>
+      <table><tr><th>test</th><th>result</th><th>why</th></tr>${lines}</table>
+    </div>
+    ${review}
+    ${finalised}
+    <div class="field-actions">
+      <button class="primary" id="btn-field-report">Open full report</button>
+      <button class="secondary" id="btn-field-steps">Review step by step</button>
+      ${r.finalized_at ? "" :
+        `<button class="primary" id="btn-finalize">Finalise</button>`}
+      <button class="secondary" id="btn-new">New analysis</button>
+    </div>`;
+  $("#btn-field-report").addEventListener("click", () =>
+    window.open(`api/analyses/${S.aid}/report.html`, "_blank", "noopener"));
+  $("#btn-field-steps").addEventListener("click", () => {
+    startWithheldPreload();
+    setStage("B");
+  });
+  const fin = $("#btn-finalize");
+  if (fin) fin.addEventListener("click", finalizeAnalysis);
   $("#btn-new").addEventListener("click", goToUpload);
 }
 
@@ -5196,16 +5387,20 @@ async function loadHistory() {
           : ""}</td>
       <td style="font-size:11px">${exposureCell(a)}</td>
       <td style="font-size:11px">${a.signature ? html_escape(a.signature) : ""}</td>
-      <td>${a.stage}</td><td>${chip(a.status)}${verdictNotes(a.verdict_notes)
+      <td>${a.stage}</td><td>${chip(a.status)}${a.analysis_mode === "field"
+            ? ` <span class="chip field" title="${FIELD_MODE_TEXT}">automatic</span>`
+            : ""}${verdictNotes(a.verdict_notes)
             ? `<br><span class="hint">${verdictNotes(a.verdict_notes)}</span>` : ""}</td>
       <td>${valChip(a.validation_status)}${a.validated_by
             ? `<br><span class="hint">${html_escape(a.validated_by)}</span>` : ""}</td>
-      <td><a href="#" class="base ${a.is_baseline ? "" : "hint"}"
+      <td>${a.analysis_mode === "field" && !a.is_baseline
+            ? `<span class="hint" title="A Field analysis cannot be the reference scan: its measuring points were not reviewed on screen. Review it step by step first.">—</span>`
+            : `<a href="#" class="base ${a.is_baseline ? "" : "hint"}"
              data-id="${a.id}" data-on="${a.is_baseline ? 1 : 0}"
              title="${a.is_baseline
                ? "The reference for this phantom on this protocol — click to remove"
                : "Make this the reference for this phantom on this protocol"}"
-             >${a.is_baseline ? "★" : "☆"}</a></td>
+             >${a.is_baseline ? "★" : "☆"}</a>`}</td>
       <td><a href="#" class="open" data-id="${a.id}">open</a> ·
           ${a.has_results ? `<a href="#" class="rerun" data-id="${a.id}"
              title="Measure this scan again from the file already on the server">re-run…</a> ·` : ""}

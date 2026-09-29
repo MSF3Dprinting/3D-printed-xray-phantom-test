@@ -456,6 +456,199 @@ def test_a_locked_record_cannot_store_its_points_even_with_an_override(
     assert client.mod.store.get_phantom_profile(f"LOCK-{lock[:3]}") is None
 
 
+# ------------------------------------ where the saved points came from
+#
+# Field analysis places every measuring point from the phantom's saved points
+# without showing them, so it may start only from points a full analysis
+# established on an exposure that passed the image-quality check on its own,
+# and whose discs then measured in design order (decision 12). These check
+# that the app can tell each of those, and says plainly when it cannot.
+
+def _measured(client, aid, ordering_ok=True, rho=0.93):
+    """Give the analysis the disc-order result a measurement would."""
+    results = results_for()
+    results["lowcontrast"].update(ordering_ok=ordering_ok, order_rho=rho)
+    client.mod.store.update(aid, results=results, status="pass")
+
+
+def _origin(client, aid):
+    prof = client.get(f"/api/analyses/{aid}").json()["phantom_profile"]
+    assert prof is not None, "the phantom has no saved points"
+    return prof["origin"]
+
+
+def _saved(client, phantom, **body):
+    aid = _proposed(client, phantom)
+    answer = _confirm_c(client, aid, save_profile=True, **body)
+    assert answer.status_code == 200 and answer.json()["profile_saved"], \
+        answer.text
+    return aid
+
+
+def test_every_analysis_starts_as_a_full_analysis(client):
+    aid = _proposed(client, "MODE")
+    assert client.get(f"/api/analyses/{aid}").json()["analysis_mode"] == "full"
+    assert client.mod.store.get(aid)["analysis_mode"] == "full"
+
+
+def test_an_unknown_mode_is_refused(client):
+    aid = _proposed(client, "MODE-BAD")
+    with pytest.raises(ValueError):
+        client.mod.store.update(aid, analysis_mode="quick")
+    assert client.mod.store.get(aid)["analysis_mode"] == "full"
+
+
+def test_saving_the_points_records_where_they_came_from(client):
+    from phantom_qa.store import geometry_fingerprint
+    aid = _saved(client, "ORIGIN")
+    source = client.mod.store.get_phantom_profile("ORIGIN")["source"]
+    rec = client.mod.store.get(aid)
+    assert source == {"source_name": "s.png", "quality_verdict": "ok",
+                      "quality_override": False,
+                      "geometry_fingerprint":
+                          geometry_fingerprint(rec["geometry"])}
+    stored = [e for e in rec["audit"]
+              if e["action"] == "phantom layout stored"][-1]["detail"]
+    assert stored["analysis_mode"] == "full"
+    assert stored["quality_verdict"] == "ok"
+
+
+def test_points_from_a_clean_full_analysis_are_usable(client):
+    aid = _saved(client, "CLEAN")
+    _measured(client, aid)
+    origin = _origin(client, aid)
+    assert origin == {
+        "recorded": True, "analysis_id": aid, "source_name": "s.png",
+        "saved_at": origin["saved_at"], "saved_by": origin["saved_by"],
+        "full_analysis": True, "quality_ok": True, "discs_in_order": True,
+        "usable": True, "problems": []}
+    assert origin["saved_at"] and origin["saved_by"]
+
+
+def test_points_are_not_usable_until_their_analysis_is_measured(client):
+    aid = _saved(client, "UNMEASURED")
+    origin = _origin(client, aid)
+    assert origin["usable"] is False
+    assert origin["discs_in_order"] is None
+    assert origin["problems"] == [
+        "The analysis these points came from has not been measured with "
+        "them yet."]
+
+
+def test_discs_out_of_design_order_are_said_with_their_correlation(client):
+    aid = _saved(client, "DISORDER")
+    _measured(client, aid, ordering_ok=False, rho=0.12)
+    origin = _origin(client, aid)
+    assert origin["usable"] is False and origin["discs_in_order"] is False
+    assert origin["problems"] == [
+        "The discs of the analysis these points came from did not measure in "
+        "design order (rank correlation 0.12)."]
+
+
+def test_points_changed_after_saving_are_not_vouched_for(client):
+    """Moving a point drops the results, and what they said about the discs
+    no longer describes the points that were saved."""
+    aid = _saved(client, "MOVED")
+    _measured(client, aid)
+    client.mod.store.mutate_geometry(
+        aid, lambda g: g.__setitem__("_nudged", True), action="roi")
+    origin = _origin(client, aid)
+    assert origin["usable"] is False
+    assert origin["discs_in_order"] is None and origin["full_analysis"] is False
+    assert "have been changed since they were saved" in origin["problems"][0]
+
+
+def test_points_from_a_field_analysis_are_not_usable(client):
+    aid = _saved(client, "FROM-FIELD")
+    _measured(client, aid)
+    client.mod.store.update(aid, analysis_mode="field")
+    origin = _origin(client, aid)
+    assert origin["usable"] is False and origin["full_analysis"] is False
+    assert origin["problems"] == [
+        "These points did not come from a full, step-by-step analysis."]
+
+
+def test_points_kept_by_administrator_override_are_not_usable(client):
+    aid = _proposed(client, "OVERRULED", passed=False)
+    answer = _confirm_c(client, aid, save_profile=True,
+                        admin_password=ADMIN_PW, reason=REASON)
+    assert answer.json()["profile_saved"] is True, answer.text
+    _measured(client, aid)
+    origin = _origin(client, aid)
+    assert origin["quality_ok"] is False and origin["usable"] is False
+    assert origin["full_analysis"] is True and origin["discs_in_order"] is True
+    assert origin["problems"] == [
+        "These points were saved from a scan that failed the image-quality "
+        "check, by administrator override."]
+
+
+def test_the_verdict_counts_as_it_was_when_the_points_were_saved(client):
+    """Registering the scan again changes its verdict; the points were saved
+    on the strength of the one before."""
+    aid = _saved(client, "VERDICT")
+    _measured(client, aid)
+    client.mod.store.update(aid, quality_verdict="poor")
+    assert _origin(client, aid)["quality_ok"] is True
+
+
+def test_points_saved_before_the_origin_was_recorded_are_not_known(client):
+    aid = _proposed(client, "LEGACY")
+    _measured(client, aid)
+    client.mod.store.save_phantom_profile(
+        "LEGACY", {"rois": {"uniformity/C": {}}}, source_analysis_id=aid)
+    origin = _origin(client, aid)
+    assert origin["recorded"] is False and origin["usable"] is False
+    assert origin["problems"] == [
+        "Where these points came from was not recorded when they were saved. "
+        "Save them again from a full analysis of this phantom."]
+
+
+def test_points_whose_analysis_is_gone_are_not_usable(client):
+    aid = _proposed(client, "ORPHAN")
+    client.mod.store.save_phantom_profile(
+        "ORPHAN", {"rois": {"uniformity/C": {}}}, source_analysis_id="gone",
+        source={"source_name": "x.dcm", "quality_verdict": "ok",
+                "quality_override": False, "geometry_fingerprint": "f"})
+    assert _origin(client, aid)["problems"] == [
+        "The analysis these points came from no longer exists."]
+
+
+def test_a_damaged_origin_costs_only_the_origin(client):
+    aid = _saved(client, "DAMAGED")
+    with client.mod.store._conn() as c:
+        c.execute("UPDATE phantom_profiles SET source_json='{not json'"
+                  " WHERE phantom_key='DAMAGED'")
+    prof = client.mod.store.get_phantom_profile("DAMAGED")
+    assert prof["layout"]["rois"] and prof["source"] is None
+    assert _origin(client, aid)["recorded"] is False
+
+
+def test_a_discard_puts_back_the_previous_points_with_their_origin(client):
+    store = client.mod.store
+    first, second = _proposed(client, "UNWIND"), _proposed(client, "UNWIND")
+    for aid, name in ((first, "first.dcm"), (second, "second.dcm")):
+        store.save_phantom_profile(
+            "UNWIND", {"rois": {"uniformity/C": {}}}, source_analysis_id=aid,
+            source={"source_name": name})
+    assert store.get_phantom_profile("UNWIND")["source"] == {
+        "source_name": "second.dcm"}
+    store.delete(second)
+    prof = store.get_phantom_profile("UNWIND")
+    assert prof["source_analysis_id"] == first
+    assert prof["source"] == {"source_name": "first.dcm"}
+
+
+def test_cancelling_a_re_run_puts_the_mode_back(client):
+    aid = _saved(client, "RERUN")
+    _measured(client, aid)
+    client.mod.store.update(aid, analysis_mode="field")
+    client.mod.store.begin_rerun(aid, user="qa", reason="check",
+                                 mode="measurement", keep_geometry=True)
+    client.mod.store.update(aid, analysis_mode="full")
+    client.mod.store.restore_revision(aid)
+    assert client.mod.store.get(aid)["analysis_mode"] == "field"
+
+
 # -------------------------------------------------------------- the page
 
 STATIC = os.path.join(

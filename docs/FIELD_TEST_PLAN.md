@@ -80,7 +80,9 @@ the 5 field scans:
 - The saved points were never changed.
 - Registration on the 33 reference scans:
   - all 4 ruler lines found every time;
-  - ruler-line error 0.11–0.55 mm;
+  - ruler-line error 0.11–0.55 mm. *Corrected 2026-09-28:* that is the
+    root-mean-square of the four lines on each scan. The worst single line
+    goes up to 0.90 mm — see step 19;
   - recognition score 7.33–7.89;
   - lead over the next-best placement 0.89–1.83.
 - Points saved from the weak exposure CS000021 sat 2–5 mm off, and all 14 later
@@ -963,6 +965,43 @@ the 5 field scans:
 - **Files:** `store.py`, `webapp/main.py`.
 - **Tests:** test_schema_upgrade, test_store_labels, test_layout_save_choice.
   About 1.5 min.
+- **Done 2026-09-28.**
+  - **The mode.** Each analysis now has a mode, "full" or "field". Every
+    analysis already in the database reads "full", with no data changed:
+    Field analysis did not exist before, so that is true of each of them.
+    Any other value is refused. Cancelling a re-run puts the mode back with
+    everything else.
+  - **Where saved points came from.** Saving the points in step C now also
+    records:
+    - the scan's file name;
+    - its image-quality verdict at that moment;
+    - whether an administrator override was used;
+    - a fingerprint of the exact measuring points.
+
+    A discard that puts back the previous points puts back their record too.
+  - **What the app can now tell,** for the page and for the next step:
+    - whether the points came from a full analysis;
+    - whether that scan passed the image-quality check on its own;
+    - whether its discs measured in design order.
+
+    Each "no" comes with one plain line. The mode and the disc order are read
+    from that analysis as it is now, but only while its points still match the
+    fingerprint. Any change to the points drops the results, so matching
+    points mean the results were measured from exactly the saved points.
+  - **Points saved before today** read as "not recorded", so Field analysis
+    will not be offered on them until a full analysis saves them again (your
+    decision 12). The one-line reason says so.
+  - **Measured on the real scan PH0730_03** (120 kB of measuring points): the
+    check takes 35 ms of the 516 ms it takes to open an analysis on this
+    laptop.
+  - **Tests.** 15 new tests in test_layout_save_choice, and the upgrade tests
+    in test_schema_upgrade now also check the new columns.
+    - The three planned files: 86 passed in 3 min 0 s. That is more than the
+      1.5 min planned, because each new test uploads a scan and places
+      points.
+    - The other files that use saved points or re-runs (test_phantom_layout,
+      test_round3_journey, test_delete_flow, test_rerun,
+      test_degraded_inputs): 109 passed in 4 min 53 s.
 
 **Step 17 — When Field analysis is offered**
 - **From:** request B, your decisions 11 and 12.
@@ -978,6 +1017,42 @@ the 5 field scans:
   Otherwise only "Full analysis" is offered, with one plain line saying why.
 - **Tests:** new `test_field_analysis.py` (the offer), test_phantom_layout,
   test_quality_gate. About 1 min.
+- **Done 2026-09-28.**
+  - **Where it is decided.** The server decides whether Field analysis is
+    offered and sends the answer with the analysis. Step 18 will run the same
+    check again when the button is pressed. The answer carries:
+    - offered or not;
+    - one line saying why not, the first failing condition;
+    - every failing condition;
+    - the phantom ID, and when, by whom and from which scan the points were
+      saved (for the screen in step 20).
+  - **The six conditions, as built:**
+    1. **Saved points:** the phantom is named and has saved points, and step
+       16 finds them clean. Its own line says what is wrong.
+    2. **Phantom description:** the saved points were made for the phantom
+       description in use now.
+    3. **DICOM:** the file is DICOM.
+    4. **Image quality:** the check passed. "Not checked" is not a pass.
+    5. **Ruler lines:** all 4 were found, each at most 1.0 mm off; exactly
+       1.0 mm is accepted. The stored benchmark has only the count of lines
+       found and their combined error (0.11–0.55 mm), not the worst single
+       line, so the dry run in step 19 checked the limit on the real scans.
+       The worst single line reaches 0.90 mm; see step 19.
+    6. **Fresh:** the analysis is at the first two steps, not measured, never
+       re-run, not finalised or signed off, and has not been run as Field
+       analysis. None of its points have been moved, turned, reset or re-read
+       by hand. The app placing the points itself (detection and the saved
+       points) still counts as fresh.
+  - **Measured:** the check adds 7.7 ms when an analysis is opened, on top of
+    step 16's 35 ms. At first it took 24.7 ms: each database lookup opens a
+    connection, which costs 8–13 ms here, while the query takes 0.03 ms. The
+    two lookups now share one connection.
+  - **Tests:**
+    - `test_field_analysis.py`: 24 new tests covering every condition, the
+      boundary, the automatic placing, the one line, and an upload through
+      the whole path. 24 passed in 21 s.
+    - test_phantom_layout, test_quality_gate and test_bandwidth (the analysis
+      data grew): 74 passed in 3 min 28 s.
 
 **Step 18 — The automatic run**
 - **From:** request B.
@@ -997,6 +1072,66 @@ the 5 field scans:
   - an audit entry records every check value.
 - **Tests:** test_field_analysis, test_analysis_timeout, test_stale_state,
   test_orientation_per_phantom. About 1.5 min, plus the new tests.
+- **Done 2026-09-28.**
+  - **The request:** `POST /api/analyses/{id}/field_run`.
+    - It checks the offer again (step 17) and refuses with its one line.
+    - It then claims the analysis in a single database update, so of two
+      presses arriving together only one runs.
+    - Then, in the order of the steps: it confirms A, detects the patterns and
+      lays the saved points on top, confirms B, C and D, measures, and
+      confirms E.
+    - The step B button and the step E button now call the same two functions
+      the run calls, so the code is not just similar but the same.
+    - The distance from the source (SID) is the analysis's own, or 1000 mm,
+      which is what the page uses.
+    - It never finalises; that stays a button (decision 14).
+  - **Stops** (the analysis stays at step B, becomes an ordinary analysis
+    again, and the reason is shown):
+    - a test whose patterns the automatic detection could not find at all;
+    - saved points more than 8 mm off (the existing check the step B button
+      already makes);
+    - a saved measuring area with nothing on this scan to go with it.
+
+    A run that fails with an error ends the same way, unless results were
+    already stored. After a stop, Field analysis is not offered again on that
+    analysis, and the line says so: "Field analysis stopped on this analysis:
+    … Continue step by step."
+  - **Patterns only nudged:** a pattern step B would list as "not refined
+    (nominal used)" does not stop the run, because the saved points replace
+    its position anyway. The list is kept in the audit entry. The dry run
+    (step 19) will show whether that is right.
+  - **"Review recommended"** lists, in plain lines:
+    - the discs looking like the other build ("Check the phantom ID");
+    - every test that could not be analysed, with why;
+    - every test that did not pass, with its first reason.
+  - **Recorded:**
+    - The mode becomes "field". The saved points are never written.
+    - Each step confirmed carries the note "confirmed by Field analysis".
+    - One audit entry holds every check value: where the points came from and
+      whether they were clean, the description versions, the file type, the
+      quality verdict, the four ruler-line errors and the limit, the 8 mm
+      check with each offset, how many areas were placed or skipped, the
+      patterns not refined, the overall result, the review lines and the
+      seconds taken.
+    - The audit log gets `event=field_run` with the outcome: finished,
+      stopped, refused or failed.
+  - **Measured on real scans of phantom HmmEi:**
+    - PH0727_03 saved the points step by step.
+    - PH0730_03 as Field analysis gave exactly the same results and measuring
+      points as PH0730_03 done button by button (uploaded again on purpose).
+      Overall "pass", nothing to review.
+    - The run took 5.8 s on this laptop, inside the test run. The dry run of
+      2026-09-27 reported 1.2–3.1 s; step 19 measures every scan and will
+      settle it.
+  - **Tests:**
+    - test_field_analysis: 35 in all, 11 of them new. They cover the
+      real-scan run above, refusals (not offered, finalised, signed off, two
+      presses at once), each of the three stops and a failed run on the real
+      scan with one step made to fail, and the review lines. 35 passed in
+      1 min 52 s.
+    - test_analysis_timeout, test_stale_state, test_orientation_per_phantom,
+      test_authorization (the new route is on its list), test_phantom_layout
+      and test_round3_journey: 332 passed in 8 min 48 s.
 
 **Step 19 — Dry run on the real scans**
 - **From:** request B, your answer to question 7.
@@ -1010,6 +1145,59 @@ the 5 field scans:
   - the server seconds per run.
 - If this takes more than 15 minutes, it is split by set: Philips 6, light
   blue 12, dark blue 15, field 5.
+- **Done 2026-09-28**, in three foreground runs: Philips and field 88 s, light
+  blue 89 s, dark blue 201 s.
+  - **Sets:** each got its own phantom ID: HmmEi, A8Tgg, LIGHT-BLUE,
+    DARK-BLUE. In each, the first scan saved the points step by step:
+    PH0727_03, PH0727_05, CS000001 and CS000004. All four were clean on the
+    first try (full analysis, quality passed, discs in design order).
+  - **The field scans saved nothing** (the standing rule). They were filed
+    under their own phantom ID, which has no saved points, and only the offer
+    was recorded.
+  - **Every later scan was uploaded twice:** once run as Field analysis, once
+    done step by step with every point accepted.
+  - **Results — 29 automatic runs:**
+    - **Finished:** 29 of 29; none stopped.
+    - **Identical:** the results and the measuring points were identical to
+      the step-by-step analysis of the same scan, 29 of 29.
+    - **Philips:** all 4 pass, nothing to review.
+    - **Blue prints:** all 25 fail. Each has one review line, always the same
+      test: "Line patterns did not pass (fail): G1.2: measured pitch 0.930–
+      0.935 mm is +11.6–12.1% from the nominal 0.8333 mm". That is the parked
+      line-pair question on the blue prints, and step by step gives the same
+      fail.
+    - **The other build:** no run showed the discs looking like the other
+      build.
+    - **Saved points:** unchanged in all four sets.
+    - **Server time per run:** 1.3–5.3 s, median 1.9 s. Mid-way through the
+      dark-blue set it rose to 4.5–5.3 s and fell back to 1.3–1.5 s at the
+      end, so the laptop's load varied; the scans did not.
+    - **The 8 mm check:** the saved points sat 0.02–3.39 mm from this scan's
+      own detection (median over the patterns that show the orientation).
+    - **Patterns not refined** by the detection, recorded but not a stop
+      (step 18): line group G2.0 15 times, G1.1 9, G1.2 6, G1.6 2. None of the
+      29 runs was changed by this, since the saved points place them.
+  - **Ruler lines on the 29 scans: all 4 found every time.** The worst line of
+    each scan:
+    - 0.17–0.40 mm on 27 scans;
+    - 0.84 mm (PH0730_07) and 0.90 mm (PH0730_03), both the top line of
+      phantom HmmEi.
+
+    All are under the 1.0 mm limit, but those two have only 0.10–0.16 mm to
+    spare. The plan's "0.11–0.55 mm" was the root-mean-square of the four
+    lines (0.11–0.51 mm here), not the worst line. It is corrected above and
+    in the code. **Open for you:** keep the limit on the worst single line,
+    or apply it to the four lines together.
+  - **Field scans:** none offered. Every one names "no saved points yet".
+    Beyond that:
+    - F001 (phantom cut off at the edge) also fails the quality check, with
+      all 4 lines found and the worst at 0.80 mm;
+    - F003 and F003B (saturated) fail the quality check and have 0 of 4 lines;
+    - F002 and F004 (usable) pass the quality check with the worst line at
+      0.57 and 0.34 mm, so with saved points they would be offered.
+  - **Scripts and raw results** are in the session scratchpad
+    (`step19/dryrun.py`, one JSON per set), not in the repository. The
+    temporary copies of the scans were deleted.
 
 **Step 20 — The screens**
 - **From:** request B, your decisions 13 and 14.
@@ -1029,6 +1217,67 @@ the 5 field scans:
 - **Tests:** test_frontend_integrity, test_field_analysis,
   test_resume_after_reload. About 30 s.
 - **You can check** it in the browser.
+- **Done 2026-09-28.**
+  - **Step A** shows the choice when Field analysis is offered:
+    - "Field analysis — automatic", outlined, with the phantom ID in large
+      letters, "Points saved on … by …, from scan …", and a **Run Field
+      analysis** button;
+    - "Full analysis — step by step" beside it, with the usual **Confirm
+      registration** button.
+
+    When it is not offered, step A is as before, with one line above the
+    details: "Field analysis is not available: …". After manual corners, the
+    answer brings the new offer, since the ruler lines and the verdict
+    change.
+  - **The run:**
+    - When it finishes, the page goes to the result screen.
+    - When it stops, the page goes to step B, where a box says "Field analysis
+      stopped here." with the reason. The box also shows when the analysis is
+      reopened later.
+    - On a refusal or a lost connection, the page re-reads the analysis and
+      shows whatever the server now holds, because the run may have finished
+      anyway.
+  - **The result screen** (step F of a Field analysis):
+    - the phantom ID large, and where the points came from, "not reviewed on
+      screen";
+    - the overall chip and one line per test, with the first reason for
+      anything that did not pass;
+    - the "Review recommended" box, or "Nothing to review";
+    - the four buttons: **Open full report · Review step by step · Finalise ·
+      New analysis**. There is no reference-scan button.
+
+    The measuring points are drawn in the viewer beside it. A finished run
+    reopens on this screen, after a reload too.
+  - **Nothing extra downloaded:**
+    - While Field analysis is on offer or done, the background download of
+      zoom detail waits. It starts when the operator picks the full analysis
+      or "Review step by step".
+    - The run's answer carries the measuring points and the result lines, so
+      the result screen needs no second request.
+    - Finalise uses the same code as step F's button.
+  - **Looked at in Edge** (1366×768, a real run of PH0730_03 after PH0727_03
+    saved the points):
+    - At the choice, the page had fetched the picture (123 kB) and the
+      analysis (3 kB), with no zoom detail.
+    - After pressing the button, the one request was the run (108 kB), and
+      the result was on screen 2.8 s later. That is the same data the step
+      buttons fetch in two requests.
+    - Reopened: the result screen, with no zoom detail fetched.
+    - Not offered (CS000001 under a new phantom ID): the one line, and the
+      preload started.
+    - No console errors. Screenshots are in the session scratchpad.
+  - **Tests:**
+    - 8 new tests in test_field_analysis (43 in all), and more checks in the
+      real-scan run and the stops. They cover what the server sends for the
+      screens (one line per test, the Field result only on Field analyses,
+      the reason for a stop, the offer after registering again), and the
+      page's source (the choice, the run's two outcomes, the result screen
+      with its four buttons and no reference, nothing extra downloaded).
+    - test_resume_after_reload now looks for the one shared finalise
+      function behind both Finalise buttons.
+    - test_field_analysis, test_frontend_integrity and
+      test_resume_after_reload: 96 passed in 1 min 23 s, then 11 in 18 s
+      after that change.
 
 **Step 21 — The mode everywhere, and the rules**
 - **From:** your decisions 4, 5 and 14.
@@ -1043,6 +1292,59 @@ the 5 field scans:
   - discarding or re-running a Field analysis leaves the saved points alone.
 - **Tests:** test_baselines, test_signed_off_is_protected,
   test_verdict_wording, test_discard_flow, test_rerun. About 3 min.
+- **Done 2026-09-28.**
+  - **One wording everywhere:** "Field analysis — automatic, measuring points
+    not reviewed on screen" (`store.FIELD_MODE_TEXT`, the same words in the
+    page).
+    - **Report:** a blue line at the top, before the ruling, saying where the
+      points came from (phantom, date, who, scan). "Field analysis —
+      automatic" also appears in the running header of every printed page, so
+      a page taken from the stack still says it.
+    - **History:** an "automatic" tag beside the status. There is no
+      reference star on those rows, only "—" with the reason on hover.
+    - **Sign-off panel:** the line above the choices, "The ruling is printed
+      as automatic."
+    - **CSV:** an `analysis_mode` column (`field` or `full`), last in the long
+      export and as the last row in the wide one, so spreadsheets built on the
+      old layout keep every column where it was. The two exposure tests that
+      checked "exposure columns last" now check they come just before it.
+  - **Reference scan (decision 4):** refused for a Field analysis, both from
+    the reference button and from finalising with "make reference". There is
+    no override. The message gives the way round: "Review it step by step
+    first — once it is measured again it is a full analysis and can be the
+    reference." Finalising alone is allowed.
+  - **Sign-off (decision 5):** allowed. The report prints the ruling as
+    "VALIDATED (AUTOMATIC)", with "signed off on a Field analysis, whose
+    measuring points were not reviewed on screen". The record's trail and the
+    audit log mark it `automatic`.
+  - **Review step by step:** the analysis becomes a full one when it is
+    measured again after a person has confirmed its measuring points (step C)
+    since the automatic run, and the trail says "field analysis reviewed step
+    by step". Measured again without that — a re-run started from the results
+    — it stays automatic, because nobody looked at the points. *Found while
+    writing the test:* the first version turned any re-measurement into a
+    full analysis.
+  - **Discard and re-run** leave the phantom's saved points exactly as they
+    were. Tested on the stored row, before and after.
+  - **Looked at in Edge** after a real Field run (PH0727_03, then PH0730_03):
+    the report's top line, the History tag with no star, the sign-off panel's
+    line, the refusal of the reference. No console errors.
+  - **Found, not fixed** (older than this round): for an analysis nobody has
+    ruled on, the sign-off panel pre-selects "Withdraw ruling" rather than
+    "Validated".
+  - **Tests:**
+    - 8 new tests in test_field_analysis (51 in all): the report on every
+      page, the
+      ruling printed as automatic, a sign-off accepted and recorded, History
+      and both CSVs, the reference refused, discard, the page's tags, and on
+      real scans the re-run and the review making it full.
+    - test_field_analysis, test_exposure_index and test_frontend_integrity:
+      128 run, 3 failed on test expectations (fixed above), then passed.
+    - test_baselines, test_signed_off_is_protected, test_verdict_wording,
+      test_discard_flow, test_rerun, test_exact_reports and
+      test_store_labels: 182 passed in 4 min 3 s.
+    - After every fix, test_field_analysis and test_frontend_integrity: 93
+      passed in 1 min 8 s.
 
 **Step 22 — Documents and Part B closing check**
 - **What:** the user guide section for Field analysis, including asking that
@@ -1051,6 +1353,34 @@ the 5 field scans:
 - **Closing check:** all Part B test files, measured today at 7 min 57 s, plus
   the new files.
 - **You check** in the browser, then commit.
+- **Done 2026-09-28.**
+  - **USER_GUIDE.md:** a new section, *Field analysis — automatic*, with a
+    pointer from step A. It covers:
+    - setting a phantom up carefully once, on a good exposure, in four steps;
+    - the conditions, with the line shown for each;
+    - checking the phantom ID;
+    - the result screen, and the blue prints' line-pair note (decision 6);
+    - when it stops;
+    - what is different about a Field analysis;
+    - the measured figures: identical on 29 scans, about 2 s on the server,
+      about 110 kB.
+  - **DESIGN.md:** *Field analysis: automatic only where looking could not
+    change anything*, covering the shared code, where points came from, the
+    offer, the stops, the mode and the traffic.
+  - **MAINTENANCE.md and DEPLOYMENT.md:** the three new columns, what an
+    upgrade does (adds them and reads nothing), and that each phantom needs one
+    full analysis with its points saved before Field analysis is offered.
+  - **Closing check,** in four foreground parts, since the laptop ran slower
+    than in the morning:
+
+    | Part | Files | Result | Time |
+    |---|---|---|---|
+    | 1 | test_field_analysis, test_layout_save_choice, test_schema_upgrade, test_store_labels, test_exposure_index, test_resume_after_reload, test_frontend_integrity | 225 passed | 8 min 20 s |
+    | 2 | test_rerun, test_discard_flow, test_unusable_exposures, test_verdict_wording, test_signed_off_is_protected, test_baselines, test_insert_orientation | 193 passed | 6 min 4 s |
+    | 3 | test_orientation_per_phantom, test_round3_journey, test_phantom_layout, test_quality_gate, test_stale_state, test_analysis_timeout | 123 passed | 5 min 24 s |
+    | 4 | test_authorization, test_exact_reports, test_bandwidth | 265 passed | 3 min 38 s |
+
+    **806 passed, none failed**, 23 min 26 s of test time in all.
 
 ## Before deployment — the full suite once, in 3 parts
 

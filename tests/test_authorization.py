@@ -179,6 +179,7 @@ ROUTES = [
     ("POST", "/api/analyses/{aid}/geometry/redo",  "user"),
     ("POST", "/api/analyses/{aid}/geometry/reset", "user"),
     ("POST", "/api/analyses/{aid}/compute",        "user"),
+    ("POST", "/api/analyses/{aid}/field_run",      "user"),
     ("POST", "/api/analyses/{aid}/finalize",       "user"),
     ("POST", "/api/analyses/{aid}/baseline",       "user"),
     ("GET",  "/api/baselines",                     "user"),

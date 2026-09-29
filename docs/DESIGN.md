@@ -305,6 +305,64 @@ differ by less than the noise between exposures, so it warned on three
 reference scans that correlate at 0.88–0.93. Correctly placed grids sit at
 0.857 or above; the one grid with nothing to hold on to sits at −0.262.
 
+## Field analysis: automatic only where looking could not change anything
+
+Field analysis (`POST /api/analyses/{id}/field_run`) places a phantom's saved
+points, measures and stores the results in one request. The only thing it
+leaves out is an operator looking at the points, so the design question is
+where that look cannot matter, and how to make sure nobody mistakes the result
+for a reviewed one.
+
+**The same code, not similar code.** The step B button and the run both call
+`_place_points`; the step E button and the run both call `_measure`. The run
+confirms steps A to E in the order the page does. On the 29 reference scans of
+the dry run, every result and every measuring point was identical to the same
+scan done button by button.
+
+**Where the saved points came from is recorded when they are saved.** Confirming
+step C with "use for future scans" writes `phantom_profiles.source_json`: the
+scan's file name, its quality verdict at that moment, whether an administrator
+override was used, and a fingerprint of the exact points
+(`store.geometry_fingerprint`). The verdict and the override cannot be read back
+afterwards — registering again changes the verdict, and the override lives only
+in an audit line. The mode and the disc order are read from the source analysis
+as it is now, but only while its points still match the fingerprint. Any change
+to the points drops its results, so a match means the results were measured from
+exactly the saved points. Points saved before this was recorded read as "not
+known", never as clean: one full analysis records it.
+
+**When it is offered** (`_field_offer`, checked again when the button is
+pressed): usable saved points (above); saved under the phantom description in
+use; a DICOM file; a passed quality check; all four ruler lines within
+`FIELD_RULER_ERR_MAX_MM` (1.0 mm, applied to each line — the reference scans'
+worst line is 0.90 mm, their root-mean-square at most 0.55 mm); and a fresh
+analysis — steps A or B, unmeasured, never re-run, not finalised or signed off,
+no point touched by hand. Every failing condition is kept; the page shows the
+first as one line. The claim is a single `UPDATE … WHERE analysis_mode='full'
+AND …`, so two presses cannot both run.
+
+**Where it stops** (`_field_stop`), leaving step B and an ordinary full
+analysis: a test whose detection failed outright, saved points more than 8 mm
+(`ORIENTATION_TOLERANCE_MM`) from this scan's detection, or a saved area with
+nothing to go with it. A stop is written to the trail and withdraws the offer
+for that analysis. A pattern that was only "not refined" is recorded but does
+not stop the run, because the saved point replaces its position anyway.
+
+**The mode travels with the record.** `analysis_mode` is `full` or `field`
+(every row older than the column is `full`, correctly — Field analysis did not
+exist), is kept in the re-run snapshot, and is shown by one wording,
+`FIELD_MODE_TEXT`, in the report (first line and every printed page's header),
+History, the sign-off panel and as the last CSV column. A Field analysis cannot
+become the reference; it can be signed off, printed as automatic. It becomes
+`full` only when step E measures it after a person has confirmed step C since
+the run (`_reviewed_since_field`). A re-run straight to the results keeps it
+automatic, because nobody looked at the points.
+
+**Nothing extra over the wire.** The run's answer carries the points and the
+result lines (about 110 kB), so the result screen makes no second request. The
+page holds back the preload of zoom detail while Field analysis is on offer or
+done, and starts it when the operator chooses to work step by step.
+
 ## The close-up is named by what it shows
 
 Stage C shows the low-contrast block on its own (`lowcontrast.block_view`):

@@ -158,6 +158,12 @@ re-uploading.
   not results, status, geometry or validation — so it runs over finalised and
   signed records too. A record whose stored file is missing or unreadable is
   logged and shows "not recorded". See DESIGN.md, *Exposure values*.
+- The upgrade that added Field analysis adds `analyses.analysis_mode` (every
+  existing record reads `full`, which is true — Field analysis did not exist)
+  and `phantom_profiles.source_json` / `prev_source_json`. Nothing is filled in:
+  saved measuring points from before it read "not recorded", and one full
+  analysis of each phantom, with the points saved, makes Field analysis
+  available for it. See DESIGN.md, *Field analysis*.
 - The application removes an analysis only when an operator asks: an
   unfinished one through **Discard** (confirmation only), a finalised, signed-off
   or reference one through the administrator-gated delete action.

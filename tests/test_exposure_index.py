@@ -319,9 +319,12 @@ def test_a_missing_or_unreadable_file_is_skipped_and_said(tmp_path, store_log):
 
     after = _raw_rows(root)
     for aid in ("gone01", "junk01", "png001"):
+        # analysis_mode arrives with the same upgrade: every analysis made
+        # before Field analysis existed was a full one
         assert after[aid] == {**before[aid], "exposure_index": None,
                               "target_exposure_index": None,
-                              "deviation_index": None, "sensitivity": None}
+                              "deviation_index": None, "sensitivity": None,
+                              "analysis_mode": "full"}
     assert store.get("fuji01")["exposure_index"] == 691, \
         "one bad file stopped the others from being read"
     said = "\n".join(store_log.lines)
@@ -510,10 +513,12 @@ def test_the_long_csv_keeps_its_columns_and_adds_the_exposure_ones_last(store):
     import csv
     recs = [store.get(i) for i in store.ids.values()]
     lines = list(csv.reader(io.StringIO(csv_export(recs))))
-    assert lines[0] == _LONG_HEADER_BEFORE + _EXPOSURE_COLUMNS
+    # analysis_mode (Field analysis) came after them, last, by the same rule
+    assert lines[0] == (_LONG_HEADER_BEFORE + _EXPOSURE_COLUMNS
+                        + ["analysis_mode"])
     by_id = {}
     for line in lines[1:]:
-        by_id.setdefault(line[0], line[-4:])
+        by_id.setdefault(line[0], line[-5:-1])
     assert by_id[store.ids["fuji"]] == ["691.0", "876.0", "-1.0", "429.0"]
     assert by_id[store.ids["phil"]] == ["251.0", "", "", ""], \
         "an empty cell, as for every other missing value in the export"
@@ -524,13 +529,14 @@ def test_the_wide_csv_adds_its_exposure_rows_after_everything_else(store):
     after the last metric so that no existing row moves."""
     recs = store.get_slim(list(store.ids.values()))   # what the export reads
     lines = wide_csv_export(recs).splitlines()
-    assert [ln.split(",")[2] for ln in lines[-4:]] == \
-        [f"# {c}" for c in _EXPOSURE_COLUMNS]
-    assert not lines[-5].split(",")[2].startswith("#"), \
+    # analysis_mode (Field analysis) came after them, last, by the same rule
+    assert [ln.split(",")[2] for ln in lines[-5:]] == \
+        [f"# {c}" for c in _EXPOSURE_COLUMNS] + ["# analysis_mode"]
+    assert not lines[-6].split(",")[2].startswith("#"), \
         "the exposure rows must follow the metric rows, not the labels"
     assert len(lines[0].split(",")) == 4 + 2, "no fixed column was added"
-    assert sorted(lines[-4].split(",")[4:]) == ["251.0", "691.0"]
-    assert lines[-2].split(",")[4:].count("") == 1, \
+    assert sorted(lines[-5].split(",")[4:]) == ["251.0", "691.0"]
+    assert lines[-3].split(",")[4:].count("") == 1, \
         "the Philips has no deviation index and its cell stays empty"
 
 
@@ -539,10 +545,10 @@ def test_the_exports_over_http_carry_the_values(client):
     aid = _upload(client, FUJI)
     store.update(aid, results=results_for(), status="pass")
     one = client.get(f"/api/analyses/{aid}/export.csv").text.splitlines()
-    assert one[0].endswith(",".join(_EXPOSURE_COLUMNS))
-    assert one[1].endswith("691.0,876.0,-1.0,429.0")
+    assert one[0].endswith(",".join(_EXPOSURE_COLUMNS) + ",analysis_mode")
+    assert one[1].endswith("691.0,876.0,-1.0,429.0,full")
     many = client.get(f"/api/export.csv?ids={aid}").text.splitlines()
-    assert many[1].endswith("691.0,876.0,-1.0,429.0")
+    assert many[1].endswith("691.0,876.0,-1.0,429.0,full")
 
 
 # ------------------------------------------------------------ not judged yet

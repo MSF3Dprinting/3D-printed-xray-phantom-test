@@ -44,7 +44,7 @@ from ..security import (CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, SharedThrottle
 from ..store import (VALIDATION_LABELS, VALIDATION_STATES,
                      ProtectedAnalysis, StaleGeometry, Store,
                      acquisition_flag, csv_export, flatten_results,
-                     resolve_root, wide_csv_export)
+                     geometry_fingerprint, resolve_root, wide_csv_export)
 
 #: A deletion reason short enough to be meaningless is the same as none at all,
 #: and the audit log is the only record of why data was destroyed.
@@ -1047,6 +1047,7 @@ def get_analysis(aid: str):
                                    "validated_by", "validation_comment",
                                    "validated_at", "finalized_at",
                                    "finalized_by")}
+    payload["analysis_mode"] = rec.get("analysis_mode") or "full"
     # One list, computed in one place, so the page, the discard endpoint and
     # the re-run endpoint cannot disagree about whether a record is protected.
     payload["protection"] = store.protection(rec)
@@ -1067,6 +1068,10 @@ def get_analysis(aid: str):
     payload["history"] = store.geometry_state(aid)
     prof = store.get_phantom_profile(rec.get("phantom") or "")
     payload["phantom_profile"] = _profile_summary(prof)
+    payload["field_offer"] = _field_offer(
+        aid, rec, prof, (payload["phantom_profile"] or {}).get("origin"))
+    payload["field_stopped"] = _field_stopped(rec)
+    payload["field_result"] = _field_result(rec)
     # What a delete would take with it. Shown in the confirmation panel, so an
     # operator can see that removing this row also forgets the phantom's
     # measuring-point layout before they agree to it.
@@ -1546,7 +1551,14 @@ def re_register(aid: str, body: CornersBody):
     store.update(aid, geometry=None, results=None, stage="A", geometry_seq=0,
                  status="draft")
     store.clear_geometry_history(aid)
-    return _reg_payload(aid, reg)
+    # A new registration changes the ruler lines and the quality verdict, and
+    # with them whether Field analysis is offered.
+    out = _reg_payload(aid, reg)
+    rec = store.get(aid)
+    prof = store.get_phantom_profile(rec.get("phantom") or "")
+    out["field_offer"] = _field_offer(aid, rec, prof,
+                                      _points_origin(prof) if prof else None)
+    return out
 
 
 def _profile_summary(prof: dict | None) -> dict | None:
@@ -1556,7 +1568,454 @@ def _profile_summary(prof: dict | None) -> dict | None:
             "updated_by": prof.get("updated_by") or "",
             "pdef_version": prof.get("pdef_version") or "",
             "source_analysis_id": prof.get("source_analysis_id") or "",
-            "n_rois": len((prof.get("layout") or {}).get("rois") or {})}
+            "n_rois": len((prof.get("layout") or {}).get("rois") or {}),
+            "origin": _points_origin(prof)}
+
+
+def _points_origin(prof: dict) -> dict:
+    """Where a phantom's saved points came from, and whether that was clean.
+
+    Field analysis places every measuring point from these without showing
+    them, so it may start only from points that a full, step-by-step analysis
+    established on an exposure that passed the image-quality check on its own,
+    and whose discs then measured in design order (decision 12 in
+    docs/FIELD_TEST_PLAN.md). Each of those is answered here, with one plain
+    line for every one that fails.
+
+    The mode and the disc order are read from the analysis as it is now, and
+    count only while its measuring points are still the ones saved: any change
+    to them drops its results, so matching points mean its results — if it has
+    any — were measured from exactly the saved points. The quality verdict and
+    any override are taken from the moment of saving, because registering the
+    scan again changes the verdict and an override is not kept anywhere else.
+    """
+    src = prof.get("source") or {}
+    aid = prof.get("source_analysis_id") or ""
+    now = store.points_source(aid) if aid else None
+    problems: list[str] = []
+    full = quality_ok = False
+    discs = None
+    if not src:
+        problems.append(
+            "Where these points came from was not recorded when they were "
+            "saved. Save them again from a full analysis of this phantom.")
+    elif now is None:
+        problems.append("The analysis these points came from no longer exists.")
+    elif now["geometry_fingerprint"] != src.get("geometry_fingerprint"):
+        problems.append("The measuring points of the analysis these points "
+                        "came from have been changed since they were saved.")
+    else:
+        full = now["analysis_mode"] == "full"
+        if not full:
+            problems.append("These points did not come from a full, "
+                            "step-by-step analysis.")
+        lc = now["lowcontrast"]
+        if not now["measured"]:
+            problems.append("The analysis these points came from has not been "
+                            "measured with them yet.")
+        elif not lc or lc.get("ordering_ok") is None:
+            problems.append("The discs of the analysis these points came from "
+                            "were not measured.")
+        else:
+            discs = bool(lc["ordering_ok"])
+            if not discs:
+                rho = lc.get("order_rho")
+                problems.append(
+                    "The discs of the analysis these points came from did not "
+                    "measure in design order"
+                    + (f" (rank correlation {rho:.2f})."
+                       if isinstance(rho, (int, float)) else "."))
+    if src:
+        verdict = src.get("quality_verdict") or ""
+        override = bool(src.get("quality_override"))
+        quality_ok = verdict == "ok" and not override
+        if override:
+            problems.append("These points were saved from a scan that failed "
+                            "the image-quality check, by administrator "
+                            "override.")
+        elif verdict != "ok":
+            problems.append("These points were saved from a scan whose image "
+                            "quality was not checked."
+                            if not verdict else
+                            "These points were saved from a scan that did not "
+                            "pass the image-quality check.")
+    return {"recorded": bool(src), "analysis_id": aid,
+            "source_name": src.get("source_name") or "",
+            "saved_at": prof.get("updated_at") or "",
+            "saved_by": prof.get("updated_by") or "",
+            "full_analysis": full, "quality_ok": quality_ok,
+            "discs_in_order": discs, "usable": not problems,
+            "problems": problems}
+
+
+#: Largest error of any single ruler line, in mm, that Field analysis accepts
+#: from the registration (decision 11). Measured on the 29 later reference
+#: scans of the dry run (2026-09-28): the worst line of each scan is
+#: 0.17-0.40 mm, except the top line of phantom HmmEi, at 0.84 and 0.90 mm on
+#: both of its later scans. All pass, those two with little room. (The stored
+#: benchmark's 0.11-0.55 mm is the root-mean-square of the four lines, a
+#: different and smaller figure.) A scan that fails falls back to the full
+#: analysis, never to a wrong result.
+FIELD_RULER_ERR_MAX_MM = 1.0
+
+
+def _field_offer(aid: str, rec: dict, prof: dict | None,
+                 origin: dict | None) -> dict:
+    """Whether this analysis may be run as a Field analysis, and why not.
+
+    Field analysis places every measuring point from the phantom's saved
+    points and shows the operator only the results, so it is offered only
+    where nothing an operator would have caught on screen can be wrong:
+
+    1. the phantom has saved points that a clean, full analysis established
+       (see _points_origin);
+    2. they were saved under the phantom description in use now;
+    3. the file is the original DICOM;
+    4. the scan passed the image-quality check;
+    5. all four ruler lines were found, each within FIELD_RULER_ERR_MAX_MM;
+    6. nobody has worked on the analysis yet, and it is not finalised or
+       signed off.
+
+    `why` is the one line the page shows when it is not offered; `reasons`
+    has every condition that failed, in that order."""
+    reasons: list[str] = []
+    label = store.profile_key(rec.get("phantom") or "")
+    if not label:
+        reasons.append("No phantom is named on this analysis, so there are no "
+                       "saved measuring points to use.")
+    elif prof is None:
+        reasons.append(f"Phantom {label} has no saved measuring points yet. "
+                       f"Its first analysis is always a full one.")
+    elif not (origin or {}).get("usable"):
+        reasons.extend((origin or {}).get("problems")
+                       or ["Where the saved points came from is not known."])
+    if prof is not None:
+        made_for = prof.get("pdef_version") or ""
+        name = (prof.get("layout") or {}).get("pdef_name") or ""
+        if made_for != pdef.version or (name and name != pdef.name):
+            reasons.append(
+                f"The saved points were made for phantom description "
+                f"{made_for or '(not recorded)'}, and this is {pdef.version}. "
+                f"Save them again from a full analysis.")
+    if rec.get("kind") != "dicom":
+        reasons.append("Field analysis needs the original DICOM file, and "
+                       "this is a plain picture.")
+    verdict = rec.get("quality_verdict") or ""
+    if verdict != "ok":
+        reasons.append("This scan did not pass the image-quality check."
+                       if verdict else
+                       "This scan's image quality has not been checked.")
+    reg = rec.get("reg") or {}
+    errs = [v["err_mm"] for v in (reg.get("landmarks") or {}).values()
+            if isinstance(v, dict) and isinstance(v.get("err_mm"), (int, float))
+            and math.isfinite(v["err_mm"])]
+    if not reg:
+        reasons.append("The phantom has not been located on this scan yet.")
+    elif len(errs) < 4:
+        reasons.append(f"Only {len(errs)} of the 4 ruler lines were found when "
+                       f"the phantom was located.")
+    elif max(errs) > FIELD_RULER_ERR_MAX_MM:
+        reasons.append(f"A ruler line sits {max(errs):.2f} mm from where the "
+                       f"phantom was located. Field analysis needs "
+                       f"{FIELD_RULER_ERR_MAX_MM:.1f} mm or less.")
+    if rec.get("validation_status"):
+        reasons.append("This analysis has been signed off.")
+    elif rec.get("finalized_at"):
+        reasons.append("This analysis is finalised.")
+    elif (rec.get("analysis_mode") or "full") == "field":
+        reasons.append("Field analysis has already been run on this analysis.")
+    elif _field_stopped(rec):
+        reasons.append(f"Field analysis stopped on this analysis: "
+                       f"{_field_stopped(rec)} Continue step by step.")
+    elif (rec.get("results") or (rec.get("stage") or "A") not in ("A", "B")
+          or store.worked_on(aid)):
+        reasons.append("Work has already been done on this analysis step by "
+                       "step.")
+    return {"offered": not reasons, "why": reasons[0] if reasons else "",
+            "reasons": reasons, "phantom": label,
+            "points_saved_at": (origin or {}).get("saved_at") or "",
+            "points_saved_by": (origin or {}).get("saved_by") or "",
+            "points_from": (origin or {}).get("source_name") or ""}
+
+
+#: The audit-trail action a stopped Field analysis leaves behind. The offer
+#: reads it back: a scan the automatic run could not handle is continued step
+#: by step, and pressing the button again would only stop it again.
+FIELD_STOPPED = "field analysis stopped"
+
+#: The note on each step Field analysis confirms, in the record's own trail.
+FIELD_NOTE = "confirmed by Field analysis"
+
+#: Each test's name as a reader knows it.
+_TEST_TITLES = {name: title for name, key, title in pipeline.STATUS_FIELDS
+                if key == "status"}
+
+#: Where each status keeps the sentences that explain it.
+_REASON_KEYS = {"status": "reasons", "dimension_status": "dimension_reasons",
+                "field_status": "field_reasons"}
+
+
+def _reviewed_since_field(rec: dict) -> bool:
+    """Whether a person has confirmed the measuring points (step C) since the
+    automatic run placed them. The run's own confirmations carry FIELD_NOTE."""
+    for e in reversed(rec.get("audit") or []):
+        if not isinstance(e, dict):
+            continue
+        if e.get("action") == "field analysis":
+            return False
+        if (e.get("action") == "confirmed" and e.get("stage") == "C"
+                and (e.get("detail") or {}).get("note") != FIELD_NOTE):
+            return True
+    return False
+
+
+def _field_stopped(rec: dict) -> str:
+    """Why Field analysis stopped on this analysis, or "" if it never did."""
+    for e in reversed(rec.get("audit") or []):
+        if isinstance(e, dict) and e.get("action") == FIELD_STOPPED:
+            return str((e.get("detail") or {}).get("reason") or "")
+    return ""
+
+
+def _not_detected(geom: dict) -> list[str]:
+    """The patterns step B would list as "NOT refined (nominal used)".
+
+    Field edges are left out: an edge inside the picture is the exception, and
+    step B says so for every exposure taken the usual way."""
+    out = []
+    g = geom or {}
+    lp, lc, wd = (g.get(t) or {} for t in ("linepairs", "lowcontrast", "wedge"))
+    un, ge = g.get("uniformity") or {}, g.get("geometry") or {}
+    if not lp.get("_error"):
+        out += [f"line group {gr.get('id')}" for gr in lp.get("groups") or []
+                if not gr.get("detected")]
+    if not lc.get("_error") and lc and not lc.get("detected"):
+        out.append("low-contrast block")
+    if not wd.get("_error") and wd and not wd.get("detected"):
+        out.append("wedge")
+    if not un.get("_error"):
+        out += [f"uniformity square {sq.get('id')}"
+                for sq in un.get("squares") or [] if not sq.get("detected")]
+    if not ge.get("_error"):
+        out += [f"ruler {side}" for side, r in (ge.get("rulers") or {}).items()
+                if not (r or {}).get("detected")]
+    return out
+
+
+def _field_stop(placed: dict) -> str:
+    """Why the automatic run cannot go on past step B, or "".
+
+    It stops where an operator stepping through would have had to act: a test
+    whose patterns the automatic detection could not find at all, saved points
+    more than layout_profile.ORIENTATION_TOLERANCE_MM (8 mm) from where this
+    scan's own detection puts the same patterns, or a saved measuring area with
+    no pattern on this scan to go with it."""
+    geom = placed["geometry"] or {}
+    failed = [t for t in pipeline.TESTS if (geom.get(t) or {}).get("_error")]
+    if failed:
+        t = failed[0]
+        return (f"{_TEST_TITLES.get(t, t)} could not be found on this scan "
+                f"({geom[t]['_error']}).")
+    if placed["profile"] is None:
+        return "The phantom's saved points are no longer there."
+    check = placed["check"] or {}
+    if not check.get("ok"):
+        why = (check.get("reason") or "they could not be checked").rstrip(".")
+        return f"The saved points do not fit this scan: {why}."
+    report = placed["report"] or {}
+    if report.get("n_skipped"):
+        skipped = report.get("skipped") or []
+        return (f"{len(skipped)} saved measuring area"
+                f"{'' if len(skipped) == 1 else 's'} found nothing to go with "
+                f"on this scan ({', '.join(skipped[:5])}"
+                f"{', …' if len(skipped) > 5 else ''}).")
+    return ""
+
+
+def _field_review(results: dict) -> list[str]:
+    """What an operator should look at before relying on a Field result.
+
+    Empty means nothing: every test passed, or does not apply to this image,
+    and the discs read the way the phantom's saved points say they should."""
+    out = []
+    lc = (results or {}).get("lowcontrast") or {}
+    if (lc.get("orientation") or {}).get("conflict"):
+        out.append("The low-contrast discs look like the other build of this "
+                   "phantom. Check the phantom ID.")
+    for name, key, title in pipeline.STATUS_FIELDS:
+        r = (results or {}).get(name)
+        if not isinstance(r, dict) or not r.get(key):
+            continue
+        status = r[key]
+        why = [str(x) for x in r.get(_REASON_KEYS[key]) or [] if x]
+        if status in (pipeline.NOT_MEASURED, "error"):
+            out.append(f"{title} could not be analysed: "
+                       f"{r.get('error') or (why[0] if why else 'no reason given')}")
+        elif status in ("warn", "fail"):
+            out.append(f"{title} did not pass ({status}): "
+                       f"{why[0] if why else 'no reason given'}")
+    return out
+
+
+def _test_lines(results: dict) -> list[dict]:
+    """One line per test for the Field result screen: its status, and for
+    anything that did not pass the first sentence of why."""
+    out = []
+    for name, key, title in pipeline.STATUS_FIELDS:
+        r = (results or {}).get(name)
+        if not isinstance(r, dict) or not r.get(key):
+            continue
+        status = r[key]
+        why = [str(x) for x in r.get(_REASON_KEYS[key]) or [] if x]
+        out.append({"test": title, "status": status,
+                    "reason": "" if status == "pass"
+                    else str(r.get("error") or (why[0] if why else ""))})
+    return out
+
+
+def _field_result(rec: dict) -> dict | None:
+    """What the Field result screen shows, for an analysis that was run
+    automatically and has results; None for every other analysis."""
+    if (rec.get("analysis_mode") or "full") != "field" or not rec.get("results"):
+        return None
+    run = next((e.get("detail") or {} for e in reversed(rec.get("audit") or [])
+                if isinstance(e, dict) and e.get("action") == "field analysis"),
+               {})
+    return {"lines": _test_lines(rec["results"]),
+            "review": _field_review(rec["results"]),
+            "run": {k: run.get(k) for k in ("points_from", "points_saved_at",
+                                             "points_saved_by", "seconds")}}
+
+
+def _field_checks(rec: dict, prof: dict, origin: dict) -> dict:
+    """Every value the offer was decided on, for the record's audit trail."""
+    lm = (rec.get("reg") or {}).get("landmarks") or {}
+    return {
+        "phantom": store.profile_key(rec.get("phantom") or ""),
+        "points_from_analysis": origin.get("analysis_id"),
+        "points_from": origin.get("source_name"),
+        "points_saved_at": origin.get("saved_at"),
+        "points_saved_by": origin.get("saved_by"),
+        "points_full_analysis": origin.get("full_analysis"),
+        "points_quality_ok": origin.get("quality_ok"),
+        "points_discs_in_order": origin.get("discs_in_order"),
+        "points_description": prof.get("pdef_version") or "",
+        "description": pdef.version,
+        "kind": rec.get("kind"),
+        "quality_verdict": rec.get("quality_verdict") or "",
+        "ruler_err_mm": {side: (v or {}).get("err_mm")
+                         for side, v in lm.items()},
+        "ruler_limit_mm": FIELD_RULER_ERR_MAX_MM,
+    }
+
+
+@app.post("/api/analyses/{aid}/field_run")
+def field_run(aid: str, request: Request):
+    """Field analysis: place the saved points, measure, and store, at once.
+
+    The same code as the steps, in the same order — confirm the registration,
+    detect the patterns and lay the saved points on top, confirm the points,
+    measure — so the numbers are identical to a step-by-step analysis that
+    accepted every point as placed. What it leaves out is the operator looking
+    at the points, which is why it is offered only where that could not have
+    changed anything (_field_offer), and why it stops at step B wherever an
+    operator would have had to act (_field_stop).
+
+    It never changes the phantom's saved points and never finalises: the
+    operator reads the result and presses Finalise."""
+    started = time.monotonic()
+    user, client = _current_user(request), _client_key(request)
+    rec = store.get(aid)
+    if rec is None:
+        raise HTTPException(404, "not found")
+    _require_unsigned(rec, "running Field analysis")
+    prof = store.get_phantom_profile(rec.get("phantom") or "")
+    origin = _points_origin(prof) if prof else {}
+    offer = _field_offer(aid, rec, prof, origin)
+    if not offer["offered"]:
+        audit("field_run", user=user, client=client, analysis=aid,
+              outcome="refused", reason=offer["why"])
+        raise HTTPException(409, offer["why"])
+    if not store.claim_field_run(aid):
+        # Another press got there between the check and the claim.
+        audit("field_run", user=user, client=client, analysis=aid,
+              outcome="refused", reason="already started")
+        raise HTTPException(409, "Field analysis has already been started on "
+                                 "this analysis.")
+    checks = _field_checks(rec, prof, origin)
+    try:
+        return _run_field(aid, rec, checks, request, started)
+    except Exception as e:
+        # Nothing was measured, so nothing automatic stands: the analysis
+        # goes back to being an ordinary one, and says why the run did not
+        # finish, which also withdraws the offer. Once results are stored they
+        # are the automatic run's, and stay labelled as such.
+        if not (store.get(aid) or {}).get("results"):
+            reason = (str(e.detail) if isinstance(e, HTTPException)
+                      else f"the automatic run failed ({type(e).__name__}).")
+            store.update(aid, analysis_mode="full")
+            store.audit(aid, "B", FIELD_STOPPED, {"reason": reason, **checks})
+            audit("field_run", user=user, client=client, analysis=aid,
+                  outcome="failed", reason=reason)
+        raise
+
+
+def _run_field(aid: str, rec: dict, checks: dict, request: Request,
+               started: float) -> dict:
+    user, client = _current_user(request), _client_key(request)
+    store.update(aid, stage="B")
+    store.audit(aid, "A", "confirmed", {"note": FIELD_NOTE})
+    placed = _place_points(aid, rec, True, user)
+    placing = {"layout_check": placed["check"],
+               "placed": {k: (placed["report"] or {}).get(k)
+                          for k in ("n_applied", "n_skipped", "skipped",
+                                    "insert_turned")},
+               "not_detected": _not_detected(placed["geometry"])}
+    stop = _field_stop(placed)
+    if stop:
+        # Where an operator would have had to act: step B, with the reason,
+        # continued by hand as an ordinary analysis.
+        store.update(aid, analysis_mode="full")
+        seconds = round(time.monotonic() - started, 1)
+        store.audit(aid, "B", FIELD_STOPPED, {"reason": stop, **checks,
+                                              **placing, "seconds": seconds})
+        audit("field_run", user=user, client=client, analysis=aid,
+              outcome="stopped", reason=stop, seconds=seconds)
+        log.info("Field analysis stopped on analysis=%s: %s", aid, stop)
+        # The points as step B shows them, so the page can go on from there
+        # without downloading the whole record again.
+        return pipeline.to_jsonable({
+            "outcome": "stopped", "reason": stop, "stage": "B",
+            "seconds": seconds, "geometry": placed["geometry"],
+            "layout_source": "profile" if placed["applied"] else "auto",
+            "history": store.geometry_state(aid)})
+    for stage, nxt in (("B", "C"), ("C", "D"), ("D", "E")):
+        store.update(aid, stage=nxt)
+        store.audit(aid, stage, "confirmed", {"note": FIELD_NOTE})
+    rec = store.get(aid)
+    results, status = _measure(aid, rec, rec.get("sid_mm") or 1000.0, request)
+    store.audit(aid, "E", "confirmed", {"note": FIELD_NOTE})
+    review = _field_review(results)
+    seconds = round(time.monotonic() - started, 1)
+    store.audit(aid, "F", "field analysis", {**checks, **placing,
+                                             "overall": status,
+                                             "review": review,
+                                             "seconds": seconds})
+    audit("field_run", user=user, client=client, analysis=aid,
+          outcome="finished", overall=status, review=len(review),
+          seconds=seconds)
+    log.info("Field analysis finished on analysis=%s in %.1f s: %s", aid,
+             seconds, status)
+    # Everything the result screen draws — the points for the viewer
+    # included — so the page does not download the whole record again.
+    rec = store.get(aid)
+    return pipeline.to_jsonable({
+        "outcome": "finished", "stage": "F", "overall": status,
+        "results": results, "verdict_notes": pipeline.verdict_notes(results),
+        "review": review, "seconds": seconds, "geometry": rec["geometry"],
+        "layout_source": rec.get("layout_source") or "",
+        "history": store.geometry_state(aid),
+        "field_result": _field_result(rec)})
 
 
 class ProposeBody(BaseModel):
@@ -1580,9 +2039,29 @@ def propose(aid: str, body: ProposeBody | None = None, request: Request = None):
     if rec is None:
         raise HTTPException(404, "not found")
     _require_unsigned(rec, "re-detecting the patterns")
+    user = _current_user(request) if request is not None else ""
+    want = (body.use_profile if body.use_profile is not None
+            else (rec.get("layout_source") or "") != "auto")
+    placed = _place_points(aid, rec, want, user)
+    prof, applied = placed["profile"], placed["applied"]
+    return pipeline.to_jsonable({
+        "geometry": placed["geometry"],
+        "layout_source": "profile" if applied else "auto",
+        "profile": _profile_summary(prof),
+        "profile_applied": applied,
+        "profile_report": placed["report"],
+        "profile_check": placed["check"],
+        "history": store.geometry_state(aid),
+    })
+
+
+def _place_points(aid: str, rec: dict, want_profile: bool, user: str) -> dict:
+    """Detect every pattern, then lay the phantom's saved points on top.
+
+    Shared by the step B button and by Field analysis, so that both place the
+    measuring points with exactly the same code and give identical numbers."""
     ctx = _ctx(aid, rec)
     geom = pipeline.propose_all(ctx, deadline=_deadline())
-    user = _current_user(request) if request is not None else ""
 
     # seq 0 is the untouched automatic proposal, always.
     try:
@@ -1591,9 +2070,8 @@ def propose(aid: str, body: ProposeBody | None = None, request: Request = None):
         raise HTTPException(404, "not found")   # deleted while proposing
     store.audit(aid, "B", "proposals generated")
 
-    want = (body.use_profile if body.use_profile is not None
-            else (rec.get("layout_source") or "") != "auto")
-    prof = store.get_phantom_profile(rec.get("phantom") or "") if want else None
+    prof = (store.get_phantom_profile(rec.get("phantom") or "")
+            if want_profile else None)
     applied, check, report = False, None, None
     if prof:
         check = layout_profile.layout_agrees(prof["layout"], geom)
@@ -1611,15 +2089,8 @@ def propose(aid: str, body: ProposeBody | None = None, request: Request = None):
                         {"phantom": prof["phantom_key"], **check})
 
     store.update(aid, stage="B", layout_source=("profile" if applied else "auto"))
-    return pipeline.to_jsonable({
-        "geometry": geom,
-        "layout_source": "profile" if applied else "auto",
-        "profile": _profile_summary(prof),
-        "profile_applied": applied,
-        "profile_report": report,
-        "profile_check": check,
-        "history": store.geometry_state(aid),
-    })
+    return {"geometry": geom, "profile": prof, "applied": applied,
+            "check": check, "report": report}
 
 
 def _finite_point(v):
@@ -2341,11 +2812,17 @@ def confirm_stage(aid: str, body: StageConfirm, request: Request):
         rec["geometry"], pdef_name=pdef.name, pdef_version=pdef.version,
         algo_version=ALGO_VERSION, registration=pipeline.to_jsonable(reg),
         lowcontrast_insert=insert)
+    # What Field analysis will later ask of these points, recorded now because
+    # none of it can be read back reliably afterwards (see _points_origin).
+    source = {"source_name": rec.get("source_name") or "",
+              "quality_verdict": rec.get("quality_verdict") or "",
+              "quality_override": bool(override),
+              "geometry_fingerprint": geometry_fingerprint(rec["geometry"])}
     saved = store.save_phantom_profile(
         label, layout, pdef_version=pdef.version, algo_version=ALGO_VERSION,
         source_analysis_id=aid, updated_by=_current_user(request),
         # Only an explicit yes may replace what another analysis stored.
-        replace_others=body.save_profile is not None)
+        replace_others=body.save_profile is not None, source=source)
     if saved is None:
         # A request that did not say, beaten to it by another analysis of the
         # same phantom between reading the default and taking the lock. The
@@ -2358,6 +2835,8 @@ def confirm_stage(aid: str, body: StageConfirm, request: Request):
     store.audit(aid, "C", "phantom layout stored",
                 {"phantom": label, "rois": saved["n_rois"],
                  "insert_turned": (insert or {}).get("flipped"),
+                 "analysis_mode": rec.get("analysis_mode") or "full",
+                 "quality_verdict": source["quality_verdict"],
                  **({"quality_override": override} if override else {})})
     audit("phantom_profile", user=_current_user(request),
           client=_client_key(request), analysis=aid, phantom=label,
@@ -2387,11 +2866,43 @@ def compute(aid: str, body: ComputeBody, request: Request):
     if not rec or not rec.get("geometry"):
         raise HTTPException(400, "no confirmed geometry")
     _require_unsigned(rec, "recomputing the results")
-    store.update(aid, sid_mm=body.sid_mm)
+    results, status = _measure(aid, rec, body.sid_mm, request)
+    # A Field analysis measured again after somebody confirmed its measuring
+    # points in step C has been reviewed step by step, and is a full one. One
+    # measured again without that — a re-run that starts from the results —
+    # still stands on points nobody looked at, and stays what it was.
+    if ((rec.get("analysis_mode") or "full") == "field"
+            and _reviewed_since_field(rec)):
+        store.update(aid, analysis_mode="full")
+        store.audit(aid, "E", "field analysis reviewed step by step",
+                    {"overall": status})
+        audit("field_review", user=_current_user(request),
+              client=_client_key(request), analysis=aid, outcome=status)
+    baseline = store.baseline_for(rec["signature"], rec.get("phantom", ""),
+                                  exclude_id=aid)
+    return pipeline.to_jsonable({
+        "results": results, "overall": status,
+        "verdict_notes": pipeline.verdict_notes(results),
+        "baseline": ({"id": baseline["id"],
+                      "phantom": baseline.get("phantom", ""),
+                      "acquired_at": baseline.get("acquired_at", ""),
+                      "created_at": baseline.get("created_at", ""),
+                      "rows": flatten_results(baseline["results"])}
+                     if baseline and baseline.get("results") else None),
+    })
+
+
+def _measure(aid: str, rec: dict, sid_mm: float,
+             request: Request) -> tuple[dict, str]:
+    """Measure every test on the analysis's current points and store it.
+
+    Shared by the step E button and by Field analysis, so that both measure
+    with exactly the same code and give identical numbers."""
+    store.update(aid, sid_mm=sid_mm)
     # Keep the in-hand record in step with what was just written: building the
     # context from the stale copy analysed with the PREVIOUS SID, so the
     # field-alignment %-of-SID verdict disagreed with the SID shown everywhere.
-    rec["sid_mm"] = body.sid_mm
+    rec["sid_mm"] = sid_mm
     ctx = _ctx(aid, rec)
     results = pipeline.compute_all(ctx, rec["geometry"], deadline=_deadline())
     status = pipeline.overall_status(results)
@@ -2405,27 +2916,16 @@ def compute(aid: str, body: ComputeBody, request: Request):
     store.update(aid, results=results, status=status, stage="F",
                  algo_version=ALGO_VERSION, pdef_version=pdef.version)
     store.audit(aid, "E", "computed", {"overall": status,
-                                       "sid_mm": body.sid_mm,
+                                       "sid_mm": sid_mm,
                                        **({"timed_out": timed_out}
                                           if timed_out else {})})
     if timed_out:
         log.warning("analysis=%s exceeded the %s s time limit; %s not measured",
                     aid, cfg.analysis_timeout_s, ", ".join(timed_out))
     audit("compute", user=_current_user(request), client=_client_key(request),
-          analysis=aid, outcome=status, sid_mm=body.sid_mm)
+          analysis=aid, outcome=status, sid_mm=sid_mm)
     log.info("computed analysis=%s overall=%s", aid, status)
-    baseline = store.baseline_for(rec["signature"], rec.get("phantom", ""),
-                                  exclude_id=aid)
-    return pipeline.to_jsonable({
-        "results": results, "overall": status,
-        "verdict_notes": pipeline.verdict_notes(results),
-        "baseline": ({"id": baseline["id"],
-                      "phantom": baseline.get("phantom", ""),
-                      "acquired_at": baseline.get("acquired_at", ""),
-                      "created_at": baseline.get("created_at", ""),
-                      "rows": flatten_results(baseline["results"])}
-                     if baseline and baseline.get("results") else None),
-    })
+    return results, status
 
 
 class FinalizeBody(BaseModel):
@@ -2512,6 +3012,15 @@ def _quality_override(request: Request, rec: dict, aid: str, event: str,
 
 def _set_baseline(aid: str, rec: dict, value: bool, request: Request,
                   override: dict | None = None) -> dict:
+    # Decision 4. The reference is what every later scan of the phantom is
+    # judged against; its measuring points have to have been looked at. No
+    # override: the way through is to review it, which makes it a full one.
+    if value and (rec.get("analysis_mode") or "full") == "field":
+        raise HTTPException(
+            409, "A Field analysis cannot be the reference scan: its measuring "
+                 "points were not reviewed on screen. Review it step by step "
+                 "first — once it is measured again it is a full analysis and "
+                 "can be the reference.")
     if value:
         refused = _reference_use_refused(rec, "become the reference scan")
         if refused and override is None:
@@ -3040,11 +3549,16 @@ def set_validation(aid: str, body: ValidationBody, request: Request):
 
     before = {"validation_status": rec.get("validation_status", ""),
               "validated_by": rec.get("validated_by", "")}
-    store.audit(aid, "F", "validation set", applied)
+    # A ruling on a Field analysis is allowed (decision 5), and recorded as
+    # one: the report prints it as automatic.
+    automatic = (rec.get("analysis_mode") or "full") == "field"
+    store.audit(aid, "F", "validation set",
+                {**applied, **({"automatic": True} if automatic else {})})
     audit("validation", user=user, client=client, analysis=aid,
           outcome=applied["validation_status"] or "withdrawn",
           approver=applied["validated_by"], comment=applied["validation_comment"],
-          before=before, site=rec.get("site"), phantom=rec.get("phantom"))
+          before=before, site=rec.get("site"), phantom=rec.get("phantom"),
+          **({"automatic": True} if automatic else {}))
     log.info("validation analysis=%s -> %r by %r (login %s)", aid,
              applied["validation_status"], applied["validated_by"], user)
     return {"ok": True, **applied}

@@ -222,6 +222,11 @@ place the corners yourself — see below.
 If this step opens with a red panel, the exposure itself failed the image-quality
 check — see [When the image itself is the problem](#when-the-image-itself-is-the-problem).
 
+If the phantom's measuring points have been saved, this step may also offer
+**Field analysis — automatic** beside the full analysis — see
+[Field analysis — automatic](#field-analysis--automatic). Where it is not
+offered, one line under the heading says why.
+
 #### Placing the corners by hand
 
 1. Press **Manual corners…**. The controls appear under the image, so the
@@ -886,6 +891,130 @@ kept).
 A re-run is refused if the stored scan no longer matches the fingerprint
 recorded when it was uploaded — new numbers must not come from a file that is
 not the original.
+
+---
+
+## Field analysis — automatic
+
+For a phantom whose measuring points have been saved, step A can offer to do
+the rest in one go: place the saved points, measure, and show only the results.
+The numbers are exactly what the step-by-step workflow gives when every point is
+accepted as placed. That was checked on 29 reference scans: every result and
+every measuring point was the same. On the server a run takes about 2 seconds,
+and its answer is about 110 kB, which is about 2 seconds more at 512 kbit/s.
+
+What it leaves out is you looking at the points before they are measured. That
+is why it is offered only where looking could not have changed anything, why
+the result says plainly that it was automatic, and why it can never become the
+reference scan.
+
+### First: set the phantom up carefully, once
+
+The **first analysis of every phantom is always a full one**, and it is the one
+that saves the measuring points every later Field analysis starts from. A
+mistake made there is repeated in every automatic result afterwards, so:
+
+1. Use a **good exposure** — one that passes the image-quality check on its own.
+   Points kept from a failed exposure by an administrator's override are never
+   used automatically.
+2. Go through every step. In step C, **zoom in and check every measuring
+   point**, and set the low-contrast insert the right way round.
+3. Keep **Use these measuring points for future scans** ticked and confirm.
+4. Measure (step E). The low-contrast discs must come out **in design order**;
+   if they do not, the saved points are not used automatically. Fix the points
+   and measure again.
+
+Points saved **before this version** are marked "not recorded": nobody knows
+where they came from. Do one full analysis of each phantom, with the box
+ticked, to use Field analysis on it.
+
+### When it is offered
+
+After registration, step A shows two choices side by side:
+
+- **Field analysis — automatic**, outlined, with the **phantom ID in large
+  letters** and "Points saved on … by …, from scan …";
+- **Full analysis — step by step**, with the usual **Confirm registration ✓**.
+
+**Check the phantom ID before pressing Run Field analysis.** A wrong ID is the
+one mistake the automatic run cannot catch. Two builds of the phantom look alike
+to the software, and the points of the wrong one would be used.
+
+It is offered only when all of these hold. Otherwise step A shows the full
+analysis only, with one line saying why — the first reason from this list:
+
+| Needed | The line you see otherwise |
+|---|---|
+| A phantom is named | *No phantom is named on this analysis…* |
+| The phantom has saved points | *Phantom … has no saved measuring points yet. Its first analysis is always a full one.* |
+| The points came from a full analysis, on an exposure that passed the image-quality check without an override, whose discs measured in design order, and the points have not been changed since | One line saying which of these is not so |
+| The points were saved under the phantom description in use now | *The saved points were made for phantom description …* |
+| The file is the original DICOM | *Field analysis needs the original DICOM file, and this is a plain picture.* |
+| This scan passed the image-quality check | *This scan did not pass the image-quality check.* |
+| All 4 ruler lines were found, none more than 1.0 mm off | *Only … of the 4 ruler lines were found…* or *A ruler line sits … mm from where the phantom was located…* |
+| Nothing has been done to the analysis yet, and it is not finalised or signed off | *Work has already been done on this analysis step by step.* (or finalised, signed off, already run, stopped) |
+
+On the 29 reference scans the worst ruler line was 0.17–0.40 mm, except the top
+line of one Philips phantom, at 0.84–0.90 mm. That phantom still passes, but
+with little room: an exposure of it may now and then get the full analysis only.
+That costs time, never a wrong result.
+
+### The result
+
+The run ends on its own result screen:
+
+- the phantom ID and where the points came from, "not reviewed on screen";
+- the overall result, and one line per test, with the first reason for anything
+  that did not pass;
+- a **Review recommended** box when something should be looked at: a test that
+  did not pass or could not be measured, or low-contrast discs that look like
+  the other build of the phantom ("Check the phantom ID"). Otherwise **Nothing
+  to review**;
+- the measuring points, drawn on the image beside it;
+- four buttons: **Open full report · Review step by step · Finalise · New
+  analysis**.
+
+Nothing is finalised automatically: read the result, then press **Finalise**.
+Reopening the analysis later, or reloading the page, brings back this screen.
+
+**Blue prints:** on the blue-printed phantoms the line-pair test currently
+fails on every scan, in both workflows (the question about those prints is still
+open). Their Field results therefore always say **Review recommended** for line
+patterns. When a blue phantom is at hand, the physical line-pair check stays
+first on the list.
+
+### When it stops
+
+The run stops where you would have had to act, and leaves the analysis at step
+B with the reason in a box at the top:
+
+- a test's patterns could not be found on this scan at all;
+- the saved points sit more than 8 mm from where this scan's own detection puts
+  the same patterns — which is what a mis-registered scan, or the wrong phantom,
+  looks like;
+- a saved measuring area has nothing on this scan to go with it.
+
+Continue step by step from there. The analysis is an ordinary full one, and
+Field analysis is not offered on it again. None of the 29 reference scans
+stopped.
+
+### What is different about a Field analysis
+
+- **It says so everywhere.** The report opens with *Field analysis — automatic,
+  measuring points not reviewed on screen*, and where the points came from, and
+  every printed page says *Field analysis — automatic* at the top. History shows
+  an **automatic** tag, the sign-off panel says it, and both CSV exports have an
+  `analysis_mode` column (`field` or `full`).
+- **It cannot become the reference scan.** History shows no ☆ on it, and the
+  button is refused with the reason.
+- **An administrator can sign it off.** The report then prints the ruling as,
+  for example, *VALIDATED (AUTOMATIC)*.
+- **Review step by step** opens step B with the points on the image. Once you
+  have confirmed the measuring points in step C and measured again, it is a full
+  analysis: the tag goes, and it can be the reference. Measuring it again without
+  confirming step C keeps it automatic.
+- **It never changes the phantom's saved points**, and neither does discarding
+  or re-running it.
 
 ---
 

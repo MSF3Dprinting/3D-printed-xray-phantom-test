@@ -97,6 +97,11 @@ button:disabled { opacity: 0.45; cursor: default; }
    as a warning in the verdict and is coloured like one. */
 .chip.notapplicable { background: #667; }
 .chip.notmeasured { background: var(--warn); }
+/* A Field analysis: not a verdict, so not a verdict's colour. */
+.chip.field { background: none; color: var(--accent);
+  border: 1px solid var(--accent); }
+.field-tag { color: var(--accent); font-size: 12px;
+  border-left: 3px solid var(--accent); padding-left: 8px; }
 
 .drop-zone {
   border: 2px dashed var(--border); border-radius: 10px; padding: 40px 20px;
@@ -525,3 +530,19 @@ button.danger:disabled { opacity: 0.45; cursor: default; }
 }
 /* Standing on the upload step, it is the current step like any other. */
 #stage-nav li.nav-go.active { border-style: solid; color: var(--text); }
+
+/* Field analysis: the choice after registration, and its result screen.
+   Side by side where the panel is wide enough, one above the other where it
+   is not; Field highlighted, since it is the default where it is offered. */
+.field-choice { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px; margin: 10px 0; }
+.choice { background: var(--panel2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 12px; }
+.choice h3 { margin: 0 0 6px; }
+.choice-field { border: 2px solid var(--accent); }
+/* The phantom ID, large: a wrong ID is the one mistake the automatic run
+   cannot catch, so it has to be read before the button is pressed. */
+.field-phantom { font-size: 28px; font-weight: 700; margin: 4px 0;
+  letter-spacing: 0.02em; overflow-wrap: anywhere; }
+.field-not-offered { border-left: 3px solid var(--muted); padding-left: 8px; }
+.field-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }

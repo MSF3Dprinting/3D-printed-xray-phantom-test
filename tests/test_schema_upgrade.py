@@ -89,8 +89,15 @@ def test_an_existing_database_gains_everything_new(tmp_path, table_sql, label):
             "validation_status", "validated_by", "validation_comment",
             "validated_at", "geometry_seq", "layout_source"} <= cols, label
 
+    assert "analysis_mode" in cols, label
+    assert {"source_json", "prev_source_json"} <= _columns(db,
+                                                           "phantom_profiles")
+
     rec = store.get("old1")
     assert rec is not None, f"the {label} row did not survive the upgrade"
+    # Field analysis did not exist before the column, so every existing
+    # analysis was a full one — and reads so without any data migration.
+    assert rec["analysis_mode"] == "full"
     assert rec["source_name"] == "scan.dcm"
     assert rec["results"]["uniformity"]["status"] == "pass"
     assert rec["geometry"]["uniformity"]["squares"] == []
@@ -132,6 +139,8 @@ def test_a_legacy_row_can_carry_a_layout_immediately(tmp_path):
     store = Store(str(tmp_path))
     store.save_phantom_profile("MSF-01", {"rois": {"uniformity/C": {}}})
     assert store.get_phantom_profile("MSF-01")["layout"]["rois"]
+    # saved without saying where it came from: that reads as not known
+    assert store.get_phantom_profile("MSF-01")["source"] is None
     assert store.list_phantom_profiles()[0]["n_analyses"] == 1
     # and the cascade still applies to a row that predates the feature
     assert store.delete("old1")["profile_deleted"] is True

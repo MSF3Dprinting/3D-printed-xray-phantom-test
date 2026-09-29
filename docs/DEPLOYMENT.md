@@ -398,8 +398,11 @@ sudo systemctl restart phantomqa
 The database schema migrates itself on startup; existing analyses are preserved.
 The first start after the upgrade that added the exposure columns also reads the
 header of every stored DICOM once to fill them in — milliseconds per record, the
-pixel data is not decoded — and logs how many it filled. Restarting this unit
-does not affect other applications.
+pixel data is not decoded — and logs how many it filled. The upgrade that added
+Field analysis only adds three columns and reads nothing; until each phantom has
+had one full analysis with its points saved, Field analysis is not offered for
+it (see USER_GUIDE.md, *Field analysis*). Restarting this unit does not affect
+other applications.
 
 Rotating `PHANTOMQA_SECRET_KEY` signs everyone out, which is the fastest way to
 invalidate all sessions.

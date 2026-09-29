@@ -238,6 +238,12 @@ _ADDED_COLUMNS = {
         "target_exposure_index": "REAL",
         "deviation_index": "REAL",
         "sensitivity": "REAL",
+        # How the analysis was run: "full", step by step with every measuring
+        # point shown to the operator, or "field", placed automatically from
+        # the phantom's saved points. The default is right for every row that
+        # exists when the column is added: Field analysis did not exist before
+        # it, so each of them was a full analysis. See ANALYSIS_MODES.
+        "analysis_mode": "TEXT DEFAULT 'full'",
     },
     "phantom_profiles": {
         "phantom_norm": "TEXT DEFAULT ''",
@@ -257,8 +263,40 @@ _ADDED_COLUMNS = {
         "prev_updated_by": "TEXT DEFAULT ''",
         "prev_pdef_version": "TEXT DEFAULT ''",
         "prev_algo_version": "TEXT DEFAULT ''",
+        # What was known about the analysis these points came from at the
+        # moment they were saved, as JSON: its mode, its image-quality verdict,
+        # whether an administrator overrode that verdict, and a fingerprint of
+        # the exact points (see geometry_fingerprint). Field analysis may start
+        # only from points a clean, full analysis established, and none of
+        # that can be read back reliably afterwards: the verdict changes when
+        # the scan is registered again, and the analysis's points change with
+        # every later edit. Empty on points saved before it was recorded,
+        # which reads as "not known" — never as clean.
+        "source_json": "TEXT DEFAULT ''",
+        "prev_source_json": "TEXT DEFAULT ''",
     },
 }
+
+#: How an analysis was run. "full" is the step-by-step workflow; "field" places
+#: every measuring point from the phantom's saved points without showing them.
+ANALYSIS_MODES = ("full", "field")
+
+#: What a Field analysis is called wherever it is shown: the report, History,
+#: the sign-off panel. One wording, so none of them can say less than another.
+FIELD_MODE_TEXT = ("Field analysis — automatic, measuring points not reviewed "
+                   "on screen")
+
+
+def geometry_fingerprint(geometry) -> str:
+    """A fingerprint of a set of measuring points, the same for equal points.
+
+    Any change to an analysis's points drops its results (see
+    Store._write_geometry), so an analysis whose points still carry the
+    fingerprint recorded when they were saved has results measured from
+    exactly those points — or none at all. Keys are sorted so the fingerprint
+    depends on the points, not on the order they were written in."""
+    text = json.dumps(geometry, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 LABEL_FIELDS = ("site", "phantom", "operator", "notes")
 
@@ -688,6 +726,44 @@ class Store:
         with self._conn() as c:
             return self._hist_state(c, aid)
 
+    #: Measuring-point states the application makes by itself. Every other
+    #: action in geometry_history is somebody's hand on the points.
+    AUTOMATIC_GEOMETRY = ("propose", "apply_profile", "reanalyze")
+
+    def claim_field_run(self, aid: str) -> bool:
+        """Mark a fresh analysis as a Field analysis; False if it is not one.
+
+        One statement, so two presses of the button arriving together cannot
+        both start a run: the second finds the mode already set and gets
+        False. Fresh here is what the database alone can say — still a full
+        analysis at the first two steps, unmeasured, not finalised or signed
+        off; the caller has checked the rest."""
+        with self.write_transaction() as c:
+            return c.execute(
+                "UPDATE analyses SET analysis_mode='field' WHERE id=?"
+                " AND COALESCE(analysis_mode,'full')='full'"
+                " AND COALESCE(stage,'A') IN ('A','B')"
+                " AND results_json IS NULL"
+                " AND COALESCE(finalized_at,'')=''"
+                " AND COALESCE(validation_status,'')=''",
+                (aid,)).rowcount == 1
+
+    def worked_on(self, aid: str) -> bool:
+        """Whether anyone has moved, turned, reset or re-read this analysis's
+        measuring points — as opposed to the application placing them — or
+        re-run it. One connection for both: opening one costs about 10 ms on
+        the development laptop, the queries themselves 0.03 ms."""
+        marks = ",".join("?" for _ in self.AUTOMATIC_GEOMETRY)
+        with self._conn() as c:
+            if c.execute(
+                    f"SELECT 1 FROM geometry_history WHERE analysis_id=?"
+                    f" AND action NOT IN ({marks}) LIMIT 1",
+                    (aid, *self.AUTOMATIC_GEOMETRY)).fetchone() is not None:
+                return True
+            return c.execute("SELECT 1 FROM analysis_revisions"
+                             " WHERE analysis_id=? LIMIT 1",
+                             (aid,)).fetchone() is not None
+
     def clear_geometry_history(self, aid: str):
         """Throw the undo stack away — the states no longer describe anything.
 
@@ -871,7 +947,8 @@ class Store:
             " COALESCE(prev_updated_at,'') AS prev_at,"
             " COALESCE(prev_updated_by,'') AS prev_by,"
             " COALESCE(prev_pdef_version,'') AS prev_pdef,"
-            " COALESCE(prev_algo_version,'') AS prev_algo"
+            " COALESCE(prev_algo_version,'') AS prev_algo,"
+            " COALESCE(prev_source_json,'') AS prev_source"
             " FROM phantom_profiles WHERE phantom_key=?", (label,)).fetchone()
         if row is None or row["source_analysis_id"] != aid:
             return ""                      # not this analysis's doing
@@ -880,12 +957,14 @@ class Store:
             c.execute(
                 "UPDATE phantom_profiles SET layout_json=?,"
                 " source_analysis_id=?, updated_at=?, updated_by=?,"
-                " pdef_version=?, algo_version=?, prev_layout_json='',"
-                " prev_source_analysis_id='', prev_updated_at='',"
-                " prev_updated_by='', prev_pdef_version='',"
-                " prev_algo_version='' WHERE phantom_key=?",
+                " pdef_version=?, algo_version=?, source_json=?,"
+                " prev_layout_json='', prev_source_analysis_id='',"
+                " prev_updated_at='', prev_updated_by='',"
+                " prev_pdef_version='', prev_algo_version='',"
+                " prev_source_json='' WHERE phantom_key=?",
                 (row["prev"], row["prev_src"], row["prev_at"], row["prev_by"],
-                 row["prev_pdef"], row["prev_algo"], label))
+                 row["prev_pdef"], row["prev_algo"], row["prev_source"],
+                 label))
             return "restored"
         # Nothing to fall back to: the next scan starts from detection again,
         # which is the right default and better than a layout nobody trusts.
@@ -912,14 +991,55 @@ class Store:
             log.error("corrupted stored layout for phantom=%r — ignoring it",
                       d.get("phantom_key"))
             return None
+        # A damaged record of where the points came from costs only that
+        # record: the points stay usable step by step, and "not known" is the
+        # reading that offers nothing on their strength.
+        source = _safe_json(d.pop("source_json", "") or "")
+        d["source"] = source if isinstance(source, dict) else None
+        d.pop("prev_source_json", None)
         return d
+
+    def points_source(self, aid: str) -> dict | None:
+        """What the analysis a phantom's saved points came from says now.
+
+        Its mode, the fingerprint of its current measuring points (None when
+        it has none) and its disc-order check (None until it has been
+        measured). None when the analysis no longer exists. Reads only the
+        three columns needed, not the whole record."""
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT COALESCE(analysis_mode,'full') AS analysis_mode,"
+                " geometry_json, results_json FROM analyses WHERE id=?",
+                (aid,)).fetchone()
+        if row is None:
+            return None
+        geometry = _safe_json(row["geometry_json"])
+        results = _safe_json(row["results_json"])
+        lc = (results or {}).get("lowcontrast") if isinstance(results, dict) \
+            else None
+        return {
+            "analysis_mode": row["analysis_mode"],
+            "geometry_fingerprint": (geometry_fingerprint(geometry)
+                                     if isinstance(geometry, dict) and geometry
+                                     else None),
+            "measured": isinstance(results, dict) and bool(results),
+            "lowcontrast": ({"ordering_ok": lc.get("ordering_ok"),
+                             "order_rho": lc.get("order_rho"),
+                             "status": lc.get("status")}
+                            if isinstance(lc, dict) else None),
+        }
 
     def save_phantom_profile(self, phantom: str, layout: dict, *,
                              pdef_version: str = "", algo_version: str = "",
                              source_analysis_id: str = "",
                              updated_by: str = "",
-                             replace_others: bool = True) -> dict | None:
+                             replace_others: bool = True,
+                             source: dict | None = None) -> dict | None:
         """Store `layout` as the phantom's shared measuring points.
+
+        `source` is what was known about the analysis they came from when they
+        were saved (see the source_json column); None records nothing, which
+        later reads as "not known".
 
         With replace_others=False a layout that a DIFFERENT analysis stored is
         left exactly as it is and None comes back. That is the rule for a
@@ -940,7 +1060,8 @@ class Store:
             # the history worth keeping would be gone after the first nudge.
             cur = c.execute(
                 "SELECT layout_json, source_analysis_id, updated_at,"
-                " updated_by, pdef_version, algo_version FROM phantom_profiles"
+                " updated_by, pdef_version, algo_version,"
+                " COALESCE(source_json,'') AS source_json FROM phantom_profiles"
                 " WHERE phantom_key=?", (key,)).fetchone()
             if (not replace_others and cur is not None
                     and cur["source_analysis_id"] != source_analysis_id):
@@ -950,15 +1071,17 @@ class Store:
                     "UPDATE phantom_profiles SET prev_layout_json=?,"
                     " prev_source_analysis_id=?, prev_updated_at=?,"
                     " prev_updated_by=?, prev_pdef_version=?,"
-                    " prev_algo_version=? WHERE phantom_key=?",
+                    " prev_algo_version=?, prev_source_json=?"
+                    " WHERE phantom_key=?",
                     (cur["layout_json"], cur["source_analysis_id"],
                      cur["updated_at"], cur["updated_by"],
-                     cur["pdef_version"], cur["algo_version"], key))
+                     cur["pdef_version"], cur["algo_version"],
+                     cur["source_json"], key))
             c.execute(
                 "INSERT INTO phantom_profiles (phantom_key, phantom_norm,"
                 " layout_json, pdef_version, algo_version, source_analysis_id,"
-                " created_at, updated_at, updated_by)"
-                " VALUES (?,?,?,?,?,?,?,?,?)"
+                " created_at, updated_at, updated_by, source_json)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?)"
                 " ON CONFLICT(phantom_key) DO UPDATE SET"
                 "   phantom_norm=excluded.phantom_norm,"
                 "   layout_json=excluded.layout_json,"
@@ -966,9 +1089,11 @@ class Store:
                 "   algo_version=excluded.algo_version,"
                 "   source_analysis_id=excluded.source_analysis_id,"
                 "   updated_at=excluded.updated_at,"
-                "   updated_by=excluded.updated_by",
+                "   updated_by=excluded.updated_by,"
+                "   source_json=excluded.source_json",
                 (key, self.profile_norm(key), json.dumps(layout), pdef_version,
-                 algo_version, source_analysis_id, now, now, updated_by))
+                 algo_version, source_analysis_id, now, now, updated_by,
+                 json.dumps(source) if source else ""))
             near = [r["phantom_key"] for r in c.execute(
                 "SELECT phantom_key FROM phantom_profiles"
                 " WHERE phantom_norm=? AND phantom_key<>?",
@@ -1239,6 +1364,10 @@ class Store:
             raise ValueError(
                 "use set_labels() to change the phantom label, so the stored "
                 "measuring-point layout stays consistent")
+        if ("analysis_mode" in fields
+                and fields["analysis_mode"] not in ANALYSIS_MODES):
+            raise ValueError(f"unknown analysis mode "
+                             f"{fields['analysis_mode']!r}")
         cols, vals = [], []
         for k, v in fields.items():
             if k in ("meta", "reg", "geometry", "results", "audit", "quality"):
@@ -1328,6 +1457,8 @@ class Store:
                " site, phantom, operator, notes,"
                " validation_status, validated_by, validation_comment,"
                " validated_at, quality_verdict, finalized_at, finalized_by,"
+               # History tags a Field analysis, and offers no reference star.
+               " COALESCE(analysis_mode,'full') AS analysis_mode,"
                # Two numbers, not the whole exposure record: they are what
                # the row shows, and this listing is fetched over slow links.
                " exposure_index, deviation_index,"
@@ -1580,6 +1711,7 @@ class Store:
             " COALESCE(validated_by,'') AS validated_by,"
             " COALESCE(validation_comment,'') AS validation_comment,"
             " COALESCE(validated_at,'') AS validated_at,"
+            " COALESCE(analysis_mode,'full') AS analysis_mode,"
             " is_baseline FROM analyses WHERE id=?", (aid,)).fetchone()
         if row is None:
             raise KeyError(aid)
@@ -1589,6 +1721,7 @@ class Store:
         blob = zlib.compress(json.dumps({
             "reg": row["reg_json"], "geometry": row["geometry_json"],
             "results": row["results_json"],
+            "analysis_mode": row["analysis_mode"],
         }).encode("utf-8"), 6)
         validation = {k: row[k] for k in ("validation_status", "validated_by",
                                           "validation_comment", "validated_at")}
@@ -1677,19 +1810,23 @@ class Store:
                 raise KeyError(f"{aid} has no revision to restore")
             snap = json.loads(zlib.decompress(row["snapshot_z"]).decode("utf-8"))
             validation = _safe_json(row["validation_json"]) or {}
+            # A snapshot taken before the mode was recorded is of a full
+            # analysis: Field analysis did not exist yet.
+            mode = snap.get("analysis_mode")
             c.execute(
                 "UPDATE analyses SET reg_json=?, geometry_json=?,"
                 " results_json=?, status=?, sid_mm=?, layout_source=?,"
                 " finalized_at=?, finalized_by=?, validation_status=?,"
                 " validated_by=?, validation_comment=?, validated_at=?,"
-                " stage='F' WHERE id=?",
+                " analysis_mode=?, stage='F' WHERE id=?",
                 (snap["reg"], snap["geometry"], snap["results"],
                  row["status"], row["sid_mm"], row["layout_source"],
                  row["finalized_at"], row["finalized_by"],
                  validation.get("validation_status", ""),
                  validation.get("validated_by", ""),
                  validation.get("validation_comment", ""),
-                 validation.get("validated_at", ""), aid))
+                 validation.get("validated_at", ""),
+                 mode if mode in ANALYSIS_MODES else "full", aid))
             c.execute("DELETE FROM analysis_revisions WHERE analysis_id=?"
                       " AND rev=?", (aid, row["rev"]))
             return {"restored": int(row["rev"]), "status": row["status"]}
@@ -2048,11 +2185,13 @@ def csv_export(records: list[dict]) -> str:
     # The exposure columns come last so that every consumer written against
     # the earlier layout still finds each column where it was. An empty cell
     # means the detector recorded no value, as elsewhere in both exports.
+    # analysis_mode is last of all, for the same reason: "field" means the
+    # measuring points were placed automatically and not reviewed on screen.
     wr.writerow(["analysis_id", "site", "phantom", "operator", "acquired_at",
                  "acquired_flag", "created_at", "source", "signature",
                  "is_baseline", "validation", "validated_by", "validated_at",
                  "test", "object", "metric", "value", "unit", "status"]
-                + [col for col, _ in EXPOSURE_FIELDS])
+                + [col for col, _ in EXPOSURE_FIELDS] + ["analysis_mode"])
     for rec in records:
         res = rec.get("results")
         if not res:
@@ -2060,6 +2199,7 @@ def csv_export(records: list[dict]) -> str:
         exposure = exposure_of(rec)
         tail = ["" if exposure[col] is None else exposure[col]
                 for col, _ in EXPOSURE_FIELDS]
+        tail.append(rec.get("analysis_mode") or "full")
         for row in flatten_results(res):
             wr.writerow([rec["id"], rec.get("site", ""), rec.get("phantom", ""),
                          rec.get("operator", ""), rec.get("acquired_at", ""),
@@ -2126,4 +2266,7 @@ def wide_csv_export(records: list[dict]) -> str:
     for col, _ in EXPOSURE_FIELDS:
         wr.writerow(["", "", f"# {col}", ""]
                     + ["" if e[col] is None else e[col] for e in exposures])
+    # Last, for the same reason as the exposures.
+    wr.writerow(["", "", "# analysis_mode", ""]
+                + [r.get("analysis_mode") or "full" for r in ordered])
     return buf.getvalue()
